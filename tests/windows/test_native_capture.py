@@ -52,6 +52,20 @@ class NativeCaptureTests(unittest.TestCase):
         self.assertGreater(frame.width, 0)
         self.assertEqual(frame.buffer_handle.size_bytes, frame.width * frame.height * 4)
 
+    def test_wgc_teardown_does_not_poison_following_dxgi_create(self) -> None:
+        with capture_test_window() as (_, target):
+            try:
+                wgc = self.library.create(NativeBackendId.WGC, target.hwnd)
+            except BackendUnavailableError as error:
+                self.skipTest(f"WGC unavailable on this desktop: {error}")
+            self.library.destroy(wgc)
+
+            try:
+                dxgi = self.library.create(NativeBackendId.DXGI, target.hwnd)
+            except BackendUnavailableError as error:
+                self.skipTest(f"DXGI unavailable on this desktop: {error}")
+            self.library.destroy(dxgi)
+
 
 if __name__ == "__main__":
     unittest.main()

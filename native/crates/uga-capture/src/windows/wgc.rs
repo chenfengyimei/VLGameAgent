@@ -1,5 +1,6 @@
 use std::marker::PhantomData;
 use std::rc::Rc;
+use std::sync::OnceLock;
 use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 use std::time::Duration;
 
@@ -16,13 +17,14 @@ use windows::Win32::Graphics::Direct3D11::{
     D3D11_USAGE_STAGING, ID3D11Device, ID3D11DeviceContext, ID3D11Texture2D,
 };
 use windows::Win32::Graphics::Dxgi::IDXGIDevice;
+use windows::Win32::System::LibraryLoader::LoadLibraryW;
 use windows::Win32::System::WinRT::Direct3D11::{
     CreateDirect3D11DeviceFromDXGIDevice, IDirect3DDxgiInterfaceAccess,
 };
 use windows::Win32::System::WinRT::Graphics::Capture::IGraphicsCaptureItemInterop;
 use windows::Win32::System::WinRT::{RO_INIT_MULTITHREADED, RoInitialize, RoUninitialize};
 use windows::Win32::UI::WindowsAndMessaging::{GetWindowRect, IsWindow};
-use windows::core::{IInspectable, Interface, factory};
+use windows::core::{IInspectable, Interface, factory, w};
 
 use super::dxgi::create_device;
 use super::{CaptureError, CapturedBgraFrame};
@@ -38,8 +40,21 @@ pub struct WgcCapture {
     arrivals: Receiver<()>,
     staging: Option<(u32, u32, ID3D11Texture2D)>,
     clock: QpcClock,
-    ro_initialized: bool,
     _thread_bound: PhantomData<Rc<()>>,
+    // Fields are dropped in declaration order after `WgcCapture::drop` runs.
+    // Keep this guard last so every WinRT/D3D interface is released before the
+    // matching RoUninitialize call tears down the apartment.
+    _ro_guard: RoInitializeGuard,
+}
+
+struct RoInitializeGuard(bool);
+
+impl Drop for RoInitializeGuard {
+    fn drop(&mut self) {
+        if self.0 {
+            unsafe { RoUninitialize() };
+        }
+    }
 }
 
 impl WgcCapture {
@@ -52,6 +67,7 @@ impl WgcCapture {
         if hwnd.0.is_null() || !unsafe { IsWindow(Some(hwnd)) }.as_bool() {
             return Err(CaptureError::TargetLost);
         }
+        pin_graphics_capture_module()?;
         let ro_initialized = match unsafe { RoInitialize(RO_INIT_MULTITHREADED) } {
             Ok(()) => true,
             Err(error) if error.code() == RPC_E_CHANGED_MODE => false,
@@ -97,8 +113,8 @@ impl WgcCapture {
             arrivals,
             staging: None,
             clock: QpcClock::new()?,
-            ro_initialized,
             _thread_bound: PhantomData,
+            _ro_guard: RoInitializeGuard(ro_initialized),
         })
     }
 
@@ -222,14 +238,27 @@ impl WgcCapture {
     }
 }
 
+fn pin_graphics_capture_module() -> Result<(), CaptureError> {
+    // Graphics Capture can leave a thread-pool callback queued briefly after a
+    // session closes.  Retain one process-wide module reference so the callback
+    // can never execute through GraphicsCapture.dll_unloaded during a later
+    // backend probe or process shutdown.
+    static PINNED: OnceLock<bool> = OnceLock::new();
+    let loaded = *PINNED.get_or_init(|| unsafe { LoadLibraryW(w!("GraphicsCapture.dll")).is_ok() });
+    if loaded {
+        Ok(())
+    } else {
+        Err(CaptureError::Unsupported(
+            "GraphicsCapture.dll could not be pinned",
+        ))
+    }
+}
+
 impl Drop for WgcCapture {
     fn drop(&mut self) {
         let _ = self.frame_pool.RemoveFrameArrived(self.frame_arrived_token);
         let _ = self.session.Close();
         let _ = self.frame_pool.Close();
-        if self.ro_initialized {
-            unsafe { RoUninitialize() };
-        }
     }
 }
 
