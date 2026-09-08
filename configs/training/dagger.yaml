@@ -1,0 +1,4 @@
+stage: dagger
+record: [override_start, override_end, reason, original_agent_action, human_action]
+require_human_override_provenance: true
+initialize_from: configure-recovery-checkpoint

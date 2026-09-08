@@ -1,0 +1,30 @@
+game:
+  id: uga-fixture-world
+  display_name: UGA Fixture World
+process:
+  executable: [python.exe, uga-example-game.exe]
+window:
+  preferred_capture: windows_graphics_capture
+  title_pattern: '^UGA Fixture World$'
+controls:
+  move_forward: {kind: scan_code, code: 17, confirmed: true}
+  move_backward: {kind: scan_code, code: 31, confirmed: true}
+  move_left: {kind: scan_code, code: 30, confirmed: true}
+  move_right: {kind: scan_code, code: 32, confirmed: true}
+  interact: {kind: scan_code, code: 18, confirmed: true}
+  menu: {kind: virtual_key, code: 27, confirmed: true}
+  reset: {kind: scan_code, code: 19, confirmed: true}
+camera:
+  type: relative_mouse
+  sensitivity: 100
+capabilities:
+  realtime_3d: true
+  gui: true
+  combat: false
+  gamepad: false
+safety:
+  environment_class: developer_owned
+  automation_allowed: true
+  multiplayer: false
+  anti_cheat_present: false
+capability_level: 4

@@ -1,0 +1,20 @@
+[workspace]
+resolver = "2"
+members = [
+  "crates/uga-clock",
+  "crates/uga-window",
+  "crates/uga-capture",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+
+[workspace.lints.clippy]
+all = "warn"
+pedantic = "warn"
+

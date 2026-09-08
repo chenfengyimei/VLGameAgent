@@ -1,0 +1,18 @@
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.ico binary
+*.dll binary
+*.exe binary
+*.lib binary
+*.pdb binary
+*.mp4 binary
+*.mkv binary
+*.parquet binary
+*.safetensors binary
+*.pt binary
+*.onnx binary

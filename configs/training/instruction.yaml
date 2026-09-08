@@ -1,0 +1,4 @@
+stage: instruction
+inputs: [visual_history, instruction, subgoal]
+output: action_chunk
+initialize_from: configure-motor-checkpoint

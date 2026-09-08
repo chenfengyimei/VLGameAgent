@@ -1,0 +1,12 @@
+{
+  "name": "uga-ui",
+  "private": true,
+  "version": "0.1.0",
+  "scripts": {
+    "build": "tsc --project ui/tsconfig.json",
+    "typecheck": "tsc --project ui/tsconfig.json --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "7.0.2"
+  }
+}

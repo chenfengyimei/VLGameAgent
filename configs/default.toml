@@ -1,0 +1,32 @@
+[runtime]
+event_queue_size = 256
+
+[capture]
+backend_preference = ["windows_graphics_capture", "dxgi_duplication", "gdi_fallback"]
+ring_capacity = 8
+health_failure_threshold = 3
+
+[capture.runtime]
+max_pending_observations = 1
+
+[control]
+scheduler_hz = 30.0
+watchdog_timeout_ms = 500
+emergency_hotkey = "ctrl+shift+f12"
+
+[agent.mode_router]
+confirmation_frames = 3
+minimum_hold_ms = 500
+transition_confidence = 0.8
+
+[policy.cadence]
+observation_rates_hz = [5.0, 4.0, 2.5, 2.0]
+action_horizons = [6, 8, 12, 12]
+recovery_samples = 5
+recovery_utilization = 0.6
+max_action_horizon = 12
+
+[dataset.quality]
+max_capture_gap_ns = 500000000
+max_input_gap_ns = 500000000
+max_mouse_delta = 5000

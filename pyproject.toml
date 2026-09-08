@@ -1,0 +1,56 @@
+[build-system]
+requires = ["hatchling>=1.26"]
+build-backend = "hatchling.build"
+
+[project]
+name = "universal-game-agent"
+version = "0.1.0"
+description = "Windows-first generalist game computer-use agent runtime"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "av>=12.0",
+  "pyarrow>=15.0",
+  "PyYAML>=6.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "build>=1.2",
+  "mypy>=1.14",
+  "pytest>=8.3",
+  "ruff>=0.9",
+]
+
+[project.scripts]
+uga-agent = "apps.agent.__main__:cli"
+uga-dashboard = "apps.dashboard.__main__:main"
+uga-replay = "apps.replay.__main__:main"
+uga-release-manifest = "apps.release_manifest.__main__:main"
+uga-qualify = "apps.qualification.__main__:main"
+uga-dataset = "apps.dataset.__main__:main"
+uga-benchmark = "apps.benchmark.__main__:main"
+uga-example-game = "apps.example_game.__main__:main"
+uga-capture-probe = "apps.capture_probe.__main__:main"
+uga-dependency-inventory = "apps.dependency_inventory.__main__:main"
+uga-train = "apps.training.__main__:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["uga", "apps"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+extend-exclude = [".tooling", "native/target"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+packages = ["uga", "apps"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"

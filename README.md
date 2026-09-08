@@ -1,0 +1,75 @@
+# Universal Game Agent (UGA)
+
+UGA is a Windows-first, generalist game computer-use agent. It observes pixels,
+reasons about goals, selects skills, and emits keyboard, mouse, or gamepad input
+through explicit safety and ownership boundaries.
+
+The repository has implementation coverage through **UGA-074**, including a
+deterministic Goal-to-Replay loop, dataset/Fast Policy tooling, UGA-Bench,
+dashboard/replay UIs, and Windows development packaging. UGA-075 remains a
+qualification milestone; no V1 release claim is made yet.
+
+## Architectural rules
+
+- Slow reasoning and real-time control are separate.
+- Semantic, canonical, and physical actions are separate.
+- The action arbiter is the only authorizer; the input executor is the only
+  physical-backend writer.
+- Runtime telemetry is training data.
+- All online timing uses one monotonic nanosecond timeline.
+- Every future action has a lifetime; expired actions are dropped.
+- Runtime consumers use latest-state-wins backpressure.
+- Control ownership is represented by expiring leases.
+- Windows I/O is hidden behind backend contracts.
+- Raw HID remains a future escape hatch for unknown environments.
+
+See [ARCHITECTURE.md](ARCHITECTURE.md) and [PROJECT_PLAN.md](PROJECT_PLAN.md).
+
+## Current quick start
+
+UGA requires Python 3.11 or newer. Install the project (or its wheel) to obtain
+the Parquet, video, and YAML runtime dependencies.
+Developers changing Dashboard, Replay, or Dataset Viewer code also need Node.js
+24 and should run `npm ci && npm run typecheck && npm run build`; wheel users do
+not need Node because the compiled browser assets are included.
+
+```powershell
+python -m pip install -e .
+uga-agent
+uga-dashboard --output dashboard.html
+uga-dashboard --serve --host 127.0.0.1 --port 8765
+uga-example-game --headless-smoke
+uga-capture-probe --help
+uga-dataset --help
+uga-benchmark --help
+uga-qualify --help
+uga-train --help
+python -m pytest
+```
+
+`uga-agent` performs a lifecycle smoke run. Physical input remains disabled until
+an operator explicitly enables a runtime with a safe environment manifest,
+exact target identity, live control lease, and active emergency hotkey.
+
+The modular `RealtimeAgentLoop` composes capture, latest-state observation,
+mode routing, Fast Policy, control leases, arbitration, 30 Hz scheduling,
+telemetry, and optional Episode recording. The live dashboard binds only to a
+loopback IP and authenticates operator commands with a per-process CSRF token.
+
+Windows development bundles are built with `scripts/build_release.ps1`. Install
+the bundled wheel, then use `run_uga.ps1` to point the runtime at the bundled
+native capture DLL. Consult `release-manifest.json` before interpreting a bundle
+as qualified.
+
+The developer-owned Fixture World provides a deterministic visual target for
+supervised Windows testing. See
+[docs/runbooks/fixture-qualification.md](docs/runbooks/fixture-qualification.md).
+Qualification evidence is hash-anchored according to
+[docs/contracts/qualification-evidence.md](docs/contracts/qualification-evidence.md).
+
+## Safety scope
+
+Development and evaluation are limited to single-player, offline, private test,
+developer-owned, open-source, or research sandbox environments. Competitive
+multiplayer automation, anti-cheat circumvention, and unattended online match
+automation are out of scope.

@@ -1,0 +1,29 @@
+game:
+  id: example-offline
+  display_name: Example Offline Game
+process:
+  executable: [example.exe]
+window:
+  preferred_capture: auto
+controls:
+  move_forward: {kind: scan_code, code: 17, confirmed: true}
+  move_backward: {kind: scan_code, code: 31, confirmed: true}
+  move_left: {kind: scan_code, code: 30, confirmed: true}
+  move_right: {kind: scan_code, code: 32, confirmed: true}
+  jump: {kind: scan_code, code: 57, confirmed: true}
+  interact: {kind: scan_code, code: 33, confirmed: true}
+  menu: {kind: virtual_key, code: 27, confirmed: true}
+camera:
+  type: relative_mouse
+  sensitivity: 100.0
+capabilities:
+  realtime_3d: true
+  gui: true
+  combat: false
+  gamepad: false
+safety:
+  environment_class: offline
+  automation_allowed: true
+  multiplayer: false
+  anti_cheat_present: false
+capability_level: 3

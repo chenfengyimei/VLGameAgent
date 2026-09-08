@@ -1,0 +1,9 @@
+tasks:
+  - id: example_move_001
+    game: example-offline
+    instruction: Move forward until visible progress is detected.
+    timeout_seconds: 30
+    repeat: 3
+    split: test
+    success:
+      evaluator: environment_adapter

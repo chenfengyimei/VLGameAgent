@@ -1,0 +1,13 @@
+stage: motor_bc
+base_model: Qwen3-VL-4B
+freeze_visual_layers: true
+train_components: [policy_projection, temporal_decoder, confidence_head]
+tick_rate_hz: 30
+action_horizon: 6
+epochs: 100
+learning_rate: 0.05
+loss:
+  movement: mse
+  camera: huber
+  buttons: binary_cross_entropy
+  confidence: binary_cross_entropy

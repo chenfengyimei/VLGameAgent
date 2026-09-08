@@ -1,0 +1,4 @@
+stage: recovery
+sources: [human_correction, agent_failure, synthetic_perturbation]
+priority_failures: [stuck, wrong_route, lost_target, wrong_gui, camera_lost]
+initialize_from: configure-instruction-checkpoint

@@ -1,0 +1,17 @@
+models:
+  planner:
+    provider: qwen
+    model: Qwen3-VL-8B-Thinking
+    enabled: false
+  fast_policy:
+    provider: uga_local
+    checkpoint: checkpoints/uga-policy-v1
+    enabled: false
+  gui:
+    provider: ui_tars
+    checkpoint: configure-an-open-compatible-checkpoint
+    enabled: false
+  mode_router:
+    provider: rules
+    model: rule-mode-router-1.0.0
+    enabled: true
