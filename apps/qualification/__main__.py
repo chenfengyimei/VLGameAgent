@@ -76,6 +76,8 @@ def _manifest(args: argparse.Namespace) -> None:
         ledger,
         evidence_root,
         version=args.version,
+        preflight_path=args.preflight,
+        project_root=args.project_root,
     )
     output = args.output.resolve() if args.output else bundle / "release-manifest.json"
     print(manifest.write(output))
@@ -156,6 +158,8 @@ def main() -> None:
     manifest.add_argument("root", type=Path)
     manifest.add_argument("bundle", type=Path)
     manifest.add_argument("--version", required=True)
+    manifest.add_argument("--preflight", type=Path, required=True)
+    manifest.add_argument("--project-root", type=Path, default=Path("."))
     manifest.add_argument("--output", type=Path)
     manifest.set_defaults(handler=_manifest)
 

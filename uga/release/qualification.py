@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import shutil
 from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
 from typing import Any, ClassVar
@@ -15,6 +16,7 @@ from uga.release.manifest import (
     ReleaseGate,
     ReleaseManifest,
     hash_artifacts,
+    hash_bundle_tree,
 )
 
 REQUIRED_GATE_IDS = REQUIRED_RELEASE_GATE_IDS
@@ -126,30 +128,48 @@ class QualificationLedger(VersionedMixin):
             ReleaseGate(record.gate_id, record.status, record.evidence) for record in self.records
         )
 
+    def canonical_sha256(self) -> str:
+        payload = json.dumps(
+            {
+                "source_revision": self.source_revision,
+                "records": self._records_payload(),
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        ).encode("utf-8")
+        return hashlib.sha256(payload).hexdigest()
+
     def write(self, path: str | Path) -> Path:
         destination = Path(path)
         payload = {
             "schema": self.SCHEMA_NAME,
             "schema_version": self.SCHEMA_VERSION,
-            "data": {
-                "source_revision": self.source_revision,
-                "releasable": self.releasable,
-                "records": [
-                    {
-                        "gate_id": record.gate_id,
-                        "status": record.status.value,
-                        "evidence": record.evidence,
-                        "artifacts": [
-                            {"relative_path": item.relative_path, "sha256": item.sha256}
-                            for item in record.artifacts
-                        ],
-                    }
-                    for record in self.records
-                ],
-            },
+            "data": self._data_payload(),
         }
         destination.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
         return destination
+
+    def _data_payload(self) -> dict[str, object]:
+        return {
+            "source_revision": self.source_revision,
+            "releasable": self.releasable,
+            "records": self._records_payload(),
+        }
+
+    def _records_payload(self) -> list[dict[str, object]]:
+        return [
+            {
+                "gate_id": record.gate_id,
+                "status": record.status.value,
+                "evidence": record.evidence,
+                "artifacts": [
+                    {"relative_path": item.relative_path, "sha256": item.sha256}
+                    for item in record.artifacts
+                ],
+            }
+            for record in self.records
+        ]
 
     @classmethod
     def load(cls, path: str | Path) -> QualificationLedger:
@@ -201,25 +221,85 @@ def build_qualified_release_manifest(
     evidence_root: str | Path,
     *,
     version: str,
+    preflight_path: str | Path,
+    project_root: str | Path,
 ) -> ReleaseManifest:
+    from uga.release.preflight import (
+        QualificationPreflight,
+        build_qualification_preflight,
+        probe_host,
+    )
+
     root = Path(bundle_root).resolve()
+    evidence = Path(evidence_root).resolve()
+    project = Path(project_root).resolve()
+    preflight_source = Path(preflight_path).resolve()
+    qualification_dir = root / "qualification"
+    qualification_dir.mkdir(parents=True, exist_ok=True)
+    bundled_preflight = qualification_dir / "preflight.json"
+    shutil.copy2(preflight_source, bundled_preflight)
+    preflight = QualificationPreflight.load(bundled_preflight)
+    current_host = probe_host(project)
+    if (
+        preflight.training_artifact_path is None
+        or preflight.dataset_manifest_path is None
+        or preflight.dataset_root is None
+    ):
+        raise ContractViolation("qualified promotion requires training and dataset bindings")
+    recomputed = build_qualification_preflight(
+        ledger,
+        project,
+        host=current_host,
+        training_artifact_path=preflight.training_artifact_path,
+        dataset_manifest_path=preflight.dataset_manifest_path,
+        dataset_root=preflight.dataset_root,
+    )
+    if recomputed != preflight:
+        raise ContractViolation("qualification preflight does not match current verified inputs")
+    if recomputed.blockers:
+        raise ContractViolation("qualification preflight contains blockers")
+    if not preflight.ledger_releasable or not ledger.releasable:
+        raise ContractViolation("qualification ledger is not releasable")
+    if not preflight.worktree_clean or not current_host.worktree_clean:
+        raise ContractViolation("release promotion requires a clean source worktree")
+    if (
+        not preflight.source_revision_matches_ledger
+        or current_host.source_revision != preflight.source_revision
+        or current_host.source_revision != ledger.source_revision
+    ):
+        raise ContractViolation("release promotion source revision binding changed")
+    if preflight.ledger_sha256 != ledger.canonical_sha256():
+        raise ContractViolation("qualification ledger changed after preflight")
+    expected_statuses = tuple((record.gate_id, record.status.value) for record in ledger.records)
+    if preflight.gate_statuses != expected_statuses:
+        raise ContractViolation("qualification gate statuses changed after preflight")
+    gates = ledger.release_gates(evidence)
+
     wheels = tuple(path for path in root.glob("*.whl") if path.is_file())
     source_archives = tuple(path for path in root.glob("*.tar.gz") if path.is_file())
     if len(wheels) != 1 or len(source_archives) != 1:
         raise ContractViolation("bundle requires exactly one wheel and one source archive")
-    artifacts = hash_artifacts(
-        root,
-        (
-            wheels[0].relative_to(root).as_posix(),
-            source_archives[0].relative_to(root).as_posix(),
-            "native/uga_capture.dll",
-            "third-party-inventory.json",
-        ),
-    )
+    required = (root / "native" / "uga_capture.dll", root / "third-party-inventory.json")
+    if any(not path.is_file() for path in required):
+        raise ContractViolation("bundle is missing the native DLL or dependency inventory")
+    ledger_source = evidence / "qualification.json"
+    if not ledger_source.is_file():
+        raise ContractViolation("qualification ledger file is missing")
+    if QualificationLedger.load(ledger_source).canonical_sha256() != ledger.canonical_sha256():
+        raise ContractViolation("qualification ledger file does not match the verified ledger")
+    shutil.copy2(ledger_source, qualification_dir / "qualification.json")
+    if QualificationPreflight.load(bundled_preflight) != preflight:
+        raise ContractViolation("qualification preflight changed during promotion")
+    artifacts = hash_bundle_tree(root)
+    final_host = probe_host(project)
+    if final_host.source_revision != current_host.source_revision or not final_host.worktree_clean:
+        raise ContractViolation("source worktree changed while building release manifest")
+    preflight_digest = dict(artifacts)["qualification/preflight.json"]
     return ReleaseManifest(
         version,
         "1.1",
         ledger.source_revision,
         artifacts,
-        ledger.release_gates(evidence_root),
+        gates,
+        preflight_digest,
     )

@@ -107,6 +107,14 @@ try {
         --source-revision $sourceRevision `
         --package-smoke-passed
     if ($LASTEXITCODE -ne 0) { throw "Release manifest failed with exit code $LASTEXITCODE" }
+    & $Python -m apps.release_manifest $bundleRoot --verify-existing
+    if ($LASTEXITCODE -ne 0) { throw "Bundle verification failed with exit code $LASTEXITCODE" }
+    $finalRevision = (& git -C $projectRoot rev-parse HEAD).Trim()
+    $finalDirty = & git -C $projectRoot status --porcelain
+    if ($LASTEXITCODE -ne 0) { throw "Unable to re-inspect the source worktree" }
+    if ($finalRevision -cne $sourceRevision -or $finalDirty) {
+        throw "Source worktree changed while building the release bundle"
+    }
     Write-Output $bundleRoot
 }
 finally {

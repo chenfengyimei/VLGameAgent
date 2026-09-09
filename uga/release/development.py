@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from uga.core.errors import ContractViolation
-from uga.release.manifest import GateStatus, ReleaseGate, ReleaseManifest, hash_artifacts
+from uga.release.manifest import GateStatus, ReleaseGate, ReleaseManifest, hash_bundle_tree
 
 
 def build_development_manifest(
@@ -19,12 +19,9 @@ def build_development_manifest(
     if len(wheels) != 1 or len(source_archives) != 1:
         raise ContractViolation("bundle requires exactly one wheel and one source archive")
 
-    artifact_paths = (
-        wheels[0].relative_to(root).as_posix(),
-        source_archives[0].relative_to(root).as_posix(),
-        "native/uga_capture.dll",
-        "third-party-inventory.json",
-    )
+    required_paths = (root / "native" / "uga_capture.dll", root / "third-party-inventory.json")
+    if any(not path.is_file() for path in required_paths):
+        raise ContractViolation("bundle is missing the native DLL or dependency inventory")
     package_smoke = ReleaseGate(
         "package-install-smoke",
         GateStatus.PASSED if package_smoke_passed else GateStatus.NOT_RUN,
@@ -38,7 +35,7 @@ def build_development_manifest(
         version="0.1.0-dev",
         schema_version="1.1",
         source_revision=source_revision,
-        artifacts=hash_artifacts(root, artifact_paths),
+        artifacts=hash_bundle_tree(root),
         gates=(
             ReleaseGate(
                 "automated-tests",

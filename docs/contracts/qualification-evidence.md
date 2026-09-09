@@ -28,11 +28,14 @@ uga-qualify preflight runs/qualification-v1 --project-root . `
   --training-artifact runs/qualification-v1/models/fixture-motor-v1/training-artifact.json `
   --dataset-manifest data/datasets/v1/manifest.json `
   --dataset-root data/datasets/v1
-uga-qualify manifest runs/qualification-v1 dist/<bundle> --version 1.0.0
+uga-qualify manifest runs/qualification-v1 dist/<bundle> --version 1.0.0 `
+  --preflight runs/qualification-v1/preflight.json --project-root .
 ```
 
 The final command verifies evidence again before creating a release manifest.
-`preflight` is read-only: it checks Git HEAD alignment, repository licensing,
+`preflight` is read-only: it checks a clean Git worktree and HEAD alignment,
+binds the qualification ledger, training artifact, and Dataset Manifest by digest,
+and checks repository licensing,
 the verified training-artifact binding, Dataset artifact hashes and explicit
 distribution/commercial permissions, five-hour volume, the Train A/B/C plus
 locked-test-game shape, GPU discovery, and every ledger status. It does not

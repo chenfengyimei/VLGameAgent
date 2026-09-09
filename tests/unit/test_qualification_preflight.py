@@ -1,12 +1,26 @@
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
+from uga.core.errors import ContractViolation
 from uga.dataset.manifest import DatasetLicense, DatasetManifest
-from uga.release.preflight import HostQualificationProbe, build_qualification_preflight
-from uga.release.qualification import QualificationLedger
+from uga.release.manifest import GateStatus
+from uga.release.preflight import (
+    HostQualificationProbe,
+    QualificationPreflight,
+    build_qualification_preflight,
+)
+from uga.release.qualification import (
+    REQUIRED_GATE_IDS,
+    QualificationLedger,
+    QualificationRecord,
+    build_qualified_release_manifest,
+    hash_evidence,
+)
 from uga.training.artifact import TrainingArtifactManifest, sha256_file
 
 
@@ -28,7 +42,116 @@ class QualificationPreflightTests(unittest.TestCase):
             self.assertIn("source tree has no traceable Git revision", report.blockers)
             self.assertIn("repository license has not been selected", report.blockers)
             self.assertIn("verified training artifact was not supplied", report.blockers)
-            self.assertTrue(report.write(root / "preflight.json").is_file())
+            path = report.write(root / "preflight.json")
+            self.assertEqual(QualificationPreflight.load(path), report)
+            self.assertEqual(report.ledger_sha256, ledger.canonical_sha256())
+
+    def test_preflight_blocks_a_dirty_source_worktree(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            report = build_qualification_preflight(
+                QualificationLedger.initialize("revision-1"),
+                root,
+                host=HostQualificationProbe("revision-1", (), False),
+            )
+            self.assertFalse(report.worktree_clean)
+            self.assertIn("source worktree is not clean", report.blockers)
+
+    def test_promotion_recomputes_rules_instead_of_trusting_deleted_blockers(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            project = root / "project"
+            evidence = root / "evidence"
+            bundle = root / "bundle"
+            for directory in (project, evidence, bundle / "native"):
+                directory.mkdir(parents=True)
+            (project / "LICENSE").write_text("fixture", encoding="utf-8")
+            (evidence / "LICENSE").write_text("fixture", encoding="utf-8")
+            artifacts = hash_evidence(evidence, ("LICENSE",))
+            ledger = QualificationLedger(
+                "revision-1",
+                tuple(
+                    QualificationRecord(gate_id, GateStatus.PASSED, "fixture", artifacts)
+                    for gate_id in REQUIRED_GATE_IDS
+                ),
+            )
+            ledger.write(evidence / "qualification.json")
+            dataset = DatasetManifest(
+                "dataset-v1",
+                "1.0",
+                "revision-1",
+                (),
+                (
+                    DatasetLicense(
+                        "fixture-license",
+                        "developer-owned fixture",
+                        "project-owner-controlled",
+                        True,
+                        True,
+                        "2026-09-09",
+                    ),
+                ),
+                (),
+            )
+            dataset_path = dataset.write(root / "dataset-manifest.json")
+            model = root / "model.json"
+            config = root / "training.yaml"
+            samples = root / "samples.jsonl"
+            model.write_text("{}", encoding="utf-8")
+            config.write_text("stage: motor_bc\n", encoding="utf-8")
+            samples.write_text("{}\n", encoding="utf-8")
+            artifact = TrainingArtifactManifest(
+                "artifact-v1",
+                model.name,
+                "1.1",
+                str(dataset_path),
+                "revision-1",
+                str(config),
+                str(samples),
+                "fixture",
+                sha256_file(model),
+                sha256_file(dataset_path),
+                sha256_file(config),
+                sha256_file(samples),
+                (("loss", 0.0),),
+                (
+                    ("dataset:fixture-license:source", "developer-owned fixture"),
+                    ("dataset:fixture-license:license", "project-owner-controlled"),
+                    ("dataset:fixture-license:distribution_allowed", "true"),
+                    ("dataset:fixture-license:commercial_allowed", "true"),
+                    ("dataset:fixture-license:review_date", "2026-09-09"),
+                ),
+            )
+            artifact_path = artifact.write(root / "training-artifact.json")
+            host = HostQualificationProbe("revision-1", (), True)
+            report_path = build_qualification_preflight(
+                ledger,
+                project,
+                host=host,
+                training_artifact_path=artifact_path,
+                dataset_root=root,
+            ).write(root / "preflight.json")
+            payload = json.loads(report_path.read_text(encoding="utf-8"))
+            self.assertIn("dataset contains less than the required 5 hours", payload["blockers"])
+            payload["blockers"] = []
+            report_path.write_text(json.dumps(payload), encoding="utf-8")
+            (bundle / "package.whl").write_bytes(b"wheel")
+            (bundle / "package.tar.gz").write_bytes(b"source")
+            (bundle / "native" / "uga_capture.dll").write_bytes(b"native")
+            (bundle / "third-party-inventory.json").write_text("{}", encoding="utf-8")
+
+            with (
+                patch("uga.release.preflight.probe_host", return_value=host),
+                self.assertRaisesRegex(ContractViolation, "does not match"),
+            ):
+                build_qualified_release_manifest(
+                    bundle,
+                    ledger,
+                    evidence,
+                    version="1.0.0",
+                    preflight_path=report_path,
+                    project_root=project,
+                )
 
     def test_preflight_enforces_dataset_rights_and_artifact_license_binding(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

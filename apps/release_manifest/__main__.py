@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 
 from uga.release.development import build_development_manifest
+from uga.release.manifest import ReleaseManifest
 
 
 def main() -> None:
@@ -17,7 +18,17 @@ def main() -> None:
         default=os.environ.get("UGA_SOURCE_REVISION", "workspace-unversioned"),
     )
     parser.add_argument("--package-smoke-passed", action="store_true")
+    parser.add_argument(
+        "--verify-existing",
+        action="store_true",
+        help="verify the existing manifest against the exact bundle tree",
+    )
     args = parser.parse_args()
+    if args.verify_existing:
+        manifest_path = args.bundle / "release-manifest.json"
+        ReleaseManifest.load(manifest_path).verify(args.bundle)
+        print(manifest_path.resolve())
+        return
     manifest = build_development_manifest(
         args.bundle,
         source_revision=args.source_revision,

@@ -11,6 +11,10 @@ if (-not (Test-Path -LiteralPath $captureDll -PathType Leaf)) {
 if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
     throw "Release manifest not found: $manifestPath"
 }
+& $Python -m apps.release_manifest $PSScriptRoot --verify-existing
+if ($LASTEXITCODE -ne 0) {
+    throw "Release bundle verification failed with exit code $LASTEXITCODE"
+}
 $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
 $expectedDigest = $manifest.artifacts.'native/uga_capture.dll'
 if (-not $expectedDigest -or $expectedDigest -notmatch '^[0-9a-f]{64}$') {

@@ -308,6 +308,7 @@ class ReleaseSurfaceTests(unittest.TestCase):
             (root / "package.tar.gz").write_bytes(b"source")
             (root / "native" / "uga_capture.dll").write_bytes(b"native")
             (root / "third-party-inventory.json").write_text("{}", encoding="utf-8")
+            (root / "run_uga.ps1").write_text("Write-Output uga", encoding="utf-8")
             manifest = build_development_manifest(
                 root,
                 source_revision="test-revision",
@@ -320,10 +321,21 @@ class ReleaseSurfaceTests(unittest.TestCase):
                     "package.whl",
                     "package.tar.gz",
                     "native/uga_capture.dll",
+                    "run_uga.ps1",
                     "third-party-inventory.json",
                 },
             )
             self.assertEqual(manifest.gates[2].status, GateStatus.PASSED)
+            manifest.write(root / "release-manifest.json")
+            loaded = ReleaseManifest.load(root / "release-manifest.json")
+            loaded.verify(root)
+            (root / "unexpected.txt").write_text("untrusted", encoding="utf-8")
+            with self.assertRaisesRegex(ContractViolation, "file set mismatch"):
+                loaded.verify(root)
+            (root / "unexpected.txt").unlink()
+            (root / "run_uga.ps1").write_text("tampered", encoding="utf-8")
+            with self.assertRaisesRegex(ContractViolation, "digest mismatch"):
+                loaded.verify(root)
 
     def test_qualification_ledger_hashes_and_revalidates_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
