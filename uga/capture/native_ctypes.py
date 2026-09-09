@@ -109,8 +109,9 @@ class NativeCaptureLibrary:
             )
 
     def _cleanup_private_copy(self) -> None:
-        # A loaded DLL stays mapped until process exit, so removal is
-        # best-effort and the OS temp hygiene covers the remainder.
+        # A loaded DLL stays mapped on Windows for the process lifetime, so
+        # successful loads keep their copy until exit; failed loads release
+        # their copy here. Copies live in a per-user temp directory.
         shutil.rmtree(self._private_dir, ignore_errors=True)
 
     def _configure(self) -> None:

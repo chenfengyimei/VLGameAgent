@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
 import threading
 import unittest
@@ -77,9 +79,15 @@ class DashboardServerTests(unittest.TestCase):
         try:
             with urllib.request.urlopen(base, timeout=2) as response:
                 document = response.read().decode("utf-8")
+                csp = response.headers["Content-Security-Policy"]
             self.assertNotIn(token, document)
             self.assertNotIn("uga-csrf", document)
             self.assertIn("/api/state", document)
+            inline_script = document.split("<script>", 1)[1].split("</script>", 1)[0]
+            expected_hash = base64.b64encode(
+                hashlib.sha256(inline_script.encode("utf-8")).digest()
+            ).decode("ascii")
+            self.assertIn(f"script-src 'sha256-{expected_hash}'", csp)
             with urllib.request.urlopen(f"{base}/api/state", timeout=2) as response:
                 payload = json.load(response)
             self.assertEqual(payload["mode"], "play_3d")

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 from dataclasses import dataclass
 from threading import Event, Lock, Thread
 
@@ -75,4 +76,7 @@ class RuntimeWatchdogMonitor:
                 self._watchdog.check()
             except Exception:
                 # A failed liveness probe must never silently disarm enforcement.
-                self._watchdog.force_trip()
+                # Even a failing trip must not kill the monitor; the next poll
+                # retries, so enforcement outlives backend failures.
+                with contextlib.suppress(Exception):
+                    self._watchdog.force_trip()

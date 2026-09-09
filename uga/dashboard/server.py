@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import hmac
 import ipaddress
@@ -46,10 +47,11 @@ class DashboardHttpServer(ThreadingHTTPServer):
         self.expected_authority = f"{bound_host}:{bound_port}"
         self.expected_origin = f"http://{self.expected_authority}"
         # The live page embeds one static inline script, so its exact digest
-        # can replace the 'unsafe-inline' CSP escape hatch.
-        script_digest = hashlib.sha256(
-            load_ui_script("dashboard.js").encode("utf-8")
-        ).hexdigest()
+        # can replace the 'unsafe-inline' CSP escape hatch. CSP hash sources
+        # carry the base64 of the raw digest, not its hex form.
+        script_digest = base64.b64encode(
+            hashlib.sha256(load_ui_script("dashboard.js").encode("utf-8")).digest()
+        ).decode("ascii")
         self.script_csp = (
             f"default-src 'self'; img-src 'self' data:; script-src 'sha256-{script_digest}'"
         )

@@ -4,6 +4,7 @@ import asyncio
 import time
 import unittest
 from threading import Event, Thread
+from unittest.mock import patch
 
 from tests.helpers import identity
 from uga.control.arbiter import ActionArbiter
@@ -419,6 +420,28 @@ class ControlRuntimeTests(unittest.TestCase):
             self.assertEqual(trip.cause, ShutdownCause.RUNTIME_FAILURE)
         self.assertFalse(enabled.get())
         self.assertEqual(backend.release_count, 1)
+
+    def test_monitor_survives_untrippable_shutdown(self) -> None:
+        clock = ExplodingClock(100)
+        leases = ControlLeaseManager(clock)
+        backend = DryRunInputBackend()
+        enabled = AgentEnableState(True)
+        guard = FocusGuard(self.windows, self.integrity, leases, enabled)
+        executor = InputExecutor(clock, backend, guard, leases)
+        scheduler = ActionScheduler(clock, executor, leases)
+        shutdown = SafetyShutdown(clock, leases, scheduler, executor, enabled)
+        watchdog = RuntimeWatchdog(clock, shutdown, timeout_ns=20)
+        monitor = RuntimeWatchdogMonitor(watchdog, poll_interval_s=0.001)
+        clock.armed = True
+        with patch.object(SafetyShutdown, "trip", side_effect=RuntimeError("trip failed")):
+            monitor.start()
+            try:
+                for _ in range(50):
+                    time.sleep(0.002)
+            finally:
+                alive_before_close = monitor._thread.is_alive()
+                monitor.close()
+        self.assertTrue(alive_before_close, "monitor thread must outlive failing trips")
 
 
 class StateAndPolicyTests(unittest.TestCase):
