@@ -4,6 +4,7 @@ members = [
   "crates/uga-clock",
   "crates/uga-window",
   "crates/uga-capture",
+  "crates/uga-api-fixtures",
 ]
 
 [workspace.package]

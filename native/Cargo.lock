@@ -32,6 +32,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "uga-api-fixtures"
+version = "0.1.0"
+dependencies = [
+ "windows",
+]
+
+[[package]]
 name = "uga-capture"
 version = "0.1.0"
 dependencies = [

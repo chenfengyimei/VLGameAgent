@@ -77,3 +77,6 @@
 - Add an optional out-of-band `-ManifestSha256` anchor to the bundle launcher:
   the manifest itself is verified first when supplied, and operators are warned
   that verification is otherwise self-referential.
+- Add developer-owned DX11, DX12, and OpenGL fixture windows with deterministic
+  color cycling and resize-safe swap chains, giving the capture qualification
+  matrix real D3D and OpenGL render targets beyond the Tk-drawn Fixture World.
