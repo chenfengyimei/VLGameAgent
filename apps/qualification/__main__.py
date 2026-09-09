@@ -6,6 +6,7 @@ import re
 from pathlib import Path
 
 from uga.environment.fixture_world import FixtureScenario, FixtureWorld
+from uga.release.fixture_corpus import run_fixture_corpus
 from uga.release.fixture_qualification import run_fixture_qualification
 from uga.release.manifest import GateStatus
 from uga.release.preflight import build_qualification_preflight
@@ -113,6 +114,21 @@ def _fixture(args: argparse.Namespace) -> None:
     )
 
 
+def _corpus(args: argparse.Namespace) -> None:
+    print(
+        run_fixture_corpus(
+            project_root=args.project_root,
+            output_root=args.output_root,
+            train_duration_seconds=args.train_duration_seconds,
+            test_duration_seconds=args.test_duration_seconds,
+            target_fps=args.target_fps,
+            backend=args.backend,
+            allow_physical_input=args.allow_physical_input,
+            require_release_volume=not args.development_smoke,
+        )
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Manage UGA V1 qualification evidence")
     subparsers = parser.add_subparsers(required=True)
@@ -173,6 +189,23 @@ def main() -> None:
     fixture.add_argument("--exercise-focus-loss", action="store_true")
     fixture.add_argument("--exercise-emergency-hotkey", action="store_true")
     fixture.set_defaults(handler=_fixture)
+
+    corpus = subparsers.add_parser(
+        "corpus", help="collect the owned Train A/B/C and held-out Fixture corpus"
+    )
+    corpus.add_argument("--project-root", type=Path, default=Path("."))
+    corpus.add_argument("--output-root", type=Path, required=True)
+    corpus.add_argument("--train-duration-seconds", type=float, default=6000.0)
+    corpus.add_argument("--test-duration-seconds", type=float, default=600.0)
+    corpus.add_argument("--target-fps", type=float, default=3.0)
+    corpus.add_argument(
+        "--backend",
+        choices=("auto", "windows_graphics_capture", "dxgi_duplication", "gdi_fallback"),
+        default="gdi_fallback",
+    )
+    corpus.add_argument("--allow-physical-input", action="store_true")
+    corpus.add_argument("--development-smoke", action="store_true")
+    corpus.set_defaults(handler=_corpus)
 
     args = parser.parse_args()
     args.handler(args)

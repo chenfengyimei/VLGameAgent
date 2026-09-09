@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import unittest
+from pathlib import Path
 
 from uga.capture.frame import BufferHandle, BufferKind, Frame, PixelFormat
 from uga.core.errors import ContractViolation
+from uga.release.fixture_corpus import run_fixture_corpus
 from uga.release.fixture_qualification import analyze_fixture_frame
 from uga.time.clock import UGATime
 from uga.windows.coordinates import Rect
@@ -11,6 +13,28 @@ from uga.windows.window_identity import WindowIdentity
 
 
 class FixtureQualificationTests(unittest.TestCase):
+    def test_release_corpus_requires_explicit_input_and_five_train_hours(self) -> None:
+        with self.assertRaisesRegex(ContractViolation, "allow-physical-input"):
+            run_fixture_corpus(
+                project_root=Path("."),
+                output_root=Path("unused"),
+                train_duration_seconds=6000,
+                test_duration_seconds=600,
+                target_fps=3,
+                backend="gdi_fallback",
+                allow_physical_input=False,
+            )
+        with self.assertRaisesRegex(ContractViolation, "five train hours"):
+            run_fixture_corpus(
+                project_root=Path("."),
+                output_root=Path("unused"),
+                train_duration_seconds=4.5,
+                test_duration_seconds=4.5,
+                target_fps=3,
+                backend="gdi_fallback",
+                allow_physical_input=True,
+            )
+
     def test_fixture_color_analysis_uses_captured_pixels(self) -> None:
         width, height = 16, 8
         pixels = bytearray(width * height * 4)

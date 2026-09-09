@@ -94,6 +94,12 @@ uga-train prepare-motor-samples `
   --episode <accepted-episode> `
   --output <motor-samples.jsonl>
 
+# Release-volume owned corpus: 100 minutes for each Train A/B/C scenario,
+# plus 10 minutes for the locked held-out scenario. This takes 5h10m wall time.
+uga-qualify corpus `
+  --output-root runs/qualification-v1/corpus `
+  --allow-physical-input
+
 uga-benchmark validate-config configs/benchmarks/uga-bench-smoke.yaml
 uga-benchmark summarize <benchmark-runs.jsonl> --output <benchmark-report.json>
 ```
