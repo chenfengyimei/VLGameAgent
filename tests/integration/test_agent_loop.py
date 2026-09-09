@@ -79,8 +79,9 @@ class AgentLoopTests(unittest.IsolatedAsyncioTestCase):
             clock,
             backend,
             FocusGuard(FakeWindows(target), FakeIntegrity(), leases, AgentEnableState(True)),
+            leases,
         )
-        scheduler = ActionScheduler(clock, executor)
+        scheduler = ActionScheduler(clock, executor, leases)
         environment = GenericEnvironment(profile())
         loop = RealtimeAgentLoop(
             clock=clock,

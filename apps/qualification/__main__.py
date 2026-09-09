@@ -110,6 +110,7 @@ def _fixture(args: argparse.Namespace) -> None:
             exercise_focus_loss=args.exercise_focus_loss,
             exercise_emergency_hotkey=args.exercise_emergency_hotkey,
             fixture_scenario=scenario.value,
+            expected_pid=args.expected_pid,
         )
     )
 
@@ -171,6 +172,12 @@ def main() -> None:
         "fixture", help="run supervised capture, physical-input, Recorder, and Replay checks"
     )
     fixture.add_argument("--title")
+    fixture.add_argument(
+        "--expected-pid",
+        type=int,
+        required=True,
+        help="trusted PID of the already-running developer-owned fixture",
+    )
     fixture.add_argument(
         "--scenario",
         choices=tuple(item.value for item in FixtureScenario),

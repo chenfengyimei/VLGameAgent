@@ -51,11 +51,13 @@ from uga.safety.environment_policy import (
     require_safe_environment,
 )
 from uga.safety.focus_guard import AgentEnableState, FocusGuard
-from uga.safety.shutdown import SafetyShutdown
+from uga.safety.shutdown import SafetyShutdown, SafetyTrip, ShutdownCause
+from uga.safety.watchdog import RuntimeWatchdog, RuntimeWatchdogMonitor
 from uga.time.clock import PerfCounterClock, UGATime
 from uga.windows.backend import Win32WindowBackend, WindowSnapshot
 from uga.windows.coordinates import CoordinateSpace
 from uga.windows.integrity import Win32IntegrityProvider
+from uga.windows.window_identity import WindowIdentity
 
 
 @dataclass(frozen=True, slots=True)
@@ -392,8 +394,6 @@ def _exercise_emergency_hotkey(
     lease: ControlLease,
     emergency: EmergencyStop,
 ) -> dict[str, object]:
-    listener = Win32EmergencyHotkey(emergency.trigger)
-    listener.start()
     results: list[str] = []
     try:
         for name, code in (("control", 0x11), ("shift", 0x10), ("f12", 0x7B)):
@@ -419,11 +419,57 @@ def _exercise_emergency_hotkey(
             "cause": None if trip is None else trip.cause.value,
             "flushed_actions": None if trip is None else trip.flushed_actions,
             "cleanup_errors": [] if trip is None else list(trip.cleanup_errors),
-            "passed": trip is not None and not trip.cleanup_errors,
+            "passed": _emergency_hotkey_passed(results, trip),
         }
     finally:
-        listener.close()
         executor.release_all()
+
+
+def _emergency_hotkey_passed(results: list[str], trip: SafetyTrip | None) -> bool:
+    return (
+        all(reason == "executed" for reason in results)
+        and trip is not None
+        and trip.cause == ShutdownCause.EMERGENCY_HOTKEY
+        and not trip.cleanup_errors
+    )
+
+
+def _select_owned_fixture_target(
+    windows: Win32WindowBackend,
+    *,
+    title_pattern: str,
+    expected_pid: int,
+    expected_identity: WindowIdentity | None,
+) -> WindowSnapshot:
+    if expected_pid <= 0:
+        raise ContractViolation("fixture qualification requires a trusted positive process ID")
+    pattern = re.compile(title_pattern)
+    matches = tuple(
+        item
+        for item in windows.discover()
+        if item.identity.pid == expected_pid and pattern.fullmatch(item.title)
+    )
+    if len(matches) != 1:
+        raise ContractViolation(
+            f"fixture qualification requires exactly one owned window; found {len(matches)}"
+        )
+    target = matches[0]
+    if expected_identity is not None:
+        expected_process_window = (
+            expected_identity.hwnd,
+            expected_identity.pid,
+            expected_identity.executable_path_hash,
+            expected_identity.process_start_time_100ns,
+        )
+        actual_process_window = (
+            target.identity.hwnd,
+            target.identity.pid,
+            target.identity.executable_path_hash,
+            target.identity.process_start_time_100ns,
+        )
+        if actual_process_window != expected_process_window:
+            raise ContractViolation("fixture target identity changed after owned-process discovery")
+    return target
 
 
 def run_fixture_qualification(
@@ -438,6 +484,8 @@ def run_fixture_qualification(
     exercise_focus_loss: bool,
     exercise_emergency_hotkey: bool,
     fixture_scenario: str = FixtureScenario.EXPLORATION.value,
+    expected_pid: int,
+    expected_identity: WindowIdentity | None = None,
 ) -> Path:
     if not allow_physical_input:
         raise ContractViolation("fixture qualification requires --allow-physical-input")
@@ -450,14 +498,13 @@ def run_fixture_qualification(
     )
     scenario = FixtureScenario(fixture_scenario)
     fixture_world = FixtureWorld(scenario=scenario)
-    pattern = re.compile(title_pattern)
     windows = Win32WindowBackend()
-    matches = tuple(item for item in windows.discover() if pattern.fullmatch(item.title))
-    if len(matches) != 1:
-        raise ContractViolation(
-            f"fixture qualification requires exactly one window; found {len(matches)}"
-        )
-    target = matches[0]
+    target = _select_owned_fixture_target(
+        windows,
+        title_pattern=title_pattern,
+        expected_pid=expected_pid,
+        expected_identity=expected_identity,
+    )
     if not _activate(windows, target.identity.hwnd):
         raise ContractViolation("fixture window could not become foreground")
 
@@ -470,10 +517,13 @@ def run_fixture_qualification(
     leases = ControlLeaseManager(clock)
     input_backend = SendInputBackend()
     guard = FocusGuard(windows, Win32IntegrityProvider(), leases, enabled)
-    executor = InputExecutor(clock, input_backend, guard)
-    scheduler = ActionScheduler(clock, executor)
+    executor = InputExecutor(clock, input_backend, guard, leases)
+    scheduler = ActionScheduler(clock, executor, leases)
     shutdown = SafetyShutdown(clock, leases, scheduler, executor, enabled)
     emergency = EmergencyStop(shutdown)
+    emergency_listener = Win32EmergencyHotkey(emergency.trigger)
+    watchdog = RuntimeWatchdog(clock, shutdown, timeout_ns=5_000_000_000)
+    watchdog_monitor = RuntimeWatchdogMonitor(watchdog)
     episode_id = f"fixture-{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:8]}"
     metadata = EpisodeMetadata(
         episode_id,
@@ -547,6 +597,10 @@ def run_fixture_qualification(
     arbiter = ActionArbiter(clock, leases)
     scheduler_interval_ns = round(1_000_000_000 / ActionScheduler.DEFAULT_HZ)
     try:
+        emergency_listener.start()
+        watchdog_monitor.start()
+        if not watchdog.heartbeat():
+            raise ContractViolation("fixture safety supervision failed to start")
         capture_before = clock.now()
         first_frame = capture_with_failover()
         capture_after = clock.now()
@@ -564,6 +618,10 @@ def run_fixture_qualification(
         next_capture_ns = capture_started.value_ns + interval_ns
         next_scheduler_ns = capture_started.value_ns
         while True:
+            if not watchdog.heartbeat():
+                trip = shutdown.tripped
+                cause = "unknown" if trip is None else trip.cause.value
+                raise ContractViolation(f"fixture safety supervision tripped: {cause}")
             loop_before = clock.now()
             while next_cycle < cycle_count:
                 base_ns = script_start_ns + next_cycle * _CYCLE_NS
@@ -710,6 +768,8 @@ def run_fixture_qualification(
                 time.sleep(remaining_ns / 1_000_000_000)
 
         if exercise_focus_loss:
+            if not watchdog.heartbeat():
+                raise ContractViolation("fixture safety supervision tripped before focus test")
             focus_lease = leases.grant(
                 ControlOwner.FAST_POLICY,
                 ControlMode.PLAY_3D,
@@ -730,6 +790,8 @@ def run_fixture_qualification(
         if not _activate(windows, target.identity.hwnd):
             raise ContractViolation("fixture focus could not be restored before emergency test")
         if exercise_emergency_hotkey:
+            if not watchdog.heartbeat():
+                raise ContractViolation("fixture safety supervision tripped before emergency test")
             emergency_lease = leases.grant(
                 ControlOwner.EMERGENCY,
                 ControlMode.PLAY_3D,
@@ -787,10 +849,9 @@ def run_fixture_qualification(
             writer.finalize(EpisodeResult.ABORTED, clock.now())
         raise
     finally:
-        scheduler.flush()
-        executor.release_all()
-        leases.revoke_all()
-        enabled.set(False)
+        watchdog_monitor.close()
+        emergency_listener.close()
+        shutdown.trip(ShutdownCause.NORMAL_STOP)
         backend.stop()
 
     assert episode_path is not None

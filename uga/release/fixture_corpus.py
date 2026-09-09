@@ -14,7 +14,7 @@ from uga.dataset.builder import build_dataset_manifest
 from uga.environment.fixture_world import FixtureScenario, FixtureWorld
 from uga.release.fixture_qualification import run_fixture_qualification
 from uga.training.motor_pipeline import export_motor_samples
-from uga.windows.backend import Win32WindowBackend
+from uga.windows.backend import Win32WindowBackend, WindowSnapshot
 
 _TRAIN_SCENARIOS = (
     FixtureScenario.EXPLORATION,
@@ -53,7 +53,7 @@ def run_fixture_corpus(
         world = FixtureWorld(scenario=scenario)
         process = _launch_fixture(project_root, world)
         try:
-            _wait_for_owned_window(process, world.window_title)
+            owned_target = _wait_for_owned_window(process, world.window_title)
             report_path = reports_root / f"{scenario.value}.json"
             run_fixture_qualification(
                 title_pattern=f"^{re.escape(world.window_title)}$",
@@ -66,6 +66,8 @@ def run_fixture_corpus(
                 exercise_focus_loss=True,
                 exercise_emergency_hotkey=True,
                 fixture_scenario=scenario.value,
+                expected_pid=process.pid,
+                expected_identity=owned_target.identity,
             )
             report = json.loads(report_path.read_text(encoding="utf-8"))
             episode_path = Path(str(report["recorder"]["episode_path"]))
@@ -197,7 +199,7 @@ def _launch_fixture(project_root: Path, world: FixtureWorld) -> subprocess.Popen
     )
 
 
-def _wait_for_owned_window(process: subprocess.Popen[bytes], title: str) -> None:
+def _wait_for_owned_window(process: subprocess.Popen[bytes], title: str) -> WindowSnapshot:
     windows = Win32WindowBackend()
     deadline = time.monotonic() + 10
     seen_owned_window = False
@@ -215,7 +217,7 @@ def _wait_for_owned_window(process: subprocess.Popen[bytes], title: str) -> None
         if owned is not None:
             seen_owned_window = True
             if windows.request_foreground(owned.identity.hwnd):
-                return
+                return owned
         time.sleep(0.05)
     if seen_owned_window:
         raise ContractViolation(

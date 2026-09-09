@@ -214,9 +214,12 @@ class RealtimeAgentLoop:
                 with contextlib.suppress(TimeoutError):
                     await asyncio.wait_for(stop.wait(), timeout=period_s)
 
-        async with asyncio.TaskGroup() as tasks:
-            tasks.create_task(self._scheduler.run(stop, frequency_hz=scheduler_hz))
-            tasks.create_task(observe())
+        try:
+            async with asyncio.TaskGroup() as tasks:
+                tasks.create_task(self._scheduler.run(stop, frequency_hz=scheduler_hz))
+                tasks.create_task(observe())
+        finally:
+            self._leases.revoke_all(notify=False)
 
     async def _publish_decision(self, decision: ArbiterDecision) -> None:
         await self._events.publish(

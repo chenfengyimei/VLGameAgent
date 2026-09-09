@@ -16,6 +16,7 @@ class QueueFlusher(Protocol):
 
 
 class ShutdownCause(StrEnum):
+    NORMAL_STOP = "normal_stop"
     EMERGENCY_HOTKEY = "emergency_hotkey"
     WATCHDOG_TIMEOUT = "watchdog_timeout"
     RUNTIME_FAILURE = "runtime_failure"
@@ -55,7 +56,9 @@ class SafetyShutdown:
             occurred_at = self._clock.now()
             errors: list[str] = []
             self._enabled.set(False)
-            self._leases.revoke_all()
+            # This shutdown owns the ordered flush/release below, so suppress the
+            # scheduler's lease-loss callback and avoid duplicate backend writes.
+            self._leases.revoke_all(notify=False)
             try:
                 flushed = self._queue.flush()
             except Exception as exc:

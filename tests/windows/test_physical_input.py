@@ -8,12 +8,17 @@ import unittest
 from pathlib import Path
 
 from uga.capture.fallback import GDIFallbackCaptureBackend
+from uga.control.executor import InputExecutor
+from uga.control.lease import ControlMode, ControlOwner
+from uga.control.lease_manager import ControlLeaseManager
 from uga.control.lifetime import ActionLifetime
 from uga.control.physical import KeyboardAction
 from uga.control.windows_input import SendInputBackend
 from uga.release.fixture_qualification import FixtureVisualState, analyze_fixture_frame
+from uga.safety.focus_guard import AgentEnableState, FocusGuard
 from uga.time.clock import PerfCounterClock, UGATime
 from uga.windows.backend import Win32WindowBackend, WindowSnapshot
+from uga.windows.integrity import Win32IntegrityProvider
 
 _PHYSICAL_TESTS = os.environ.get("UGA_RUN_PHYSICAL_INPUT_TESTS") == "1"
 
@@ -45,10 +50,39 @@ class PhysicalInputTests(unittest.TestCase):
             input_backend = SendInputBackend()
             clock = PerfCounterClock()
             now = clock.now()
+            leases = ControlLeaseManager(clock)
+            lease = leases.grant(
+                ControlOwner.FAST_POLICY,
+                ControlMode.PLAY_3D,
+                5_000_000_000,
+                confidence=1.0,
+                reason="owned physical fixture test",
+            )
+            executor = InputExecutor(
+                clock,
+                input_backend,
+                FocusGuard(
+                    windows,
+                    Win32IntegrityProvider(),
+                    leases,
+                    AgentEnableState(True),
+                ),
+                leases,
+            )
             lifetime = ActionLifetime(now, now, UGATime(now.value_ns + 5_000_000_000))
-            input_backend.submit(KeyboardAction("physical-d-down", lifetime, 32, True))
+            down = executor.execute(
+                KeyboardAction("physical-d-down", lifetime, 32, True),
+                target.identity,
+                lease,
+            )
+            self.assertTrue(down.executed)
             time.sleep(1.0)
-            input_backend.submit(KeyboardAction("physical-d-up", lifetime, 32, False))
+            up = executor.execute(
+                KeyboardAction("physical-d-up", lifetime, 32, False),
+                target.identity,
+                lease,
+            )
+            self.assertTrue(up.executed)
             time.sleep(0.1)
 
             after = self._wait_for_rendered_frame(backend)

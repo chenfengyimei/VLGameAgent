@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import asyncio
+import time
 import unittest
+from threading import Event, Thread
 
 from tests.helpers import identity
 from uga.control.arbiter import ActionArbiter
@@ -23,7 +26,7 @@ from uga.safety.environment_policy import (
 )
 from uga.safety.focus_guard import AgentEnableState, FocusGuard, GuardReason
 from uga.safety.shutdown import SafetyShutdown, ShutdownCause
-from uga.safety.watchdog import RuntimeWatchdog
+from uga.safety.watchdog import RuntimeWatchdog, RuntimeWatchdogMonitor
 from uga.time.clock import ManualClock, UGATime
 from uga.windows.backend import WindowSnapshot
 from uga.windows.coordinates import Rect
@@ -82,6 +85,25 @@ class FakeGamepadDriver:
         self.neutral_count += 1
 
 
+class FailingInputBackend(DryRunInputBackend):
+    def submit(self, action: object) -> None:
+        del action
+        raise RuntimeError("injected backend failure")
+
+
+class BlockingReleaseBackend(DryRunInputBackend):
+    def __init__(self) -> None:
+        super().__init__()
+        self.release_started = Event()
+        self.allow_release = Event()
+
+    def release_all(self) -> None:
+        self.release_started.set()
+        if not self.allow_release.wait(timeout=1.0):
+            raise TimeoutError("release was not allowed to complete")
+        super().release_all()
+
+
 class ControlRuntimeTests(unittest.TestCase):
     def setUp(self) -> None:
         self.clock = ManualClock(100)
@@ -99,8 +121,8 @@ class ControlRuntimeTests(unittest.TestCase):
         )
         self.backend = DryRunInputBackend()
         self.guard = FocusGuard(self.windows, self.integrity, self.leases, self.enabled)
-        self.executor = InputExecutor(self.clock, self.backend, self.guard)
-        self.scheduler = ActionScheduler(self.clock, self.executor)
+        self.executor = InputExecutor(self.clock, self.backend, self.guard, self.leases)
+        self.scheduler = ActionScheduler(self.clock, self.executor, self.leases)
         self.arbiter = ActionArbiter(self.clock, self.leases)
 
     def _proposal(self, actions: tuple[KeyboardAction, ...], end: int = 500) -> ActionProposal:
@@ -140,6 +162,124 @@ class ControlRuntimeTests(unittest.TestCase):
         stats = self.scheduler.tick()
         self.assertEqual(stats.expired, 1)
         self.assertEqual(self.backend.actions, [])
+        self.assertEqual(self.backend.release_count, 1)
+
+    def test_lease_revoke_neutralizes_and_flushes(self) -> None:
+        future = self._key("future", 200, 400)
+        self.scheduler.schedule(
+            self.arbiter.decide(self._proposal((future,))), self.target, self.lease
+        )
+
+        self.assertTrue(self.leases.revoke(self.lease.lease_id))
+
+        self.assertEqual(self.scheduler.stats().queued, 0)
+        self.assertEqual(self.backend.release_count, 1)
+
+    def test_lease_replacement_neutralizes_previous_authority(self) -> None:
+        self.leases.grant(
+            ControlOwner.EMERGENCY,
+            ControlMode.PLAY_3D,
+            1_000,
+            confidence=1.0,
+            reason="replace",
+        )
+
+        self.assertEqual(self.backend.release_count, 1)
+
+    def test_replacement_is_not_published_before_neutralization(self) -> None:
+        clock = ManualClock(100)
+        leases = ControlLeaseManager(clock)
+        old_lease = leases.grant(
+            ControlOwner.FAST_POLICY,
+            ControlMode.PLAY_3D,
+            1_000,
+            confidence=0.9,
+            reason="old",
+        )
+        backend = BlockingReleaseBackend()
+        executor = InputExecutor(
+            clock,
+            backend,
+            FocusGuard(self.windows, self.integrity, leases, self.enabled),
+            leases,
+        )
+        ActionScheduler(clock, executor, leases)
+        replacement: list[object] = []
+        observed: list[object] = []
+        grant_thread = Thread(
+            target=lambda: replacement.append(
+                leases.grant(
+                    ControlOwner.EMERGENCY,
+                    ControlMode.PLAY_3D,
+                    1_000,
+                    confidence=1.0,
+                    reason="new",
+                )
+            )
+        )
+        grant_thread.start()
+        self.assertTrue(backend.release_started.wait(timeout=1.0))
+        current_thread = Thread(target=lambda: observed.append(leases.current()))
+        current_thread.start()
+        time.sleep(0.01)
+        self.assertTrue(current_thread.is_alive())
+        backend.allow_release.set()
+        grant_thread.join(timeout=1.0)
+        current_thread.join(timeout=1.0)
+
+        self.assertFalse(grant_thread.is_alive())
+        self.assertFalse(current_thread.is_alive())
+        self.assertNotEqual(observed, [old_lease])
+        self.assertEqual(observed, replacement)
+
+    def test_passive_lease_expiry_neutralizes(self) -> None:
+        self.clock.set(1_101)
+
+        self.assertIsNone(self.leases.current())
+        self.assertEqual(self.backend.release_count, 1)
+
+    def test_scheduler_stop_neutralizes(self) -> None:
+        stop = asyncio.Event()
+        stop.set()
+
+        asyncio.run(self.scheduler.run(stop))
+
+        self.assertEqual(self.backend.release_count, 1)
+
+    def test_backend_failure_neutralizes_and_flushes(self) -> None:
+        leases = ControlLeaseManager(self.clock)
+        lease = leases.grant(
+            ControlOwner.FAST_POLICY,
+            ControlMode.PLAY_3D,
+            1_000,
+            confidence=0.9,
+            reason="failure",
+        )
+        backend = FailingInputBackend()
+        executor = InputExecutor(
+            self.clock,
+            backend,
+            FocusGuard(self.windows, self.integrity, leases, self.enabled),
+            leases,
+        )
+        scheduler = ActionScheduler(self.clock, executor, leases)
+        proposal = ActionProposal(
+            "failing-proposal",
+            "test",
+            lease.owner,
+            lease.mode,
+            lease.lease_id,
+            lease.generation,
+            ActionLifetime(UGATime(100), UGATime(100), UGATime(500)),
+            (self._key("failing", 100, 300), self._key("future", 200, 400)),
+        )
+        scheduler.schedule(ActionArbiter(self.clock, leases).decide(proposal), self.target, lease)
+
+        with self.assertRaisesRegex(RuntimeError, "injected backend failure"):
+            scheduler.tick()
+
+        self.assertEqual(backend.release_count, 1)
+        self.assertEqual(scheduler.stats().queued, 0)
 
     def test_focus_loss_releases_and_flushes_future_actions(self) -> None:
         actions = (self._key("now", 100, 300), self._key("future", 150, 300))
@@ -193,6 +333,24 @@ class ControlRuntimeTests(unittest.TestCase):
         second = emergency.trigger()
         self.assertIs(first, second)
         self.assertEqual(first.cause, ShutdownCause.EMERGENCY_HOTKEY)
+        self.assertEqual(self.backend.release_count, 1)
+
+    def test_watchdog_monitor_trips_without_main_loop_polling(self) -> None:
+        shutdown = SafetyShutdown(
+            self.clock, self.leases, self.scheduler, self.executor, self.enabled
+        )
+        watchdog = RuntimeWatchdog(self.clock, shutdown, timeout_ns=20)
+        monitor = RuntimeWatchdogMonitor(watchdog, poll_interval_s=0.001)
+        self.clock.set(121)
+        monitor.start()
+        try:
+            for _ in range(100):
+                if shutdown.tripped is not None:
+                    break
+                time.sleep(0.001)
+        finally:
+            monitor.close()
+        self.assertIsNotNone(shutdown.tripped)
         self.assertEqual(self.backend.release_count, 1)
 
 

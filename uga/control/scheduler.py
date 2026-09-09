@@ -9,6 +9,7 @@ from threading import Lock
 from uga.control.arbiter import ArbiterDecision
 from uga.control.executor import ExecutionReason, InputExecutor
 from uga.control.lease import ControlLease
+from uga.control.lease_manager import ControlLeaseManager
 from uga.control.physical import PhysicalAction
 from uga.core.errors import ContractViolation
 from uga.time.clock import ClockBackend
@@ -36,7 +37,12 @@ class ActionScheduler:
 
     DEFAULT_HZ = 30.0
 
-    def __init__(self, clock: ClockBackend, executor: InputExecutor) -> None:
+    def __init__(
+        self,
+        clock: ClockBackend,
+        executor: InputExecutor,
+        leases: ControlLeaseManager,
+    ) -> None:
         self._clock = clock
         self._executor = executor
         self._heap: list[tuple[int, int, _ScheduledAction]] = []
@@ -47,6 +53,7 @@ class ActionScheduler:
         self._rejected = 0
         self._flushed = 0
         self._lock = Lock()
+        leases.register_authority_loss_handler(self.neutralize)
 
     def schedule(
         self,
@@ -94,12 +101,19 @@ class ActionScheduler:
                 due.append(item)
 
         for index, item in enumerate(due):
-            result = self._executor.execute(item.action, item.target, item.lease)
+            try:
+                result = self._executor.execute(item.action, item.target, item.lease)
+            except BaseException:
+                with self._lock:
+                    self._flushed += len(due) - index - 1 + self._clear_locked()
+                raise
             with self._lock:
                 if result.executed:
                     self._executed += 1
                 elif result.reason == ExecutionReason.EXPIRED:
                     self._expired += 1
+                    self._flushed += len(due) - index - 1 + self._clear_locked()
+                    break
                 else:
                     # A runtime guard failed. Drop all future input so stale work
                     # cannot resume if focus later returns.
@@ -112,16 +126,25 @@ class ActionScheduler:
         if frequency_hz <= 0:
             raise ContractViolation("scheduler frequency must be positive")
         period_s = 1.0 / frequency_hz
-        while not stop.is_set():
-            self.tick()
-            with contextlib.suppress(TimeoutError):
-                await asyncio.wait_for(stop.wait(), timeout=period_s)
+        try:
+            while not stop.is_set():
+                self.tick()
+                with contextlib.suppress(TimeoutError):
+                    await asyncio.wait_for(stop.wait(), timeout=period_s)
+        finally:
+            self.neutralize()
 
     def flush(self) -> int:
         with self._lock:
             count = self._clear_locked()
             self._flushed += count
             return count
+
+    def neutralize(self) -> int:
+        """Drop queued work and actively release every stateful input backend."""
+        count = self.flush()
+        self._executor.release_all()
+        return count
 
     def stats(self) -> SchedulerStats:
         with self._lock:

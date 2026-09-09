@@ -368,8 +368,8 @@ capability_level: 3
         target = identity()
         backend = DryRunInputBackend()
         guard = FocusGuard(FakeWindows(target), FakeIntegrity(), leases, AgentEnableState(True))
-        executor = InputExecutor(clock, backend, guard)
-        scheduler = ActionScheduler(clock, executor)
+        executor = InputExecutor(clock, backend, guard, leases)
+        scheduler = ActionScheduler(clock, executor, leases)
         registry = SkillRegistry()
         registry.register(MoveForwardSkill())
         task = TaskNode(
