@@ -527,9 +527,9 @@ def run_fixture_qualification(
     frame_count = 0
     initial_frame: Frame | None = None
     final_frame: Frame | None = None
-    latest_visual: FixtureVisualState | None = None
     success_seen = False
     pending_checks: list[int] = []
+    pending_observations: list[tuple[int, int, str, int]] = []
     episode_path: Path | None = None
     capture_started = clock.now()
     capture_ended = capture_started
@@ -554,7 +554,6 @@ def run_fixture_qualification(
         frame_count = 1
         initial_frame = first_frame
         final_frame = first_frame
-        latest_visual = analyze_fixture_frame(first_frame)
         capture_started = capture_after
         capture_ended = capture_started
         script_start_ns = capture_started.value_ns + 250_000_000
@@ -585,22 +584,6 @@ def run_fixture_qualification(
                     reason=f"developer-owned fixture cycle {next_cycle}",
                 )
                 observation_id = f"fixture-observation-{next_cycle:04d}"
-                writer.record_observation(
-                    observation_id,
-                    created,
-                    {
-                        "task": metadata.task,
-                        "cycle": next_cycle,
-                        "source": "captured-screen",
-                        "features": _visual_features(
-                            latest_visual,
-                            round(target.client_screen_rect.width),
-                            round(target.client_screen_rect.height),
-                            scenario,
-                        ),
-                        "visual": asdict(latest_visual),
-                    },
-                )
                 proposal = ActionProposal(
                     uuid.uuid4().hex,
                     "fixture-qualification",
@@ -626,27 +609,12 @@ def run_fixture_qualification(
                         action,
                         _provenance(action, lease.lease_id, observation_id),
                     )
-                move_x, move_y = fixture_world.canonical_movement
-                canonical = CanonicalAction(
-                    f"fixture-{next_cycle:04d}-canonical",
-                    ActionLifetime(
-                        created,
-                        UGATime(base_ns + 1_000_000_000),
-                        UGATime(base_ns + 4_950_000_000),
-                    ),
-                    move_x=move_x,
-                    move_y=move_y,
-                    look_x=0.05,
-                    interact=True,
-                )
-                writer.record_canonical_action(
-                    canonical,
-                    _canonical_provenance(canonical, lease.lease_id, observation_id),
-                )
-                canonical_recorded += 1
                 accepted_proposals += 1
                 scheduled += added
                 pending_checks.append(success_check)
+                pending_observations.append(
+                    (base_ns + 250_000_000, next_cycle, lease.lease_id, base_ns)
+                )
                 next_cycle += 1
             if loop_before.value_ns >= next_scheduler_ns:
                 before_stats = scheduler.stats()
@@ -673,9 +641,51 @@ def run_fixture_qualification(
                 writer.record_frame(frame)
                 frame_count += 1
                 final_frame = frame
+                while (
+                    pending_observations
+                    and frame.capture_timestamp.value_ns >= pending_observations[0][0]
+                ):
+                    _, observation_cycle, lease_id, observation_base_ns = pending_observations.pop(
+                        0
+                    )
+                    visual = analyze_fixture_frame(frame)
+                    observation_id = f"fixture-observation-{observation_cycle:04d}"
+                    writer.record_observation(
+                        observation_id,
+                        frame.capture_timestamp,
+                        {
+                            "task": metadata.task,
+                            "cycle": observation_cycle,
+                            "source": "captured-screen",
+                            "features": _visual_features(
+                                visual,
+                                frame.width,
+                                frame.height,
+                                scenario,
+                            ),
+                            "visual": asdict(visual),
+                        },
+                    )
+                    move_x, move_y = fixture_world.canonical_movement
+                    canonical = CanonicalAction(
+                        f"fixture-{observation_cycle:04d}-canonical",
+                        ActionLifetime(
+                            frame.capture_timestamp,
+                            UGATime(observation_base_ns + 1_000_000_000),
+                            UGATime(observation_base_ns + 4_950_000_000),
+                        ),
+                        move_x=move_x,
+                        move_y=move_y,
+                        look_x=0.05,
+                        interact=True,
+                    )
+                    writer.record_canonical_action(
+                        canonical,
+                        _canonical_provenance(canonical, lease_id, observation_id),
+                    )
+                    canonical_recorded += 1
                 while pending_checks and frame.capture_timestamp.value_ns >= pending_checks[0]:
                     success_seen = success_seen or _success_pixel_count(frame) >= 20
-                    latest_visual = analyze_fixture_frame(frame)
                     pending_checks.pop(0)
                 while next_capture_ns <= capture_after.value_ns:
                     next_capture_ns += interval_ns
@@ -739,6 +749,7 @@ def run_fixture_qualification(
         execution_ratio = stats.executed / scheduled if scheduled else 0.0
         control_passed = (
             next_cycle == cycle_count
+            and canonical_recorded == cycle_count
             and stats.expired == 0
             and stats.rejected == 0
             and execution_ratio >= 0.95
