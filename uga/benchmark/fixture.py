@@ -1,16 +1,29 @@
 from __future__ import annotations
 
 import time
+from pathlib import Path
 
 from uga.benchmark.schema import BenchmarkRun, BenchmarkTask
-from uga.environment.fixture_world import FixtureMode, FixtureScenario, FixtureWorld
+from uga.core.errors import ContractViolation
+from uga.environment.fixture_world import (
+    FixtureMode,
+    FixtureScenario,
+    FixtureWorld,
+    fixture_policy_features,
+)
+from uga.policy.fast_policy import DecoderCheckpoint
 
 
 class FixtureBenchmarkEnvironment:
     """Deterministic closed-loop benchmark over one owned Fixture World scenario."""
 
-    def __init__(self, scenario: FixtureScenario) -> None:
+    def __init__(
+        self,
+        scenario: FixtureScenario,
+        checkpoint: DecoderCheckpoint | None = None,
+    ) -> None:
         self._scenario = scenario
+        self._checkpoint = checkpoint
 
     @property
     def game_id(self) -> str:
@@ -32,7 +45,7 @@ class FixtureBenchmarkEnvironment:
                 action_count += 1
 
         policy_started = time.perf_counter_ns()
-        movement_keys = world.movement_keys
+        movement_keys = self._movement_keys(world)
         policy_latencies.append((time.perf_counter_ns() - policy_started) / 1_000_000)
         for key in movement_keys:
             world.set_key(key, True)
@@ -79,7 +92,47 @@ class FixtureBenchmarkEnvironment:
             task.split,
         )
 
+    def _movement_keys(self, world: FixtureWorld) -> tuple[str, ...]:
+        if self._checkpoint is None:
+            return world.movement_keys
+        snapshot = world.snapshot
+        features = fixture_policy_features(
+            player_x=snapshot.player_x,
+            player_y=snapshot.player_y,
+            target_x=snapshot.target_x,
+            target_y=snapshot.target_y,
+            width=world.width,
+            height=world.height,
+            success=snapshot.success,
+            scenario=self._scenario,
+        )
+        if len(features) != self._checkpoint.input_dim:
+            raise ContractViolation("fixture feature vector does not match decoder checkpoint")
+        axes = tuple(
+            sum(weight * value for weight, value in zip(row, features, strict=True)) + bias
+            for row, bias in zip(
+                self._checkpoint.axis_weights,
+                self._checkpoint.axis_bias,
+                strict=True,
+            )
+        )
+        keys: list[str] = []
+        if axes[0] > 0.2:
+            keys.append("d")
+        elif axes[0] < -0.2:
+            keys.append("a")
+        if axes[1] > 0.2:
+            keys.append("s")
+        elif axes[1] < -0.2:
+            keys.append("w")
+        return tuple(keys)
 
-def fixture_environments() -> dict[str, FixtureBenchmarkEnvironment]:
-    environments = tuple(FixtureBenchmarkEnvironment(scenario) for scenario in FixtureScenario)
+
+def fixture_environments(
+    checkpoint_path: str | Path | None = None,
+) -> dict[str, FixtureBenchmarkEnvironment]:
+    checkpoint = None if checkpoint_path is None else DecoderCheckpoint.load(checkpoint_path)
+    environments = tuple(
+        FixtureBenchmarkEnvironment(scenario, checkpoint) for scenario in FixtureScenario
+    )
     return {environment.game_id: environment for environment in environments}

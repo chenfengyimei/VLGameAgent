@@ -104,6 +104,22 @@ uga-qualify corpus `
   --output-root runs/qualification-v1/corpus `
   --allow-physical-input
 
+uga-train motor `
+  --samples runs/qualification-v1/corpus/motor-samples.jsonl `
+  --dataset-manifest runs/qualification-v1/corpus/dataset-manifest.json `
+  --dataset-root runs/qualification-v1/corpus/episodes `
+  --config configs/training/fixture_motor_bc.yaml `
+  --output runs/qualification-v1/models/fixture-motor-v1 `
+  --policy-version fixture-motor-v1 `
+  --source-revision <git-revision> `
+  --base-model-license project-owner-controlled
+
+uga-benchmark fixture `
+  --config configs/benchmarks/uga-bench-fixture.yaml `
+  --checkpoint runs/qualification-v1/models/fixture-motor-v1/decoder-checkpoint.json `
+  --output runs/qualification-v1/models/fixture-benchmark-runs.jsonl `
+  --report runs/qualification-v1/models/fixture-benchmark-report.json
+
 uga-benchmark validate-config configs/benchmarks/uga-bench-smoke.yaml
 uga-benchmark summarize <benchmark-runs.jsonl> --output <benchmark-report.json>
 ```

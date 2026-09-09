@@ -39,7 +39,7 @@ from uga.control.scheduler import ActionScheduler
 from uga.control.windows_input import SendInputBackend
 from uga.core.errors import BackendUnavailableError, CaptureTimeoutError, ContractViolation
 from uga.dataset.validator import DatasetValidator
-from uga.environment.fixture_world import FixtureScenario, FixtureWorld
+from uga.environment.fixture_world import FixtureScenario, FixtureWorld, fixture_policy_features
 from uga.recording.episode_writer import EpisodeWriter
 from uga.recording.replay import ReplayEngine
 from uga.recording.schema import ActionProvenance, EpisodeMetadata, EpisodeResult
@@ -136,15 +136,19 @@ def _visual_features(
     height: int,
     scenario: FixtureScenario,
 ) -> tuple[float, ...]:
-    scenario_features = tuple(float(scenario == item) for item in FixtureScenario)
     if state.player_center is None or state.target_center is None:
-        return (0.0, 0.0, float(state.success_visible), 1.0, *scenario_features)
-    return (
-        (state.target_center[0] - state.player_center[0]) / max(width, 1),
-        (state.target_center[1] - state.player_center[1]) / max(height, 1),
-        float(state.success_visible),
-        1.0,
-        *scenario_features,
+        player = target = (0.0, 0.0)
+    else:
+        player, target = state.player_center, state.target_center
+    return fixture_policy_features(
+        player_x=player[0],
+        player_y=player[1],
+        target_x=target[0],
+        target_y=target[1],
+        width=width,
+        height=height,
+        success=state.success_visible,
+        scenario=scenario,
     )
 
 

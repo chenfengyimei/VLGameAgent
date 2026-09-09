@@ -14,6 +14,7 @@ from uga.control.lease import ControlMode
 from uga.core.errors import ContractViolation
 from uga.dashboard.controller import DashboardCommandRouter
 from uga.dashboard.state import DashboardCommand, DashboardState, render_dashboard
+from uga.policy.fast_policy import DecoderCheckpoint
 from uga.recording.debugger import write_replay_debugger
 from uga.release.development import build_development_manifest
 from uga.release.manifest import GateStatus, ReleaseGate, ReleaseManifest, hash_artifacts
@@ -105,6 +106,30 @@ class ReleaseSurfaceTests(unittest.TestCase):
         self.assertEqual(len(report.games), 4)
         self.assertEqual(dict(report.split_success_rates), {"test": 1.0, "train": 1.0})
         self.assertEqual(report.success_rate, 1.0)
+
+    def test_fixture_benchmark_can_execute_a_trained_decoder_checkpoint(self) -> None:
+        root = Path(__file__).resolve().parents[2]
+        tasks = load_benchmark_tasks(root / "configs" / "benchmarks" / "uga-bench-fixture.yaml")
+        checkpoint = DecoderCheckpoint(
+            "fixture-policy",
+            8,
+            (
+                (10.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+                (0.0, 10.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+                (0.0,) * 8,
+                (0.0,) * 8,
+            ),
+            (0.0, 0.0, 0.0, 0.0),
+            8,
+            1.0,
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            checkpoint_path = checkpoint.save(Path(temporary) / "checkpoint.json")
+
+            report = BenchmarkRunner().run(tasks, fixture_environments(checkpoint_path))
+
+        self.assertEqual(report.success_rate, 1.0)
+        self.assertEqual(dict(report.split_success_rates)["test"], 1.0)
 
     def test_benchmark_jsonl_loads_and_writes_self_describing_report(self) -> None:
         task = BenchmarkTask(

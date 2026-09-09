@@ -20,6 +20,27 @@ class FixtureScenario(StrEnum):
     HELDOUT_DIAGONAL = "heldout_diagonal"
 
 
+def fixture_policy_features(
+    *,
+    player_x: float,
+    player_y: float,
+    target_x: float,
+    target_y: float,
+    width: int,
+    height: int,
+    success: bool,
+    scenario: FixtureScenario,
+) -> tuple[float, ...]:
+    scenario_features = tuple(float(scenario == item) for item in FixtureScenario)
+    return (
+        (target_x - player_x) / max(width, 1),
+        (target_y - player_y) / max(height, 1),
+        float(success),
+        1.0,
+        *scenario_features,
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class FixtureSnapshot:
     player_x: float

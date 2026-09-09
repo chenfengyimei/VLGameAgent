@@ -35,7 +35,7 @@ def _summarize(args: argparse.Namespace) -> None:
 
 def _fixture(args: argparse.Namespace) -> None:
     tasks = load_benchmark_tasks(args.config)
-    environments = fixture_environments()
+    environments = fixture_environments(args.checkpoint)
     runs = tuple(
         environments[task.game_id].run(task, repetition)
         for task in tasks
@@ -66,6 +66,7 @@ def main() -> None:
     fixture.add_argument("--config", type=Path, required=True)
     fixture.add_argument("--output", type=Path, required=True)
     fixture.add_argument("--report", type=Path, required=True)
+    fixture.add_argument("--checkpoint", type=Path)
     fixture.set_defaults(handler=_fixture)
 
     args = parser.parse_args()
