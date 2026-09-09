@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from pathlib import Path
 
+from uga.environment.fixture_world import FixtureScenario, FixtureWorld
 from uga.release.fixture_qualification import run_fixture_qualification
 from uga.release.manifest import GateStatus
 from uga.release.preflight import build_qualification_preflight
@@ -93,9 +95,11 @@ def _preflight(args: argparse.Namespace) -> None:
 
 
 def _fixture(args: argparse.Namespace) -> None:
+    scenario = FixtureScenario(args.scenario)
+    title = args.title or f"^{re.escape(FixtureWorld(scenario=scenario).window_title)}$"
     print(
         run_fixture_qualification(
-            title_pattern=args.title,
+            title_pattern=title,
             duration_seconds=args.duration_seconds,
             target_fps=args.target_fps,
             backend_preference=args.backend,
@@ -104,6 +108,7 @@ def _fixture(args: argparse.Namespace) -> None:
             allow_physical_input=args.allow_physical_input,
             exercise_focus_loss=args.exercise_focus_loss,
             exercise_emergency_hotkey=args.exercise_emergency_hotkey,
+            fixture_scenario=scenario.value,
         )
     )
 
@@ -149,7 +154,12 @@ def main() -> None:
     fixture = subparsers.add_parser(
         "fixture", help="run supervised capture, physical-input, Recorder, and Replay checks"
     )
-    fixture.add_argument("--title", default="^UGA Fixture World$")
+    fixture.add_argument("--title")
+    fixture.add_argument(
+        "--scenario",
+        choices=tuple(item.value for item in FixtureScenario),
+        default=FixtureScenario.EXPLORATION.value,
+    )
     fixture.add_argument("--duration-seconds", type=float, default=8.0)
     fixture.add_argument("--target-fps", type=float, default=30.0)
     fixture.add_argument(

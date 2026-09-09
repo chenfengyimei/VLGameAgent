@@ -20,6 +20,7 @@ from uga.capture.frame import BufferKind, Frame, PixelFormat
 from uga.capture.registry import CaptureBackendRegistry
 from uga.capture.windows_graphics_capture import WindowsGraphicsCaptureBackend
 from uga.control.arbiter import ActionArbiter
+from uga.control.canonical import CanonicalAction
 from uga.control.executor import InputExecutor
 from uga.control.lease import ControlLease, ControlMode, ControlOwner
 from uga.control.lease_manager import ControlLeaseManager
@@ -36,8 +37,9 @@ from uga.control.physical import (
 from uga.control.proposal import ActionProposal
 from uga.control.scheduler import ActionScheduler
 from uga.control.windows_input import SendInputBackend
-from uga.core.errors import ContractViolation
+from uga.core.errors import BackendUnavailableError, CaptureTimeoutError, ContractViolation
 from uga.dataset.validator import DatasetValidator
+from uga.environment.fixture_world import FixtureScenario, FixtureWorld
 from uga.recording.episode_writer import EpisodeWriter
 from uga.recording.replay import ReplayEngine
 from uga.recording.schema import ActionProvenance, EpisodeMetadata, EpisodeResult
@@ -128,6 +130,19 @@ def analyze_fixture_frame(frame: Frame) -> FixtureVisualState:
     )
 
 
+def _visual_features(
+    state: FixtureVisualState, width: int, height: int
+) -> tuple[float, float, float, float]:
+    if state.player_center is None or state.target_center is None:
+        return (0.0, 0.0, float(state.success_visible), 1.0)
+    return (
+        (state.target_center[0] - state.player_center[0]) / max(width, 1),
+        (state.target_center[1] - state.player_center[1]) / max(height, 1),
+        float(state.success_visible),
+        1.0,
+    )
+
+
 def _success_pixel_count(frame: Frame) -> int:
     if frame.buffer_handle.kind != BufferKind.CPU_BYTES:
         raise ContractViolation("fixture analysis requires CPU-addressable pixels")
@@ -158,6 +173,7 @@ def _build_fixture_cycle(
     target: WindowSnapshot,
     cycle: int,
     base_ns: int,
+    scenario: FixtureScenario,
 ) -> tuple[tuple[PhysicalAction, ...], int]:
     if cycle < 0 or created.value_ns > base_ns + 100_000_000:
         raise ContractViolation("fixture cycle must be scheduled before its first action")
@@ -180,7 +196,7 @@ def _build_fixture_cycle(
             encoding,
         )
 
-    actions: tuple[PhysicalAction, ...] = (
+    actions: list[PhysicalAction] = [
         key("reset-down", 100_000_000, 19, True),
         key("reset-up", 150_000_000, 19, False),
         key("menu-down", 350_000_000, 0x1B, True, KeyEncoding.VIRTUAL_KEY),
@@ -210,12 +226,23 @@ def _build_fixture_cycle(
             12,
             0,
         ),
-        key("right-down", 1_000_000_000, 32, True),
-        key("right-up", 3_780_000_000, 32, False),
-        key("interact-down", 3_900_000_000, 18, True),
-        key("interact-up", 3_950_000_000, 18, False),
+    ]
+    scan_codes = {"w": 17, "a": 30, "s": 31, "d": 32}
+    world = FixtureWorld(scenario=scenario)
+    movement_up_offset_ns = 1_000_000_000 + round(
+        world.snapshot.distance_to_target / world.speed_pixels_per_second * 1_000_000_000
     )
-    return actions, base_ns + 4_200_000_000
+    for movement_key in world.movement_keys:
+        code = scan_codes[movement_key]
+        actions.append(key(f"{movement_key}-down", 1_000_000_000, code, True))
+        actions.append(key(f"{movement_key}-up", movement_up_offset_ns, code, False))
+    actions.extend(
+        (
+            key("interact-down", 3_900_000_000, 18, True),
+            key("interact-up", 3_950_000_000, 18, False),
+        )
+    )
+    return tuple(actions), base_ns + 4_200_000_000
 
 
 def _capture_registry(preference: str, windows: Win32WindowBackend) -> CaptureBackendRegistry:
@@ -285,6 +312,25 @@ def _owned_focus_sink(windows: Win32WindowBackend) -> Iterator[WindowSnapshot]:
 
 
 def _provenance(action: PhysicalAction, lease_id: str, observation_id: str) -> ActionProvenance:
+    return ActionProvenance(
+        action.action_id,
+        "fixture-qualification",
+        "fixture-script-v1",
+        None,
+        observation_id,
+        "fixture-navigation",
+        "fixture-complete-task",
+        ControlMode.PLAY_3D.value,
+        lease_id,
+        1.0,
+        False,
+        action.lifetime,
+    )
+
+
+def _canonical_provenance(
+    action: CanonicalAction, lease_id: str, observation_id: str
+) -> ActionProvenance:
     return ActionProvenance(
         action.action_id,
         "fixture-qualification",
@@ -382,6 +428,7 @@ def run_fixture_qualification(
     allow_physical_input: bool,
     exercise_focus_loss: bool,
     exercise_emergency_hotkey: bool,
+    fixture_scenario: str = FixtureScenario.EXPLORATION.value,
 ) -> Path:
     if not allow_physical_input:
         raise ContractViolation("fixture qualification requires --allow-physical-input")
@@ -392,6 +439,8 @@ def run_fixture_qualification(
     require_safe_environment(
         EnvironmentSafetyManifest(EnvironmentClass.DEVELOPER_OWNED, True, False, False)
     )
+    scenario = FixtureScenario(fixture_scenario)
+    fixture_world = FixtureWorld(scenario=scenario)
     pattern = re.compile(title_pattern)
     windows = Win32WindowBackend()
     matches = tuple(item for item in windows.discover() if pattern.fullmatch(item.title))
@@ -419,7 +468,7 @@ def run_fixture_qualification(
     episode_id = f"fixture-{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:8]}"
     metadata = EpisodeMetadata(
         episode_id,
-        "uga-fixture-world",
+        fixture_world.game_id,
         "1.1",
         (round(target.client_screen_rect.width), round(target.client_screen_rect.height)),
         backend.backend_id,
@@ -433,6 +482,36 @@ def run_fixture_qualification(
     writer = EpisodeWriter(episode_root, metadata)
     writer.attach_video(PyAvVideoRecorder(writer.video_path, fps=round(target_fps)))
     diagnostics = CaptureDiagnosticsAccumulator(backend.backend_id)
+    failed_backends: set[str] = set()
+    capture_transitions: list[dict[str, object]] = []
+
+    def capture_with_failover() -> Frame:
+        nonlocal backend
+        try:
+            return backend.capture()
+        except (BackendUnavailableError, CaptureTimeoutError) as error:
+            failed_id = backend.backend_id
+            failed_backends.add(failed_id)
+            with contextlib.suppress(Exception):
+                backend.stop()
+            replacement = registry.start_best(
+                target.identity,
+                exclude=frozenset(failed_backends),
+            )
+            transition: dict[str, object] = {
+                "from": failed_id,
+                "to": replacement.backend_id,
+                "error": str(error),
+            }
+            capture_transitions.append(transition)
+            backend = replacement
+            writer.record_event(
+                f"capture-failover-{len(capture_transitions)}",
+                clock.now(),
+                transition,
+            )
+            return backend.capture()
+
     writer.record_event(
         "capture-selected",
         clock.now(),
@@ -443,6 +522,7 @@ def run_fixture_qualification(
     frame_count = 0
     initial_frame: Frame | None = None
     final_frame: Frame | None = None
+    latest_visual: FixtureVisualState | None = None
     success_seen = False
     pending_checks: list[int] = []
     episode_path: Path | None = None
@@ -452,10 +532,29 @@ def run_fixture_qualification(
     cycle_count = max(1, math.floor((duration_seconds - 4.45) / 5.0) + 1)
     next_cycle = 0
     scheduled = 0
+    canonical_recorded = 0
     accepted_proposals = 0
     observed_flushes = 0
     arbiter = ActionArbiter(clock, leases)
+    scheduler_interval_ns = round(1_000_000_000 / ActionScheduler.DEFAULT_HZ)
     try:
+        capture_before = clock.now()
+        first_frame = capture_with_failover()
+        capture_after = clock.now()
+        diagnostics.add(
+            first_frame,
+            (capture_after.value_ns - capture_before.value_ns) / 1_000_000,
+        )
+        writer.record_frame(first_frame)
+        frame_count = 1
+        initial_frame = first_frame
+        final_frame = first_frame
+        latest_visual = analyze_fixture_frame(first_frame)
+        capture_started = capture_after
+        capture_ended = capture_started
+        script_start_ns = capture_started.value_ns + 250_000_000
+        next_capture_ns = capture_started.value_ns + interval_ns
+        next_scheduler_ns = capture_started.value_ns
         while True:
             loop_before = clock.now()
             while next_cycle < cycle_count:
@@ -470,6 +569,7 @@ def run_fixture_qualification(
                     target,
                     next_cycle,
                     base_ns,
+                    scenario,
                 )
                 last_expiry = max(action.lifetime.expires_at.value_ns for action in actions)
                 lease = leases.grant(
@@ -483,7 +583,17 @@ def run_fixture_qualification(
                 writer.record_observation(
                     observation_id,
                     created,
-                    {"task": metadata.task, "cycle": next_cycle, "source": "captured-screen"},
+                    {
+                        "task": metadata.task,
+                        "cycle": next_cycle,
+                        "source": "captured-screen",
+                        "features": _visual_features(
+                            latest_visual,
+                            round(target.client_screen_rect.width),
+                            round(target.client_screen_rect.height),
+                        ),
+                        "visual": asdict(latest_visual),
+                    },
                 )
                 proposal = ActionProposal(
                     uuid.uuid4().hex,
@@ -510,40 +620,72 @@ def run_fixture_qualification(
                         action,
                         _provenance(action, lease.lease_id, observation_id),
                     )
+                move_x, move_y = fixture_world.canonical_movement
+                canonical = CanonicalAction(
+                    f"fixture-{next_cycle:04d}-canonical",
+                    ActionLifetime(
+                        created,
+                        UGATime(base_ns + 1_000_000_000),
+                        UGATime(base_ns + 4_950_000_000),
+                    ),
+                    move_x=move_x,
+                    move_y=move_y,
+                    look_x=0.05,
+                    interact=True,
+                )
+                writer.record_canonical_action(
+                    canonical,
+                    _canonical_provenance(canonical, lease.lease_id, observation_id),
+                )
+                canonical_recorded += 1
                 accepted_proposals += 1
                 scheduled += added
                 pending_checks.append(success_check)
                 next_cycle += 1
-            before_stats = scheduler.stats()
-            after_stats = scheduler.tick()
-            if after_stats.flushed > before_stats.flushed:
-                observed_flushes += after_stats.flushed - before_stats.flushed
-                writer.record_event(
-                    f"guard-recovery-{observed_flushes}",
-                    clock.now(),
-                    {"flushed_actions": after_stats.flushed - before_stats.flushed},
+            if loop_before.value_ns >= next_scheduler_ns:
+                before_stats = scheduler.stats()
+                after_stats = scheduler.tick()
+                if after_stats.flushed > before_stats.flushed:
+                    observed_flushes += after_stats.flushed - before_stats.flushed
+                    writer.record_event(
+                        f"guard-recovery-{observed_flushes}",
+                        clock.now(),
+                        {"flushed_actions": after_stats.flushed - before_stats.flushed},
+                    )
+                while next_scheduler_ns <= loop_before.value_ns:
+                    next_scheduler_ns += scheduler_interval_ns
+
+            capture_due = clock.now()
+            if capture_due.value_ns >= next_capture_ns:
+                capture_before = capture_due
+                frame = capture_with_failover()
+                capture_after = clock.now()
+                diagnostics.add(
+                    frame,
+                    (capture_after.value_ns - capture_before.value_ns) / 1_000_000,
                 )
-            capture_before = clock.now()
-            frame = backend.capture()
-            capture_after = clock.now()
-            diagnostics.add(
-                frame,
-                (capture_after.value_ns - capture_before.value_ns) / 1_000_000,
-            )
-            writer.record_frame(frame)
-            frame_count += 1
-            if initial_frame is None:
-                initial_frame = frame
-            final_frame = frame
-            while pending_checks and frame.capture_timestamp.value_ns >= pending_checks[0]:
-                success_seen = success_seen or _success_pixel_count(frame) >= 20
-                pending_checks.pop(0)
-            elapsed_seconds = (capture_after.value_ns - capture_started.value_ns) / 1_000_000_000
+                writer.record_frame(frame)
+                frame_count += 1
+                final_frame = frame
+                while pending_checks and frame.capture_timestamp.value_ns >= pending_checks[0]:
+                    success_seen = success_seen or _success_pixel_count(frame) >= 20
+                    latest_visual = analyze_fixture_frame(frame)
+                    pending_checks.pop(0)
+                while next_capture_ns <= capture_after.value_ns:
+                    next_capture_ns += interval_ns
+
+            loop_after = clock.now()
+            elapsed_seconds = (loop_after.value_ns - capture_started.value_ns) / 1_000_000_000
             if elapsed_seconds >= duration_seconds:
-                capture_ended = capture_after
-                success_seen = success_seen or _success_pixel_count(frame) >= 20
+                capture_ended = loop_after
+                assert final_frame is not None
+                success_seen = success_seen or _success_pixel_count(final_frame) >= 20
                 break
-            remaining_ns = interval_ns - (capture_after.value_ns - loop_before.value_ns)
+            next_due_ns = min(next_scheduler_ns, next_capture_ns)
+            if next_cycle < cycle_count:
+                next_cycle_schedule_ns = script_start_ns + next_cycle * _CYCLE_NS - 250_000_000
+                next_due_ns = min(next_due_ns, next_cycle_schedule_ns)
+            remaining_ns = next_due_ns - loop_after.value_ns
             if remaining_ns > 0:
                 time.sleep(remaining_ns / 1_000_000_000)
 
@@ -644,7 +786,7 @@ def run_fixture_qualification(
         success_seen
         and control_passed
         and diagnostic_report.timestamp_regressions == 0
-        and replay.action_count == scheduled
+        and replay.action_count == scheduled + canonical_recorded
         and quality.status.value == "accepted"
         and focus_passed
         and emergency_passed
@@ -669,11 +811,17 @@ def run_fixture_qualification(
             for item in candidates
         ],
         "capture": asdict(diagnostic_report),
+        "capture_runtime": {
+            "initial_backend": diagnostic_report.backend_id,
+            "final_backend": backend.backend_id,
+            "transitions": capture_transitions,
+        },
         "control": {
             "proposals_accepted": accepted_proposals,
             "cycles_planned": cycle_count,
             "cycles_scheduled": next_cycle,
             "scheduled": scheduled,
+            "canonical_recorded": canonical_recorded,
             "guard_rejected": guard_rejected,
             "execution_ratio": execution_ratio,
             "observed_flushes": observed_flushes,

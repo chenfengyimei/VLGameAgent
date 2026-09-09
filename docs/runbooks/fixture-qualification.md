@@ -21,6 +21,19 @@ GUI menu, and R to reset. The target profile is
 `configs/games/uga-fixture-world.yaml` and requires the exact title
 `UGA Fixture World`.
 
+Four deterministic scenarios are available for dataset and generalization work:
+`exploration`, `realtime_control`, `gui_navigation`, and the locked-test candidate
+`heldout_diagonal`. Launch and qualify a non-default scenario with matching
+`--scenario` arguments, for example:
+
+```powershell
+uga-example-game --scenario realtime_control
+uga-qualify fixture --scenario realtime_control --duration-seconds 600 `
+  --episode-root runs/qualification-v1/episodes `
+  --output runs/qualification-v1/realtime-control.json `
+  --allow-physical-input
+```
+
 ## Capture checks
 
 With exactly one fixture window open:
@@ -47,7 +60,12 @@ long soak has bounded frame-memory use; only latency samples are retained.
 With the fixture visible, run the explicit opt-in qualification command. It
 uses the exact target title, developer-owned safety policy, focus and integrity
 guards, leases, arbitration, the 30 Hz scheduler, physical SendInput, MP4 and
-Parquet recording, replay verification, and dataset validation in one run.
+Parquet recording, canonical training targets, replay verification, and dataset
+validation in one run. Long runs acquire a fresh short lease for each five-second
+control cycle so a transient focus loss cannot revive stale queued input.
+Native capture loss is handled within the same Episode by retiring the failed
+backend, selecting the next ranked backend, and recording the transition and
+error in both the timeline and qualification report.
 
 ```powershell
 uga-qualify fixture `
@@ -71,6 +89,10 @@ uga-dataset validate <episode> --output <quality-report.json>
 uga-dataset process <episode> --output <aligned-samples.json>
 uga-dataset view <episode> --output <dataset-viewer.html>
 uga-dataset manifest <dataset-manifest.json> --root <dataset-root>
+
+uga-train prepare-motor-samples `
+  --episode <accepted-episode> `
+  --output <motor-samples.jsonl>
 
 uga-benchmark validate-config configs/benchmarks/uga-bench-smoke.yaml
 uga-benchmark summarize <benchmark-runs.jsonl> --output <benchmark-report.json>

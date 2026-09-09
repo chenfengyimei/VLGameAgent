@@ -58,3 +58,15 @@ def write_benchmark_report(report: BenchmarkReport, path: str | Path) -> Path:
     destination = Path(path)
     destination.write_text(json.dumps(asdict(report), indent=2) + "\n", encoding="utf-8")
     return destination
+
+
+def write_benchmark_runs(runs: tuple[BenchmarkRun, ...], path: str | Path) -> Path:
+    if not runs:
+        raise ContractViolation("benchmark output requires runs")
+    destination = Path(path).resolve()
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(
+        "".join(json.dumps(asdict(run), sort_keys=True) + "\n" for run in runs),
+        encoding="utf-8",
+    )
+    return destination

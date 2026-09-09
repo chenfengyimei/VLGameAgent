@@ -13,6 +13,13 @@ class FixtureMode(StrEnum):
     COMPLETE = "COMPLETE"
 
 
+class FixtureScenario(StrEnum):
+    EXPLORATION = "exploration"
+    REALTIME_CONTROL = "realtime_control"
+    GUI_NAVIGATION = "gui_navigation"
+    HELDOUT_DIAGONAL = "heldout_diagonal"
+
+
 @dataclass(frozen=True, slots=True)
 class FixtureSnapshot:
     player_x: float
@@ -32,25 +39,65 @@ class FixtureSnapshot:
 class FixtureWorld:
     """Deterministic, developer-owned target for supervised Windows I/O tests."""
 
-    def __init__(self, *, width: int = 800, height: int = 600) -> None:
+    def __init__(
+        self,
+        *,
+        width: int = 800,
+        height: int = 600,
+        scenario: FixtureScenario = FixtureScenario.EXPLORATION,
+    ) -> None:
         if width < 320 or height < 240:
             raise ContractViolation("fixture world must be at least 320x240")
         self.width = width
         self.height = height
-        self.speed_pixels_per_second = 220.0
+        self.scenario = scenario
+        self.speed_pixels_per_second = (
+            280.0 if scenario == FixtureScenario.HELDOUT_DIAGONAL else 220.0
+        )
         self._pressed: set[str] = set()
         self.reset()
 
     def reset(self) -> None:
-        self._player_x = 90.0
-        self._player_y = self.height / 2
-        self._target_x = self.width - 100.0
-        self._target_y = self.height / 2
+        if self.scenario == FixtureScenario.EXPLORATION:
+            positions = (90.0, self.height / 2, self.width - 100.0, self.height / 2)
+        elif self.scenario == FixtureScenario.REALTIME_CONTROL:
+            positions = (self.width - 90.0, self.height / 2, 100.0, self.height / 2)
+        elif self.scenario == FixtureScenario.GUI_NAVIGATION:
+            positions = (self.width / 2, 90.0, self.width / 2, self.height - 100.0)
+        else:
+            positions = (90.0, 90.0, 500.0, 500.0)
+        self._player_x, self._player_y, self._target_x, self._target_y = positions
         self._heading = 0.0
         self._mode = FixtureMode.PLAY_3D
         self._success = False
         self._elapsed_ns = 0
         self._pressed.clear()
+
+    @property
+    def game_id(self) -> str:
+        return f"uga-fixture-{self.scenario.value.replace('_', '-')}"
+
+    @property
+    def window_title(self) -> str:
+        if self.scenario == FixtureScenario.EXPLORATION:
+            return "UGA Fixture World"
+        return f"UGA Fixture World [{self.scenario.value}]"
+
+    @property
+    def movement_keys(self) -> tuple[str, ...]:
+        return {
+            FixtureScenario.EXPLORATION: ("d",),
+            FixtureScenario.REALTIME_CONTROL: ("a",),
+            FixtureScenario.GUI_NAVIGATION: ("s",),
+            FixtureScenario.HELDOUT_DIAGONAL: ("d", "s"),
+        }[self.scenario]
+
+    @property
+    def canonical_movement(self) -> tuple[float, float]:
+        horizontal = float(("d" in self.movement_keys) - ("a" in self.movement_keys))
+        vertical = float(("s" in self.movement_keys) - ("w" in self.movement_keys))
+        magnitude = max(1.0, math.hypot(horizontal, vertical))
+        return horizontal / magnitude, vertical / magnitude
 
     @property
     def snapshot(self) -> FixtureSnapshot:

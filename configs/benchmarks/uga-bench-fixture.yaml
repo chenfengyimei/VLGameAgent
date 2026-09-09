@@ -1,0 +1,33 @@
+tasks:
+  - id: fixture_exploration_001
+    game: uga-fixture-exploration
+    instruction: Move to the visible target and interact.
+    timeout_seconds: 10
+    repeat: 5
+    split: train
+    success:
+      evaluator: environment_adapter
+  - id: fixture_realtime_001
+    game: uga-fixture-realtime-control
+    instruction: Correct direction promptly, approach the target, and interact.
+    timeout_seconds: 10
+    repeat: 5
+    split: train
+    success:
+      evaluator: environment_adapter
+  - id: fixture_gui_001
+    game: uga-fixture-gui-navigation
+    instruction: Resume from the menu, approach the target, and interact.
+    timeout_seconds: 10
+    repeat: 5
+    split: train
+    success:
+      evaluator: environment_adapter
+  - id: fixture_heldout_001
+    game: uga-fixture-heldout-diagonal
+    instruction: Approach the diagonal target and interact.
+    timeout_seconds: 10
+    repeat: 5
+    split: test
+    success:
+      evaluator: environment_adapter

@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 
-from uga.environment.fixture_world import FixtureMode, FixtureWorld
+from uga.environment.fixture_world import FixtureMode, FixtureScenario, FixtureWorld
 from uga.environment.profile import load_game_profile
 
 
@@ -33,6 +33,23 @@ class FixtureWorldTests(unittest.TestCase):
         profile = load_game_profile(root / "configs" / "games" / "uga-fixture-world.yaml")
         self.assertTrue(profile.matches_window_title("UGA Fixture World"))
         self.assertFalse(profile.matches_window_title("unrelated python window"))
+
+    def test_each_scenario_has_distinct_identity_and_reachable_goal(self) -> None:
+        game_ids: set[str] = set()
+        for scenario in FixtureScenario:
+            world = FixtureWorld(scenario=scenario)
+            game_ids.add(world.game_id)
+            for key in world.movement_keys:
+                world.set_key(key, True)
+            for _ in range(300):
+                if world.snapshot.distance_to_target <= 25:
+                    break
+                world.tick(16_666_667)
+            for key in world.movement_keys:
+                world.set_key(key, False)
+            world.set_key("e", True)
+            self.assertTrue(world.snapshot.success, scenario.value)
+        self.assertEqual(len(game_ids), len(FixtureScenario))
 
 
 if __name__ == "__main__":

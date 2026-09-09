@@ -6,22 +6,32 @@ import json
 import math
 import os
 
-from uga.environment.fixture_world import FixtureMode, FixtureSnapshot, FixtureWorld
+from uga.environment.fixture_world import (
+    FixtureMode,
+    FixtureScenario,
+    FixtureSnapshot,
+    FixtureWorld,
+)
 from uga.time.clock import PerfCounterClock
 
 
-def _headless_smoke() -> None:
-    world = FixtureWorld()
-    world.set_key("d", True)
-    for _ in range(165):
+def _headless_smoke(scenario: FixtureScenario) -> None:
+    world = FixtureWorld(scenario=scenario)
+    for key in world.movement_keys:
+        world.set_key(key, True)
+    for _ in range(300):
+        if world.snapshot.distance_to_target <= 25:
+            break
         world.tick(16_666_667)
-    world.set_key("d", False)
+    for key in world.movement_keys:
+        world.set_key(key, False)
     world.set_key("e", True)
     snapshot = world.snapshot
     print(
         json.dumps(
             {
                 "mode": snapshot.mode.value,
+                "scenario": scenario.value,
                 "success": snapshot.success,
                 "player_x": round(snapshot.player_x, 2),
                 "distance_to_target": round(snapshot.distance_to_target, 2),
@@ -31,13 +41,13 @@ def _headless_smoke() -> None:
     )
 
 
-def _run_window() -> None:
+def _run_window(scenario: FixtureScenario) -> None:
     import tkinter as tk
 
-    world = FixtureWorld()
+    world = FixtureWorld(scenario=scenario)
     clock = PerfCounterClock()
     root = tk.Tk()
-    root.title("UGA Fixture World")
+    root.title(world.window_title)
     root.geometry(f"{world.width}x{world.height}")
     root.resizable(True, True)
     canvas = tk.Canvas(root, highlightthickness=0, background="#111827")
@@ -109,6 +119,7 @@ def _run_window() -> None:
             anchor="nw",
             text=(
                 "UGA FIXTURE WORLD\n"
+                f"Scenario: {world.scenario.value}\n"
                 "Goal: move to the green target and press E\n"
                 "WASD move · mouse turns · Esc menu · R reset\n"
                 f"Mode: {snapshot.mode.value} · Distance: {snapshot.distance_to_target:.1f}"
@@ -200,13 +211,19 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Run the developer-owned UGA fixture world")
     parser.add_argument("--headless-smoke", action="store_true")
     parser.add_argument("--focus-sink", action="store_true")
+    parser.add_argument(
+        "--scenario",
+        choices=tuple(item.value for item in FixtureScenario),
+        default=FixtureScenario.EXPLORATION.value,
+    )
     args = parser.parse_args()
+    scenario = FixtureScenario(args.scenario)
     if args.headless_smoke:
-        _headless_smoke()
+        _headless_smoke(scenario)
     elif args.focus_sink:
         _run_focus_sink()
     else:
-        _run_window()
+        _run_window(scenario)
 
 
 if __name__ == "__main__":

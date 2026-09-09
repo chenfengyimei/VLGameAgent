@@ -9,7 +9,7 @@ from typing import Any
 
 from uga.core.errors import BackendUnavailableError, ContractViolation
 from uga.dataset.manifest import DatasetManifest
-from uga.dataset.processor import DatasetSplit
+from uga.dataset.processor import DatasetProcessor, DatasetSplit
 from uga.dataset.validator import QualityStatus
 from uga.policy.action_chunk import ActionButton
 from uga.recording.parquet_io import read_rows
@@ -48,6 +48,60 @@ class MotorTrainingResult:
     checkpoint: Path
     metrics: Path
     artifact_manifest: Path
+
+
+def export_motor_samples(episode_paths: tuple[str | Path, ...], output_path: str | Path) -> Path:
+    """Export provenance-preserving motor samples from canonical Episode actions."""
+    if not episode_paths:
+        raise ContractViolation("motor sample export requires at least one Episode")
+    rows: list[str] = []
+    for episode_path in episode_paths:
+        episode = DatasetProcessor().process(episode_path)
+        if not episode.samples:
+            raise ContractViolation(f"Episode has no canonical motor samples: {episode_path}")
+        for aligned in episode.samples:
+            try:
+                observation: Any = json.loads(aligned.observation_json)
+                action: Any = json.loads(aligned.action_json)
+                features = observation.get("features")
+                if not isinstance(features, list):
+                    raise TypeError("observation features must be a list")
+                sample = MotorTrainingSample(
+                    tuple(float(value) for value in features),
+                    float(action["move_x"]),
+                    float(action["move_y"]),
+                    float(action["look_x"]),
+                    float(action["look_y"]),
+                    _canonical_button_mask(action),
+                    aligned.episode_id,
+                    aligned.observation_id,
+                    aligned.action_id,
+                )
+            except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+                raise ContractViolation(
+                    f"Episode contains an invalid motor sample {aligned.action_id}: {exc}"
+                ) from exc
+            rows.append(
+                json.dumps(
+                    {
+                        "features": sample.features,
+                        "move_x": sample.move_x,
+                        "move_y": sample.move_y,
+                        "look_x": sample.look_x,
+                        "look_y": sample.look_y,
+                        "buttons": sample.buttons,
+                        "episode_id": sample.episode_id,
+                        "observation_id": sample.observation_id,
+                        "action_id": sample.action_id,
+                    },
+                    separators=(",", ":"),
+                    sort_keys=True,
+                )
+            )
+    destination = Path(output_path).resolve()
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text("\n".join(rows) + "\n", encoding="utf-8")
+    return destination
 
 
 def load_motor_training_config(path: str | Path) -> MotorTrainingConfig:
@@ -159,6 +213,24 @@ def _write_metrics(metrics: TrainingMetrics, path: Path) -> Path:
     return path
 
 
+def _canonical_button_mask(payload: dict[str, Any]) -> int:
+    result = 0
+    for name, button in (
+        ("jump", ActionButton.JUMP),
+        ("sprint", ActionButton.SPRINT),
+        ("crouch", ActionButton.CROUCH),
+        ("interact", ActionButton.INTERACT),
+        ("primary", ActionButton.PRIMARY),
+        ("secondary", ActionButton.SECONDARY),
+        ("menu", ActionButton.MENU),
+        ("confirm", ActionButton.CONFIRM),
+        ("back", ActionButton.BACK),
+    ):
+        if bool(payload.get(name, False)):
+            result |= int(button)
+    return result
+
+
 def _verify_training_sample_provenance(
     samples: tuple[MotorTrainingSample, ...],
     dataset: DatasetManifest,
@@ -213,19 +285,6 @@ def _verify_training_sample_provenance(
                 for name in axes
             ):
                 raise ContractViolation("motor sample axes do not match the recorded action")
-            expected_buttons = 0
-            for name, button in (
-                ("jump", ActionButton.JUMP),
-                ("sprint", ActionButton.SPRINT),
-                ("crouch", ActionButton.CROUCH),
-                ("interact", ActionButton.INTERACT),
-                ("primary", ActionButton.PRIMARY),
-                ("secondary", ActionButton.SECONDARY),
-                ("menu", ActionButton.MENU),
-                ("confirm", ActionButton.CONFIRM),
-                ("back", ActionButton.BACK),
-            ):
-                if bool(payload.get(name, False)):
-                    expected_buttons |= int(button)
+            expected_buttons = _canonical_button_mask(payload)
             if expected_buttons != sample.buttons:
                 raise ContractViolation("motor sample buttons do not match the recorded action")

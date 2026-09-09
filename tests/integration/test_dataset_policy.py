@@ -59,7 +59,7 @@ from uga.training.artifact import TrainingArtifactManifest
 from uga.training.behavior_cloning import BehaviorCloningTrainer, MotorTrainingSample
 from uga.training.dagger import DaggerPipeline, HumanOverride
 from uga.training.datasets import InstructionSample, RecoveryDataset, RecoverySample
-from uga.training.motor_pipeline import train_motor_policy
+from uga.training.motor_pipeline import export_motor_samples, load_motor_samples, train_motor_policy
 from uga.training.veomni import DistributedTrainingJob, VeOmniBackend
 from uga.windows.coordinates import CoordinateSpace
 
@@ -81,7 +81,7 @@ def make_episode(root: Path) -> Path:
     writer = EpisodeWriter(root, metadata)
     writer.attach_video(PyAvVideoRecorder(writer.video_path))
     writer.record_frame(frame(1, timestamp_ns=100))
-    writer.record_observation("obs-1", UGATime(110), {"frame": "frame-1"})
+    writer.record_observation("obs-1", UGATime(110), {"frame": "frame-1", "features": [1.0, -0.5]})
     lifetime = ActionLifetime(UGATime(120), UGATime(120), UGATime(200))
     canonical = CanonicalAction(
         "canonical-action-1",
@@ -403,6 +403,20 @@ class DatasetPolicyTests(unittest.TestCase):
             TrainingArtifactManifest.load(trained.artifact_manifest).verify(
                 trained.output_directory
             )
+
+    def test_motor_sample_export_preserves_episode_provenance(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            episode = make_episode(root)
+
+            output = export_motor_samples((episode,), root / "motor-samples.jsonl")
+            samples = load_motor_samples(output)
+
+            self.assertEqual(len(samples), 1)
+            self.assertEqual(samples[0].features, (1.0, -0.5))
+            self.assertEqual(samples[0].episode_id, "dataset-episode")
+            self.assertEqual(samples[0].observation_id, "obs-1")
+            self.assertEqual(samples[0].action_id, "canonical-action-1")
 
     def test_opencua_export_import_normalizes_gui_coordinates(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

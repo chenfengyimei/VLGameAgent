@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 
 from uga.training.artifact import TrainingArtifactManifest
-from uga.training.motor_pipeline import train_motor_policy
+from uga.training.motor_pipeline import export_motor_samples, train_motor_policy
 
 
 def _motor(args: argparse.Namespace) -> None:
@@ -51,9 +51,20 @@ def _verify(args: argparse.Namespace) -> None:
     )
 
 
+def _prepare_motor(args: argparse.Namespace) -> None:
+    print(export_motor_samples(tuple(args.episode), args.output))
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run UGA training stages")
     subparsers = parser.add_subparsers(required=True)
+    prepare = subparsers.add_parser(
+        "prepare-motor-samples",
+        help="export canonical Episode actions as provenance-preserving motor samples",
+    )
+    prepare.add_argument("--episode", type=Path, action="append", required=True)
+    prepare.add_argument("--output", type=Path, required=True)
+    prepare.set_defaults(handler=_prepare_motor)
     motor = subparsers.add_parser("motor", help="train the deterministic motor policy head")
     motor.add_argument("--samples", type=Path, required=True)
     motor.add_argument("--dataset-manifest", type=Path, required=True)

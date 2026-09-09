@@ -3,11 +3,11 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
-from dataclasses import asdict
 from pathlib import Path
 
 from tests.integration.test_dataset_policy import make_episode
-from uga.benchmark.io import load_benchmark_runs, write_benchmark_report
+from uga.benchmark.fixture import fixture_environments
+from uga.benchmark.io import load_benchmark_runs, write_benchmark_report, write_benchmark_runs
 from uga.benchmark.runner import BenchmarkRunner
 from uga.benchmark.schema import BenchmarkRun, BenchmarkSplit, BenchmarkTask, load_benchmark_tasks
 from uga.control.lease import ControlMode
@@ -94,6 +94,18 @@ class ReleaseSurfaceTests(unittest.TestCase):
         self.assertEqual(report.agent_human_time_ratio, 1.25)
         self.assertEqual(report.capture_latency.p99, 3.0)
 
+    def test_owned_fixture_benchmark_covers_three_train_games_and_heldout_game(self) -> None:
+        root = Path(__file__).resolve().parents[2]
+        tasks = load_benchmark_tasks(root / "configs" / "benchmarks" / "uga-bench-fixture.yaml")
+        environments = fixture_environments()
+
+        report = BenchmarkRunner().run(tasks, environments)
+
+        self.assertEqual(report.runs, 20)
+        self.assertEqual(len(report.games), 4)
+        self.assertEqual(dict(report.split_success_rates), {"test": 1.0, "train": 1.0})
+        self.assertEqual(report.success_rate, 1.0)
+
     def test_benchmark_jsonl_loads_and_writes_self_describing_report(self) -> None:
         task = BenchmarkTask(
             "task-1",
@@ -108,7 +120,7 @@ class ReleaseSurfaceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             runs = root / "runs.jsonl"
-            runs.write_text(json.dumps(asdict(run)) + "\n", encoding="utf-8")
+            write_benchmark_runs((run,), runs)
             loaded = load_benchmark_runs(runs)
             report = BenchmarkRunner().summarize(loaded)
             output = write_benchmark_report(report, root / "report.json")
