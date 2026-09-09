@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
@@ -10,6 +9,7 @@ from typing import Any
 from uga.core.artifact_limits import (
     DEFAULT_ARTIFACT_LIMITS,
     ArtifactResourceLimits,
+    parse_json_text,
     read_text_limited,
     sha256_file_limited,
 )
@@ -182,7 +182,7 @@ class ReplayEngine:
                     elapsed_ns,
                     str(row["kind"]),
                     str(row["reference_id"]),
-                    json.loads(str(row["payload_json"])),
+                    parse_json_text(str(row["payload_json"])),
                 )
             )
         return tuple(materialized)
@@ -256,7 +256,7 @@ class ReplayEngine:
             if path.name == _CHECKSUM_NAME
             else self._limits.max_document_bytes
         )
-        value = json.loads(read_text_limited(path, maximum, path.name))
+        value = parse_json_text(read_text_limited(path, maximum, path.name))
         if not isinstance(value, dict):
             raise ContractViolation(f"expected JSON object: {path.name}")
         return value

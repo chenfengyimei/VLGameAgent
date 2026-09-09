@@ -12,6 +12,7 @@ from typing import Any, ClassVar
 from uga.core.artifact_limits import (
     DEFAULT_ARTIFACT_LIMITS,
     ArtifactResourceLimits,
+    parse_json_text,
     read_text_limited,
     sha256_file_limited,
 )
@@ -244,7 +245,7 @@ class DatasetManifest(VersionedMixin):
         *,
         limits: ArtifactResourceLimits = DEFAULT_ARTIFACT_LIMITS,
     ) -> DatasetManifest:
-        payload: Any = json.loads(
+        payload: Any = parse_json_text(
             read_text_limited(
                 path,
                 limits.max_document_bytes,

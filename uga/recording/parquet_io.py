@@ -21,6 +21,9 @@ def _arrow() -> tuple[Any, Any]:
 
 ColumnSpec = tuple[str, str]
 
+# Bounded read batches keep decoded-byte accounting ahead of materialization.
+_READ_BATCH_ROWS = 4096
+
 
 def write_rows(path: Path, rows: list[dict[str, Any]], schema: tuple[ColumnSpec, ...]) -> None:
     pa, pq = _arrow()
@@ -57,12 +60,22 @@ def read_rows(
                 raise ContractViolation("Parquet file exceeds the row limit")
             if metadata.num_columns > limits.max_parquet_columns:
                 raise ContractViolation("Parquet file exceeds the column limit")
-            uncompressed = sum(
+            declared = sum(
                 metadata.row_group(index).total_byte_size
                 for index in range(metadata.num_row_groups)
             )
-            if uncompressed > limits.max_parquet_uncompressed_bytes:
+            # Declared row-group sizes reflect encoded on-disk bytes and can
+            # understate decoded data arbitrarily (dictionary encoding), so they
+            # act only as an early filter before actual decoded-byte accounting.
+            if declared > limits.max_parquet_uncompressed_bytes:
                 raise ContractViolation("Parquet file exceeds the uncompressed byte limit")
-            return list(parquet.read().to_pylist())
+            rows: list[dict[str, Any]] = []
+            decoded_bytes = 0
+            for batch in parquet.iter_batches(batch_size=_READ_BATCH_ROWS):
+                decoded_bytes += batch.nbytes
+                if decoded_bytes > limits.max_parquet_uncompressed_bytes:
+                    raise ContractViolation("Parquet file exceeds the uncompressed byte limit")
+                rows.extend(batch.to_pylist())
+            return rows
     except OSError as exc:
         raise ContractViolation(f"cannot read Parquet file: {path}") from exc

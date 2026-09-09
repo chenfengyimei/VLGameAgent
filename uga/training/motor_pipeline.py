@@ -11,6 +11,7 @@ from uga.core.artifact_limits import (
     DEFAULT_ARTIFACT_LIMITS,
     ArtifactResourceLimits,
     iter_text_lines_limited,
+    parse_json_text,
     read_text_limited,
 )
 from uga.core.errors import BackendUnavailableError, ContractViolation
@@ -75,8 +76,8 @@ def export_motor_samples(
             if len(rows) >= limits.max_training_samples:
                 raise ContractViolation("motor sample export exceeds the sample resource limit")
             try:
-                observation: Any = json.loads(aligned.observation_json)
-                action: Any = json.loads(aligned.action_json)
+                observation: Any = parse_json_text(aligned.observation_json)
+                action: Any = parse_json_text(aligned.action_json)
                 features = observation.get("features")
                 if not isinstance(features, list):
                     raise TypeError("observation features must be a list")
@@ -169,7 +170,7 @@ def load_motor_samples(
         if not line.strip():
             continue
         try:
-            payload: Any = json.loads(line)
+            payload: Any = parse_json_text(line)
             if not isinstance(payload, dict) or not isinstance(payload.get("features"), list):
                 raise TypeError("sample must be an object with a features list")
             if len(payload["features"]) > limits.max_feature_dimensions:
@@ -328,7 +329,7 @@ def _verify_training_sample_provenance(
         observations: dict[str, tuple[float, ...]] = {}
         for row in read_rows(episode_path / "observations.parquet", limits=limits):
             observation_id = str(row["observation_id"])
-            observation_payload = json.loads(str(row["payload_json"]))
+            observation_payload = parse_json_text(str(row["payload_json"]))
             features = observation_payload.get("features")
             if not isinstance(features, list):
                 raise ContractViolation("recorded observation has no motor features")
@@ -365,7 +366,7 @@ def _verify_training_sample_provenance(
                 raise ContractViolation("motor sample features do not match the observation")
             if action.get("action_layer") != "canonical":
                 raise ContractViolation("motor sample must reference a canonical action")
-            payload = json.loads(str(action["payload_json"]))
+            payload = parse_json_text(str(action["payload_json"]))
             axes = ("move_x", "move_y", "look_x", "look_y")
             if any(
                 not math.isclose(

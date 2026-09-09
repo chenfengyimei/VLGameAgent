@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-import json
 import sqlite3
 import uuid
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 
+from uga.core.artifact_limits import parse_json_text
 from uga.core.errors import ContractViolation
 from uga.recording.json_codec import canonical_json
 from uga.time.clock import ClockBackend, UGATime
@@ -106,8 +106,8 @@ class MemoryStore:
                 str(row[0]),
                 MemoryKind(str(row[1])),
                 str(row[2]),
-                json.loads(str(row[3])),
-                tuple(str(item) for item in json.loads(str(row[4]))),
+                parse_json_text(str(row[3])),
+                tuple(str(item) for item in parse_json_text(str(row[4]))),
                 str(row[5]),
                 UGATime(int(row[6])),
             )

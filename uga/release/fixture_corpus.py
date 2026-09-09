@@ -9,6 +9,7 @@ import time
 from datetime import date
 from pathlib import Path
 
+from uga.core.artifact_limits import DEFAULT_ARTIFACT_LIMITS, parse_json_text, read_text_limited
 from uga.core.errors import ContractViolation
 from uga.dataset.builder import build_dataset_manifest
 from uga.environment.fixture_world import FixtureScenario, FixtureWorld
@@ -69,7 +70,13 @@ def run_fixture_corpus(
                 expected_pid=process.pid,
                 expected_identity=owned_target.identity,
             )
-            report = json.loads(report_path.read_text(encoding="utf-8"))
+            report = parse_json_text(
+                read_text_limited(
+                    report_path,
+                    DEFAULT_ARTIFACT_LIMITS.max_document_bytes,
+                    "fixture corpus report",
+                )
+            )
             episode_path = Path(str(report["recorder"]["episode_path"]))
             collected.append((scenario, episode_path.name, report_path.name))
         finally:

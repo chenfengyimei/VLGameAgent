@@ -8,6 +8,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
 from typing import Any, ClassVar
 
+from uga.core.artifact_limits import DEFAULT_ARTIFACT_LIMITS, parse_json_text, read_text_limited
 from uga.core.errors import ContractViolation
 from uga.core.schema import VersionedMixin
 from uga.release.manifest import (
@@ -116,8 +117,11 @@ class QualificationLedger(VersionedMixin):
                     raise ContractViolation(
                         f"qualification evidence is missing: {artifact.relative_path}"
                     )
-                actual = hashlib.sha256(candidate.read_bytes()).hexdigest()
-                if actual != artifact.sha256:
+                candidate_digest = hashlib.sha256()
+                with candidate.open("rb") as stream:
+                    for block in iter(lambda: stream.read(1024 * 1024), b""):
+                        candidate_digest.update(block)
+                if candidate_digest.hexdigest() != artifact.sha256:
                     raise ContractViolation(
                         f"qualification evidence digest mismatch: {artifact.relative_path}"
                     )
@@ -173,7 +177,13 @@ class QualificationLedger(VersionedMixin):
 
     @classmethod
     def load(cls, path: str | Path) -> QualificationLedger:
-        payload: Any = json.loads(Path(path).read_text(encoding="utf-8"))
+        payload: Any = parse_json_text(
+            read_text_limited(
+                path,
+                DEFAULT_ARTIFACT_LIMITS.max_document_bytes,
+                "qualification ledger",
+            )
+        )
         if (
             not isinstance(payload, dict)
             or payload.get("schema") != cls.SCHEMA_NAME

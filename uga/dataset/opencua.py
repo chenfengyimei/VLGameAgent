@@ -9,6 +9,7 @@ from typing import Any
 from uga.core.artifact_limits import (
     DEFAULT_ARTIFACT_LIMITS,
     ArtifactResourceLimits,
+    parse_json_text,
     read_text_limited,
 )
 from uga.core.errors import ContractViolation
@@ -111,7 +112,7 @@ class OpenCuaExporter:
             actions = actions_by_observation.get(observation_id, [])
             if not actions:
                 continue
-            payload: Any = json.loads(str(observation["payload_json"]))
+            payload: Any = parse_json_text(str(observation["payload_json"]))
             if not isinstance(payload, dict):
                 raise ContractViolation("OpenCUA export observation payload must be an object")
             image = self._image_path(payload, replay.path)
@@ -170,7 +171,7 @@ class OpenCuaExporter:
         result: list[OpenCuaAction] = []
         for action in actions:
             action_type = str(action["action_type"])
-            payload: Any = json.loads(str(action["payload_json"]))
+            payload: Any = parse_json_text(str(action["payload_json"]))
             if not isinstance(payload, dict):
                 raise ContractViolation("recorded action payload must be an object")
             metadata: dict[str, object] = {
@@ -230,7 +231,7 @@ def load_opencua_trajectory(
     limits: ArtifactResourceLimits = DEFAULT_ARTIFACT_LIMITS,
 ) -> OpenCuaTrajectory:
     try:
-        payload: Any = json.loads(
+        payload: Any = parse_json_text(
             read_text_limited(
                 path,
                 limits.max_document_bytes,

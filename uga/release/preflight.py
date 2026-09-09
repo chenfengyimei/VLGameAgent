@@ -10,6 +10,7 @@ from typing import Any
 
 from uga.core.artifact_limits import (
     DEFAULT_ARTIFACT_LIMITS,
+    parse_json_text,
     read_text_limited,
     sha256_file_limited,
 )
@@ -91,7 +92,7 @@ class QualificationPreflight:
     @classmethod
     def load(cls, path: str | Path) -> QualificationPreflight:
         try:
-            payload: Any = json.loads(
+            payload: Any = parse_json_text(
                 read_text_limited(
                     path,
                     DEFAULT_ARTIFACT_LIMITS.max_document_bytes,

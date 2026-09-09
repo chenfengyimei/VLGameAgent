@@ -6,6 +6,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
+from uga.core.artifact_limits import DEFAULT_ARTIFACT_LIMITS, read_text_limited
 from uga.core.errors import BackendUnavailableError, ContractViolation
 
 
@@ -54,7 +55,9 @@ def load_model_registry(path: str | Path) -> ModelRegistry:
         raise BackendUnavailableError(
             "model registry requires the declared PyYAML dependency"
         ) from exc
-    raw = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
+    raw = yaml.safe_load(
+        read_text_limited(path, DEFAULT_ARTIFACT_LIMITS.max_config_bytes, "model registry")
+    )
     if not isinstance(raw, dict) or not isinstance(raw.get("models"), dict):
         raise ContractViolation("model registry requires a models object")
     specs: list[ModelSpec] = []

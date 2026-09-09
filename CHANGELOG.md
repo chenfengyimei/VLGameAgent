@@ -59,3 +59,7 @@
   --no-build-isolation` project installs, `--no-isolation` artifact builds,
   and `--locked` Cargo operations; supply-chain regressions are rejected by
   repository policy tests.
+- Enforce decoded Parquet byte limits through incremental batch reads, bound
+  game-profile and model-registry YAML inputs, fail closed on deeply nested or
+  oversized untrusted JSON documents instead of crashing, and stream
+  qualification evidence hashing instead of loading whole files into memory.

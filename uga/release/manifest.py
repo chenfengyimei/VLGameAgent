@@ -10,7 +10,11 @@ from enum import StrEnum
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from uga.core.artifact_limits import DEFAULT_ARTIFACT_LIMITS, read_text_limited
+from uga.core.artifact_limits import (
+    DEFAULT_ARTIFACT_LIMITS,
+    parse_json_text,
+    read_text_limited,
+)
 from uga.core.errors import ContractViolation
 
 REQUIRED_RELEASE_GATE_IDS = (
@@ -110,7 +114,7 @@ class ReleaseManifest:
     @classmethod
     def load(cls, path: str | Path) -> ReleaseManifest:
         try:
-            payload: Any = json.loads(
+            payload: Any = parse_json_text(
                 read_text_limited(
                     path,
                     DEFAULT_ARTIFACT_LIMITS.max_document_bytes,

@@ -7,6 +7,7 @@ from enum import IntEnum, StrEnum
 from pathlib import Path
 from typing import Any, ClassVar
 
+from uga.core.artifact_limits import DEFAULT_ARTIFACT_LIMITS, read_text_limited
 from uga.core.errors import BackendUnavailableError, ContractViolation
 from uga.core.schema import VersionedMixin
 from uga.safety.environment_policy import EnvironmentClass, EnvironmentSafetyManifest
@@ -108,7 +109,9 @@ def load_game_profile(path: str | Path) -> GameProfile:
         raise BackendUnavailableError(
             "YAML game profiles require the declared PyYAML dependency"
         ) from exc
-    raw = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
+    raw = yaml.safe_load(
+        read_text_limited(path, DEFAULT_ARTIFACT_LIMITS.max_config_bytes, "game profile")
+    )
     if not isinstance(raw, dict):
         raise ContractViolation("game profile root must be an object")
     return game_profile_from_dict(raw)

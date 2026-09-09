@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import importlib
-import json
 from dataclasses import dataclass
 from enum import IntEnum, StrEnum
 from pathlib import Path
@@ -10,6 +9,7 @@ from uga.core.artifact_limits import (
     DEFAULT_ARTIFACT_LIMITS,
     ArtifactResourceLimits,
     ensure_file_size,
+    parse_json_text,
 )
 from uga.core.errors import ContractViolation
 from uga.recording.replay import ReplayEngine
@@ -140,7 +140,7 @@ class DatasetValidator:
     def _check_resolution(frames: list[dict[str, object]], findings: list[QualityFinding]) -> None:
         sizes: set[tuple[int, int]] = set()
         for row in frames:
-            payload = json.loads(str(row["payload_json"]))
+            payload = parse_json_text(str(row["payload_json"]))
             data = payload.get("data", {})
             if isinstance(data, dict) and "width" in data and "height" in data:
                 sizes.add((int(data["width"]), int(data["height"])))
@@ -159,7 +159,7 @@ class DatasetValidator:
         for action in actions:
             if str(action.get("action_type")) != "RelativeMouseAction":
                 continue
-            payload = json.loads(str(action["payload_json"]))
+            payload = parse_json_text(str(action["payload_json"]))
             if (
                 max(abs(int(payload.get("dx", 0))), abs(int(payload.get("dy", 0))))
                 > self._max_mouse_delta

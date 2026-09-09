@@ -11,6 +11,7 @@ from uga.core.artifact_limits import (
     DEFAULT_ARTIFACT_LIMITS,
     ArtifactResourceLimits,
     iter_text_lines_limited,
+    parse_json_text,
 )
 from uga.core.errors import ContractViolation
 
@@ -31,7 +32,7 @@ def load_benchmark_runs(
         if not line.strip():
             continue
         try:
-            payload: Any = json.loads(line)
+            payload: Any = parse_json_text(line)
             if not isinstance(payload, dict):
                 raise TypeError("expected object")
             latency_names = (

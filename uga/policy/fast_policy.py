@@ -10,6 +10,7 @@ from typing import Protocol, runtime_checkable
 from uga.core.artifact_limits import (
     DEFAULT_ARTIFACT_LIMITS,
     ArtifactResourceLimits,
+    parse_json_text,
     read_text_limited,
 )
 from uga.core.errors import ContractViolation
@@ -133,7 +134,7 @@ class DecoderCheckpoint:
         *,
         limits: ArtifactResourceLimits = DEFAULT_ARTIFACT_LIMITS,
     ) -> DecoderCheckpoint:
-        payload = json.loads(
+        payload = parse_json_text(
             read_text_limited(
                 path,
                 limits.max_document_bytes,

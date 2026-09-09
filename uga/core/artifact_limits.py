@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from collections.abc import Iterator
 from dataclasses import dataclass, fields
 from pathlib import Path
+from typing import Any
 
 from uga.core.errors import ContractViolation
 
@@ -50,6 +52,18 @@ class ArtifactResourceLimits:
 
 
 DEFAULT_ARTIFACT_LIMITS = ArtifactResourceLimits()
+
+
+def parse_json_text(text: str) -> Any:
+    """Parse untrusted JSON text; nesting bombs fail closed instead of crashing.
+
+    Deeply nested documents raise RecursionError in the JSON parser; that is a
+    malformed-payload condition, not a crash the tooling should surface.
+    """
+    try:
+        return json.loads(text)
+    except RecursionError as exc:
+        raise ContractViolation("JSON payload nesting exceeds the parser limit") from exc
 
 
 def ensure_file_size(path: str | Path, maximum: int, label: str) -> int:

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
@@ -8,6 +7,7 @@ from uga.agent.belief import BeliefState
 from uga.agent.skills import SkillSpec
 from uga.agent.task_graph import TaskNode
 from uga.control.lease import ControlMode
+from uga.core.artifact_limits import parse_json_text
 from uga.core.errors import ContractViolation
 from uga.observation.schema import Observation
 
@@ -80,7 +80,7 @@ class QwenVlmPlannerBackend:
         )
         raw = self._model.generate_json(instruction=instruction, observation=request.observation)
         try:
-            payload = json.loads(raw)
+            payload = parse_json_text(raw)
             if not isinstance(payload, dict):
                 raise TypeError("planner output is not an object")
             decision = PlanDecision(
@@ -91,7 +91,7 @@ class QwenVlmPlannerBackend:
                 success_condition=str(payload["success_condition"]),
                 failure_condition=str(payload["failure_condition"]),
             )
-        except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        except (KeyError, TypeError, ValueError) as exc:
             raise ContractViolation("planner returned invalid schema") from exc
         if decision.skill not in {skill.skill_id for skill in request.available_skills}:
             raise ContractViolation("planner selected an unavailable skill")

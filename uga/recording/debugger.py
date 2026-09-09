@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 
+from uga.core.artifact_limits import parse_json_text
 from uga.recording.replay import ReplayEngine
 from uga.ui import load_ui_script
 
@@ -21,7 +22,7 @@ def write_replay_debugger(episode_path: str | Path, output: str | Path) -> Path:
             "elapsed_ns": row["elapsed_ns"],
             "kind": row["kind"],
             "reference_id": row["reference_id"],
-            "payload": json.loads(str(row["payload_json"])),
+            "payload": parse_json_text(str(row["payload_json"])),
         }
         for row in replay.timeline
     ]
