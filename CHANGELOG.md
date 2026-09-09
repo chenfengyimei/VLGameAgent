@@ -52,3 +52,10 @@
   license inventories.
 - Add a read-only `uga-qualify preflight` report for Git revision, repository
   license, GPU, Dataset volume/splits, artifact integrity, and outstanding gates.
+- Pin CI actions to immutable commit SHAs with least-privilege permissions and
+  non-persisted checkout credentials, pin exact Python/Node/Rust patch
+  versions, and install Python dependencies from a committed transitive
+  hash-locked requirements file with `pip --require-hashes`, `--no-deps
+  --no-build-isolation` project installs, `--no-isolation` artifact builds,
+  and `--locked` Cargo operations; supply-chain regressions are rejected by
+  repository policy tests.

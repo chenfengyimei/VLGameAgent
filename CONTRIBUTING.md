@@ -10,8 +10,8 @@ ruff check .
 mypy uga apps
 pytest
 cargo fmt --all --manifest-path native/Cargo.toml -- --check
-cargo clippy --workspace --all-targets --manifest-path native/Cargo.toml -- -D warnings
-cargo test --workspace --manifest-path native/Cargo.toml
+cargo clippy --workspace --all-targets --manifest-path native/Cargo.toml --locked -- -D warnings
+cargo test --workspace --manifest-path native/Cargo.toml --locked
 ```
 
 Keep Win32 calls inside `uga.windows`, `uga.capture`, or native crates. Do not

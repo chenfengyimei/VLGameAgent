@@ -20,25 +20,35 @@ if (Test-Path -LiteralPath $bundleRoot) {
     throw "Release bundle already exists: $bundleRoot"
 }
 
+$buildVenvRoot = $null
+
 Push-Location $projectRoot
 try {
-    npm ci
-    if ($LASTEXITCODE -ne 0) { throw "npm install failed with exit code $LASTEXITCODE" }
+    npm ci --include=dev
+    if ($LASTEXITCODE -ne 0) { throw "npm ci failed with exit code $LASTEXITCODE" }
     npm run typecheck
     if ($LASTEXITCODE -ne 0) { throw "TypeScript typecheck failed with exit code $LASTEXITCODE" }
     npm run build
     if ($LASTEXITCODE -ne 0) { throw "TypeScript build failed with exit code $LASTEXITCODE" }
-    & $Python -m ruff check .
+    $buildVenvRoot = Join-Path $distRoot (".uga-build-venv-" + [guid]::NewGuid().ToString("N"))
+    & $Python -m venv $buildVenvRoot
+    if ($LASTEXITCODE -ne 0) { throw "Build virtual environment creation failed" }
+    $buildPython = Join-Path $buildVenvRoot "Scripts\python.exe"
+    & $buildPython -m pip install --require-hashes -r (Join-Path $projectRoot "requirements-lock.txt")
+    if ($LASTEXITCODE -ne 0) { throw "Locked dependency installation failed with exit code $LASTEXITCODE" }
+    & $buildPython -m pip install --no-deps --no-build-isolation -e $projectRoot
+    if ($LASTEXITCODE -ne 0) { throw "Project installation failed with exit code $LASTEXITCODE" }
+    & $buildPython -m ruff check .
     if ($LASTEXITCODE -ne 0) { throw "Ruff failed with exit code $LASTEXITCODE" }
-    & $Python -m mypy uga apps
+    & $buildPython -m mypy uga apps
     if ($LASTEXITCODE -ne 0) { throw "mypy failed with exit code $LASTEXITCODE" }
-    & $Python -m pytest
+    & $buildPython -m pytest
     if ($LASTEXITCODE -ne 0) { throw "pytest failed with exit code $LASTEXITCODE" }
-    & $Python -m build
+    & $buildPython -m build --no-isolation
     if ($LASTEXITCODE -ne 0) { throw "Python build failed with exit code $LASTEXITCODE" }
     Push-Location $nativeRoot
     try {
-        cargo build --workspace --release
+        cargo build --workspace --release --locked
         if ($LASTEXITCODE -ne 0) { throw "Cargo build failed with exit code $LASTEXITCODE" }
     }
     finally {
@@ -58,7 +68,7 @@ try {
     }
     Copy-Item -LiteralPath (Join-Path $projectRoot "scripts\run_bundle.ps1") `
         -Destination (Join-Path $bundleRoot "run_uga.ps1")
-    & $Python -m apps.dependency_inventory `
+    & $buildPython -m apps.dependency_inventory `
         --pyproject (Join-Path $projectRoot "pyproject.toml") `
         --cargo-manifest (Join-Path $nativeRoot "Cargo.toml") `
         --npm-lock (Join-Path $projectRoot "package-lock.json") `
@@ -103,11 +113,11 @@ try {
             Remove-Item -LiteralPath $resolvedSmoke -Recurse -Force
         }
     }
-    & $Python -m apps.release_manifest $bundleRoot `
+    & $buildPython -m apps.release_manifest $bundleRoot `
         --source-revision $sourceRevision `
         --package-smoke-passed
     if ($LASTEXITCODE -ne 0) { throw "Release manifest failed with exit code $LASTEXITCODE" }
-    & $Python -m apps.release_manifest $bundleRoot --verify-existing
+    & $buildPython -m apps.release_manifest $bundleRoot --verify-existing
     if ($LASTEXITCODE -ne 0) { throw "Bundle verification failed with exit code $LASTEXITCODE" }
     $finalRevision = (& git -C $projectRoot rev-parse HEAD).Trim()
     $finalDirty = & git -C $projectRoot status --porcelain
@@ -119,4 +129,11 @@ try {
 }
 finally {
     Pop-Location
+    if ($buildVenvRoot -and (Test-Path -LiteralPath $buildVenvRoot)) {
+        $resolvedBuildVenv = (Resolve-Path -LiteralPath $buildVenvRoot).Path
+        if ((Split-Path -Parent $resolvedBuildVenv) -ne $distRoot) {
+            throw "Refusing to remove unexpected build venv directory: $resolvedBuildVenv"
+        }
+        Remove-Item -LiteralPath $resolvedBuildVenv -Recurse -Force
+    }
 }
