@@ -18,3 +18,5 @@ runs/
 data/raw/
 data/processed/
 data/datasets/
+CODELY.md
+.codely-cli/
