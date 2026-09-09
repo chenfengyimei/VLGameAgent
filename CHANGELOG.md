@@ -80,3 +80,6 @@
 - Add developer-owned DX11, DX12, and OpenGL fixture windows with deterministic
   color cycling and resize-safe swap chains, giving the capture qualification
   matrix real D3D and OpenGL render targets beyond the Tk-drawn Fixture World.
+- Reject minimized targets in the GDI fallback probe and capture path, and add
+  automated Windows lifecycle tests for resize, minimize/restore, and
+  cross-monitor moves against live windows.

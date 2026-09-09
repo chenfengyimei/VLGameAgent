@@ -80,6 +80,10 @@ class GDIFallbackCaptureBackend(CaptureBackend):
     def probe(self, target: WindowIdentity) -> CaptureProbe:
         if os.name != "nt":
             return CaptureProbe(False, 0, "GDI capture requires Windows", _CAPABILITY)
+        if self._user32.IsIconic(ctypes.c_void_p(target.hwnd)):
+            # IsWindowVisible stays true for minimized windows; GDI cannot
+            # capture an iconic client area, so the probe must say so.
+            return CaptureProbe(False, 0, "target is minimized", _CAPABILITY)
         try:
             snapshot = self._windows.snapshot(target.hwnd)
         except Exception as error:
@@ -100,6 +104,10 @@ class GDIFallbackCaptureBackend(CaptureBackend):
     def _capture(self) -> Frame:
         if os.name != "nt" or self._target is None:
             raise BackendUnavailableError("GDI capture is not started on Windows")
+        if self._user32.IsIconic(ctypes.c_void_p(self._target.hwnd)):
+            # The snapshot layer rejects iconic client rects; GDI must report
+            # the availability problem before asking for a snapshot.
+            raise BackendUnavailableError("window client area is empty or minimized")
         snapshot = self._windows.snapshot(self._target.hwnd)
         if snapshot.identity != self._target:
             raise ContractViolation("window identity changed during capture")
