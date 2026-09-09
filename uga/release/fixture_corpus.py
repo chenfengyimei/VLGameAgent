@@ -200,6 +200,7 @@ def _launch_fixture(project_root: Path, world: FixtureWorld) -> subprocess.Popen
 def _wait_for_owned_window(process: subprocess.Popen[bytes], title: str) -> None:
     windows = Win32WindowBackend()
     deadline = time.monotonic() + 10
+    seen_owned_window = False
     while time.monotonic() < deadline:
         if process.poll() is not None:
             raise ContractViolation(f"fixture process exited before opening {title}")
@@ -211,9 +212,15 @@ def _wait_for_owned_window(process: subprocess.Popen[bytes], title: str) -> None
             ),
             None,
         )
-        if owned is not None and windows.request_foreground(owned.identity.hwnd):
-            return
+        if owned is not None:
+            seen_owned_window = True
+            if windows.request_foreground(owned.identity.hwnd):
+                return
         time.sleep(0.05)
+    if seen_owned_window:
+        raise ContractViolation(
+            f"fixture window opened but Windows denied foreground activation: {title}"
+        )
     raise ContractViolation(f"fixture window did not open: {title}")
 
 
