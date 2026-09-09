@@ -150,31 +150,28 @@ def _lifetime(
     return ActionLifetime(created, UGATime(effective_ns), UGATime(effective_ns + ttl_ns))
 
 
-def _build_fixture_actions(
+_CYCLE_NS = 5_000_000_000
+
+
+def _build_fixture_cycle(
     created: UGATime,
     target: WindowSnapshot,
-    duration_seconds: float,
-) -> tuple[tuple[PhysicalAction, ...], tuple[int, ...]]:
-    if duration_seconds < 4.5 or not math.isfinite(duration_seconds):
-        raise ContractViolation("fixture qualification duration must be at least 4.5 seconds")
-    start_ns = created.value_ns
-    cycle_ns = 5_000_000_000
-    available_ns = round(duration_seconds * 1_000_000_000)
-    cycle_count = max(1, (available_ns - 500_000_000) // cycle_ns)
+    cycle: int,
+    base_ns: int,
+) -> tuple[tuple[PhysicalAction, ...], int]:
+    if cycle < 0 or created.value_ns > base_ns + 100_000_000:
+        raise ContractViolation("fixture cycle must be scheduled before its first action")
     center_x = round((target.client_screen_rect.left + target.client_screen_rect.right) / 2)
     resume_y = round((target.client_screen_rect.top + target.client_screen_rect.bottom) / 2 - 20)
-    actions: list[PhysicalAction] = []
-    success_checks: list[int] = []
 
     def key(
-        cycle: int,
         name: str,
         offset_ns: int,
         code: int,
         is_down: bool,
         encoding: KeyEncoding = KeyEncoding.SCAN_CODE,
     ) -> KeyboardAction:
-        effective = start_ns + cycle * cycle_ns + offset_ns
+        effective = base_ns + offset_ns
         return KeyboardAction(
             f"fixture-{cycle:04d}-{name}",
             _lifetime(created, effective),
@@ -183,47 +180,42 @@ def _build_fixture_actions(
             encoding,
         )
 
-    for cycle in range(cycle_count):
-        base = start_ns + cycle * cycle_ns
-        actions.extend(
-            (
-                key(cycle, "reset-down", 100_000_000, 19, True),
-                key(cycle, "reset-up", 150_000_000, 19, False),
-                key(cycle, "menu-down", 350_000_000, 0x1B, True, KeyEncoding.VIRTUAL_KEY),
-                key(cycle, "menu-up", 400_000_000, 0x1B, False, KeyEncoding.VIRTUAL_KEY),
-                AbsolutePointerAction(
-                    f"fixture-{cycle:04d}-resume-move",
-                    _lifetime(created, base + 550_000_000),
-                    center_x,
-                    resume_y,
-                    CoordinateSpace.PHYSICAL_SCREEN_PIXEL,
-                ),
-                MouseButtonAction(
-                    f"fixture-{cycle:04d}-resume-down",
-                    _lifetime(created, base + 600_000_000),
-                    MouseButton.LEFT,
-                    True,
-                ),
-                MouseButtonAction(
-                    f"fixture-{cycle:04d}-resume-up",
-                    _lifetime(created, base + 650_000_000),
-                    MouseButton.LEFT,
-                    False,
-                ),
-                RelativeMouseAction(
-                    f"fixture-{cycle:04d}-look",
-                    _lifetime(created, base + 800_000_000),
-                    12,
-                    0,
-                ),
-                key(cycle, "right-down", 1_000_000_000, 32, True),
-                key(cycle, "right-up", 3_780_000_000, 32, False),
-                key(cycle, "interact-down", 3_900_000_000, 18, True),
-                key(cycle, "interact-up", 3_950_000_000, 18, False),
-            )
-        )
-        success_checks.append(base + 4_200_000_000)
-    return tuple(actions), tuple(success_checks)
+    actions: tuple[PhysicalAction, ...] = (
+        key("reset-down", 100_000_000, 19, True),
+        key("reset-up", 150_000_000, 19, False),
+        key("menu-down", 350_000_000, 0x1B, True, KeyEncoding.VIRTUAL_KEY),
+        key("menu-up", 400_000_000, 0x1B, False, KeyEncoding.VIRTUAL_KEY),
+        AbsolutePointerAction(
+            f"fixture-{cycle:04d}-resume-move",
+            _lifetime(created, base_ns + 550_000_000),
+            center_x,
+            resume_y,
+            CoordinateSpace.PHYSICAL_SCREEN_PIXEL,
+        ),
+        MouseButtonAction(
+            f"fixture-{cycle:04d}-resume-down",
+            _lifetime(created, base_ns + 600_000_000),
+            MouseButton.LEFT,
+            True,
+        ),
+        MouseButtonAction(
+            f"fixture-{cycle:04d}-resume-up",
+            _lifetime(created, base_ns + 650_000_000),
+            MouseButton.LEFT,
+            False,
+        ),
+        RelativeMouseAction(
+            f"fixture-{cycle:04d}-look",
+            _lifetime(created, base_ns + 800_000_000),
+            12,
+            0,
+        ),
+        key("right-down", 1_000_000_000, 32, True),
+        key("right-up", 3_780_000_000, 32, False),
+        key("interact-down", 3_900_000_000, 18, True),
+        key("interact-up", 3_950_000_000, 18, False),
+    )
+    return actions, base_ns + 4_200_000_000
 
 
 def _capture_registry(preference: str, windows: Win32WindowBackend) -> CaptureBackendRegistry:
@@ -242,6 +234,8 @@ def _capture_registry(preference: str, windows: Win32WindowBackend) -> CaptureBa
 def _activate(windows: Win32WindowBackend, hwnd: int, timeout_seconds: float = 2.0) -> bool:
     deadline = time.monotonic() + timeout_seconds
     while time.monotonic() < deadline:
+        if windows.foreground_hwnd() == hwnd:
+            return True
         if windows.request_foreground(hwnd) and windows.foreground_hwnd() == hwnd:
             return True
         time.sleep(0.05)
@@ -391,6 +385,8 @@ def run_fixture_qualification(
 ) -> Path:
     if not allow_physical_input:
         raise ContractViolation("fixture qualification requires --allow-physical-input")
+    if duration_seconds < 4.5 or not math.isfinite(duration_seconds):
+        raise ContractViolation("fixture qualification duration must be at least 4.5 seconds")
     if not 1 <= target_fps <= 120 or not math.isfinite(target_fps):
         raise ContractViolation("fixture qualification target FPS must be in [1, 120]")
     require_safe_environment(
@@ -420,32 +416,6 @@ def run_fixture_qualification(
     scheduler = ActionScheduler(clock, executor)
     shutdown = SafetyShutdown(clock, leases, scheduler, executor, enabled)
     emergency = EmergencyStop(shutdown)
-    actions, success_checks = _build_fixture_actions(started, target, duration_seconds)
-    last_expiry = max(action.lifetime.expires_at.value_ns for action in actions)
-    lease = leases.grant(
-        ControlOwner.FAST_POLICY,
-        ControlMode.PLAY_3D,
-        last_expiry - started.value_ns + 5_000_000_000,
-        confidence=1.0,
-        reason="developer-owned fixture qualification",
-    )
-    proposal = ActionProposal(
-        uuid.uuid4().hex,
-        "fixture-qualification",
-        lease.owner,
-        lease.mode,
-        lease.lease_id,
-        lease.generation,
-        ActionLifetime(started, actions[0].lifetime.effective_from, UGATime(last_expiry)),
-        actions,
-        "fixture-observation-0001",
-        1.0,
-    )
-    decision = ActionArbiter(clock, leases).decide(proposal)
-    scheduled = scheduler.schedule(decision, target.identity, lease)
-    if not decision.accepted or scheduled != len(actions):
-        raise ContractViolation("fixture action proposal was not fully scheduled")
-
     episode_id = f"fixture-{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:8]}"
     metadata = EpisodeMetadata(
         episode_id,
@@ -463,16 +433,6 @@ def run_fixture_qualification(
     writer = EpisodeWriter(episode_root, metadata)
     writer.attach_video(PyAvVideoRecorder(writer.video_path, fps=round(target_fps)))
     diagnostics = CaptureDiagnosticsAccumulator(backend.backend_id)
-    writer.record_observation(
-        "fixture-observation-0001",
-        started,
-        {"task": metadata.task, "source": "captured-screen"},
-    )
-    for action in actions:
-        writer.record_action(
-            action,
-            _provenance(action, lease.lease_id, "fixture-observation-0001"),
-        )
     writer.record_event(
         "capture-selected",
         clock.now(),
@@ -484,13 +444,85 @@ def run_fixture_qualification(
     initial_frame: Frame | None = None
     final_frame: Frame | None = None
     success_seen = False
-    pending_checks = list(success_checks)
+    pending_checks: list[int] = []
     episode_path: Path | None = None
-    capture_ended = started
+    capture_started = clock.now()
+    capture_ended = capture_started
+    script_start_ns = capture_started.value_ns + 250_000_000
+    cycle_count = max(1, math.floor((duration_seconds - 4.45) / 5.0) + 1)
+    next_cycle = 0
+    scheduled = 0
+    accepted_proposals = 0
+    observed_flushes = 0
+    arbiter = ActionArbiter(clock, leases)
     try:
         while True:
             loop_before = clock.now()
-            scheduler.tick()
+            while next_cycle < cycle_count:
+                base_ns = script_start_ns + next_cycle * _CYCLE_NS
+                if loop_before.value_ns < base_ns - 250_000_000:
+                    break
+                if not _activate(windows, target.identity.hwnd):
+                    raise ContractViolation("fixture focus could not be restored for next cycle")
+                created = clock.now()
+                actions, success_check = _build_fixture_cycle(
+                    created,
+                    target,
+                    next_cycle,
+                    base_ns,
+                )
+                last_expiry = max(action.lifetime.expires_at.value_ns for action in actions)
+                lease = leases.grant(
+                    ControlOwner.FAST_POLICY,
+                    ControlMode.PLAY_3D,
+                    last_expiry - created.value_ns + 1_000_000_000,
+                    confidence=1.0,
+                    reason=f"developer-owned fixture cycle {next_cycle}",
+                )
+                observation_id = f"fixture-observation-{next_cycle:04d}"
+                writer.record_observation(
+                    observation_id,
+                    created,
+                    {"task": metadata.task, "cycle": next_cycle, "source": "captured-screen"},
+                )
+                proposal = ActionProposal(
+                    uuid.uuid4().hex,
+                    "fixture-qualification",
+                    lease.owner,
+                    lease.mode,
+                    lease.lease_id,
+                    lease.generation,
+                    ActionLifetime(
+                        created,
+                        actions[0].lifetime.effective_from,
+                        UGATime(last_expiry),
+                    ),
+                    actions,
+                    observation_id,
+                    1.0,
+                )
+                decision = arbiter.decide(proposal)
+                added = scheduler.schedule(decision, target.identity, lease)
+                if not decision.accepted or added != len(actions):
+                    raise ContractViolation("fixture cycle proposal was not fully scheduled")
+                for action in actions:
+                    writer.record_action(
+                        action,
+                        _provenance(action, lease.lease_id, observation_id),
+                    )
+                accepted_proposals += 1
+                scheduled += added
+                pending_checks.append(success_check)
+                next_cycle += 1
+            before_stats = scheduler.stats()
+            after_stats = scheduler.tick()
+            if after_stats.flushed > before_stats.flushed:
+                observed_flushes += after_stats.flushed - before_stats.flushed
+                writer.record_event(
+                    f"guard-recovery-{observed_flushes}",
+                    clock.now(),
+                    {"flushed_actions": after_stats.flushed - before_stats.flushed},
+                )
             capture_before = clock.now()
             frame = backend.capture()
             capture_after = clock.now()
@@ -506,7 +538,7 @@ def run_fixture_qualification(
             while pending_checks and frame.capture_timestamp.value_ns >= pending_checks[0]:
                 success_seen = success_seen or _success_pixel_count(frame) >= 20
                 pending_checks.pop(0)
-            elapsed_seconds = (capture_after.value_ns - started.value_ns) / 1_000_000_000
+            elapsed_seconds = (capture_after.value_ns - capture_started.value_ns) / 1_000_000_000
             if elapsed_seconds >= duration_seconds:
                 capture_ended = capture_after
                 success_seen = success_seen or _success_pixel_count(frame) >= 20
@@ -516,27 +548,56 @@ def run_fixture_qualification(
                 time.sleep(remaining_ns / 1_000_000_000)
 
         if exercise_focus_loss:
+            focus_lease = leases.grant(
+                ControlOwner.FAST_POLICY,
+                ControlMode.PLAY_3D,
+                5_000_000_000,
+                confidence=1.0,
+                reason="fixture focus-loss qualification",
+            )
             with _owned_focus_sink(windows) as focus_sink:
                 focus_report = _exercise_focus_loss(
                     windows,
                     focus_sink,
                     target,
                     executor,
-                    lease,
+                    focus_lease,
                 )
         else:
             focus_report = {"exercised": False, "reason": "not requested"}
         if not _activate(windows, target.identity.hwnd):
             raise ContractViolation("fixture focus could not be restored before emergency test")
-        emergency_report = (
-            _exercise_emergency_hotkey(target, executor, lease, emergency)
-            if exercise_emergency_hotkey
-            else {"registered": False, "tripped": False, "reason": "not requested"}
-        )
+        if exercise_emergency_hotkey:
+            emergency_lease = leases.grant(
+                ControlOwner.EMERGENCY,
+                ControlMode.PLAY_3D,
+                5_000_000_000,
+                confidence=1.0,
+                reason="fixture emergency-hotkey qualification",
+            )
+            emergency_report = _exercise_emergency_hotkey(
+                target,
+                executor,
+                emergency_lease,
+                emergency,
+            )
+        else:
+            emergency_report = {"registered": False, "tripped": False, "reason": "not requested"}
         stats = scheduler.stats()
+        guard_rejected = max(
+            0,
+            scheduled - stats.executed - stats.expired - stats.rejected - stats.flushed,
+        )
+        execution_ratio = stats.executed / scheduled if scheduled else 0.0
+        control_passed = (
+            next_cycle == cycle_count
+            and stats.expired == 0
+            and stats.rejected == 0
+            and execution_ratio >= 0.95
+        )
         ended = clock.now()
         diagnostic_report = diagnostics.summarize(
-            elapsed_seconds=(capture_ended.value_ns - started.value_ns) / 1_000_000_000
+            elapsed_seconds=(capture_ended.value_ns - capture_started.value_ns) / 1_000_000_000
         )
         writer.record_event(
             "safety-checks-complete",
@@ -549,13 +610,13 @@ def run_fixture_qualification(
                 "capture_effective_fps": diagnostic_report.effective_fps,
                 "scheduled_actions": scheduled,
                 "executed_actions": stats.executed,
+                "guard_rejected_actions": guard_rejected,
+                "action_execution_ratio": execution_ratio,
                 "success_visible": int(success_seen),
             }
         )
         episode_result = (
-            EpisodeResult.SUCCESS
-            if success_seen and stats.executed == scheduled
-            else EpisodeResult.FAILURE
+            EpisodeResult.SUCCESS if success_seen and control_passed else EpisodeResult.FAILURE
         )
         episode_path = writer.finalize(episode_result, ended)
     except BaseException:
@@ -581,7 +642,7 @@ def run_fixture_qualification(
     emergency_passed = not exercise_emergency_hotkey or bool(emergency_report.get("passed"))
     passed = (
         success_seen
-        and stats.executed == scheduled
+        and control_passed
         and diagnostic_report.timestamp_regressions == 0
         and replay.action_count == scheduled
         and quality.status.value == "accepted"
@@ -609,8 +670,13 @@ def run_fixture_qualification(
         ],
         "capture": asdict(diagnostic_report),
         "control": {
-            "proposal_accepted": decision.accepted,
+            "proposals_accepted": accepted_proposals,
+            "cycles_planned": cycle_count,
+            "cycles_scheduled": next_cycle,
             "scheduled": scheduled,
+            "guard_rejected": guard_rejected,
+            "execution_ratio": execution_ratio,
+            "observed_flushes": observed_flushes,
             "scheduler": asdict(stats),
             "focus_loss": focus_report,
             "emergency_hotkey": emergency_report,

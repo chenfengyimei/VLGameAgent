@@ -171,7 +171,8 @@ class DatasetValidator:
         actions: list[dict[str, object]],
         findings: list[QualityFinding],
     ) -> None:
-        ordered = sorted(actions, key=lambda row: int(str(row["timestamp_ns"])))
+        raw_inputs = [row for row in actions if row.get("category") == "raw_input"]
+        ordered = sorted(raw_inputs, key=lambda row: int(str(row["timestamp_ns"])))
         for previous, current in zip(ordered, ordered[1:], strict=False):
             gap = int(str(current["timestamp_ns"])) - int(str(previous["timestamp_ns"]))
             if gap > self._max_input_gap_ns:
@@ -184,7 +185,6 @@ class DatasetValidator:
                 )
                 break
 
-        raw_inputs = [row for row in actions if row.get("category") == "raw_input"]
         if bool(metadata.get("human_controlled")) and not raw_inputs:
             findings.append(
                 QualityFinding(

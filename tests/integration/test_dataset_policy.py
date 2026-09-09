@@ -47,7 +47,12 @@ from uga.policy.fast_policy import (
 )
 from uga.policy.reasoning_gate import ReasoningGate, ReasoningReason, ReasoningSignals
 from uga.recording.episode_writer import EpisodeWriter
-from uga.recording.schema import ActionProvenance, EpisodeMetadata, EpisodeResult
+from uga.recording.schema import (
+    ActionProvenance,
+    EpisodeMetadata,
+    EpisodeResult,
+    InputStateRecord,
+)
 from uga.recording.video import PyAvVideoRecorder
 from uga.time.clock import ManualClock, UGATime
 from uga.training.artifact import TrainingArtifactManifest
@@ -266,13 +271,62 @@ class DatasetPolicyTests(unittest.TestCase):
                         False,
                         lifetime,
                     ),
+                    input_state=InputStateRecord(lifetime.created_at, action, ("W",), ()),
                 )
             episode = writer.finalize(EpisodeResult.FAILURE, UGATime(1_000_000_100))
             report = DatasetValidator(max_input_gap_ns=100).validate(episode)
             codes = {finding.code for finding in report.findings}
             self.assertIn("clock_regression", codes)
             self.assertIn("input_gap", codes)
-            self.assertIn("missing_raw_input", codes)
+            self.assertNotIn("missing_raw_input", codes)
+
+    def test_validator_allows_sparse_agent_actions(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            writer = EpisodeWriter(
+                root,
+                EpisodeMetadata(
+                    "sparse-agent-actions",
+                    "game-a",
+                    "1",
+                    (2, 2),
+                    "fixture",
+                    0,
+                    "wait and move",
+                    EpisodeResult.IN_PROGRESS,
+                    "agent",
+                    "policy",
+                    False,
+                ),
+                require_video=False,
+            )
+            for action_id, timestamp in (("first", 100), ("second", 1_000_000_000)):
+                lifetime = ActionLifetime(
+                    UGATime(timestamp), UGATime(timestamp), UGATime(timestamp + 100)
+                )
+                action = KeyboardAction(action_id, lifetime, 0x11, True)
+                writer.record_action(
+                    action,
+                    ActionProvenance(
+                        action_id,
+                        "FAST_POLICY",
+                        "policy",
+                        None,
+                        None,
+                        None,
+                        None,
+                        "PLAY_3D",
+                        "lease",
+                        1.0,
+                        False,
+                        lifetime,
+                    ),
+                )
+            episode = writer.finalize(EpisodeResult.SUCCESS, UGATime(1_000_000_100))
+
+            report = DatasetValidator(max_input_gap_ns=100).validate(episode)
+
+            self.assertNotIn("input_gap", {finding.code for finding in report.findings})
 
     def test_dataset_manifest_persists_licenses_splits_and_episode_digests(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
