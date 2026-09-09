@@ -63,3 +63,5 @@
   game-profile and model-registry YAML inputs, fail closed on deeply nested or
   oversized untrusted JSON documents instead of crashing, and stream
   qualification evidence hashing instead of loading whole files into memory.
+- Keep watchdog enforcement alive when a liveness probe raises and complete the
+  emergency neutralization sequence even when the clock backend fails.

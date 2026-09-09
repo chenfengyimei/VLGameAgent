@@ -43,6 +43,10 @@ class RuntimeWatchdog:
                 trip = self._shutdown.trip(ShutdownCause.WATCHDOG_TIMEOUT)
             return WatchdogStatus(self._last_heartbeat, deadline, trip)
 
+    def force_trip(self) -> SafetyTrip | None:
+        """Fail-closed response for a broken liveness probe; latches a runtime trip."""
+        return self._shutdown.trip(ShutdownCause.RUNTIME_FAILURE)
+
 
 class RuntimeWatchdogMonitor:
     """Independent poller that keeps watchdog enforcement alive during stalls."""
@@ -67,4 +71,8 @@ class RuntimeWatchdogMonitor:
 
     def _run(self) -> None:
         while not self._stop.wait(self._poll_interval_s):
-            self._watchdog.check()
+            try:
+                self._watchdog.check()
+            except Exception:
+                # A failed liveness probe must never silently disarm enforcement.
+                self._watchdog.force_trip()

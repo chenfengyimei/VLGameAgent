@@ -104,6 +104,19 @@ class BlockingReleaseBackend(DryRunInputBackend):
         super().release_all()
 
 
+class ExplodingClock(ManualClock):
+    """Clock backend whose reads fail once armed; probes must not disarm the watchdog."""
+
+    def __init__(self, start: int) -> None:
+        super().__init__(start)
+        self.armed = False
+
+    def now(self) -> UGATime:
+        if self.armed:
+            raise RuntimeError("clock backend failed")
+        return super().now()
+
+
 class ControlRuntimeTests(unittest.TestCase):
     def setUp(self) -> None:
         self.clock = ManualClock(100)
@@ -352,6 +365,60 @@ class ControlRuntimeTests(unittest.TestCase):
             monitor.close()
         self.assertIsNotNone(shutdown.tripped)
         self.assertEqual(self.backend.release_count, 1)
+
+    def test_shutdown_trip_survives_clock_failure(self) -> None:
+        clock = ExplodingClock(100)
+        leases = ControlLeaseManager(clock)
+        backend = DryRunInputBackend()
+        enabled = AgentEnableState(True)
+        guard = FocusGuard(self.windows, self.integrity, leases, enabled)
+        executor = InputExecutor(clock, backend, guard, leases)
+        scheduler = ActionScheduler(clock, executor, leases)
+        shutdown = SafetyShutdown(clock, leases, scheduler, executor, enabled)
+        lease = leases.grant(
+            ControlOwner.FAST_POLICY,
+            ControlMode.PLAY_3D,
+            1_000,
+            confidence=0.9,
+            reason="test",
+        )
+        clock.armed = True
+        trip = EmergencyStop(shutdown).trigger()
+        self.assertIsNotNone(trip)
+        self.assertFalse(enabled.get())
+        self.assertEqual(backend.release_count, 1)
+        self.assertFalse(leases.validate(lease, UGATime(101)))
+        if trip is not None:
+            self.assertTrue(
+                any("clock unavailable" in error for error in trip.cleanup_errors)
+            )
+
+    def test_monitor_keeps_enforcement_alive_when_probe_raises(self) -> None:
+        clock = ExplodingClock(100)
+        leases = ControlLeaseManager(clock)
+        backend = DryRunInputBackend()
+        enabled = AgentEnableState(True)
+        guard = FocusGuard(self.windows, self.integrity, leases, enabled)
+        executor = InputExecutor(clock, backend, guard, leases)
+        scheduler = ActionScheduler(clock, executor, leases)
+        shutdown = SafetyShutdown(clock, leases, scheduler, executor, enabled)
+        watchdog = RuntimeWatchdog(clock, shutdown, timeout_ns=20)
+        monitor = RuntimeWatchdogMonitor(watchdog, poll_interval_s=0.001)
+        clock.armed = True
+        monitor.start()
+        try:
+            for _ in range(200):
+                if shutdown.tripped is not None:
+                    break
+                time.sleep(0.001)
+        finally:
+            monitor.close()
+        trip = shutdown.tripped
+        self.assertIsNotNone(trip)
+        if trip is not None:
+            self.assertEqual(trip.cause, ShutdownCause.RUNTIME_FAILURE)
+        self.assertFalse(enabled.get())
+        self.assertEqual(backend.release_count, 1)
 
 
 class StateAndPolicyTests(unittest.TestCase):

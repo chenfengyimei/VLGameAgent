@@ -53,8 +53,13 @@ class SafetyShutdown:
         with self._lock:
             if self._trip is not None:
                 return self._trip
-            occurred_at = self._clock.now()
             errors: list[str] = []
+            try:
+                occurred_at = self._clock.now()
+            except Exception as exc:
+                # A failing clock must never abort the neutralization sequence.
+                occurred_at = UGATime(0)
+                errors.append(f"clock unavailable during trip: {exc}")
             self._enabled.set(False)
             # This shutdown owns the ordered flush/release below, so suppress the
             # scheduler's lease-loss callback and avoid duplicate backend writes.
