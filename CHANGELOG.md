@@ -67,3 +67,6 @@
   emergency neutralization sequence even when the clock backend fails.
 - Deliver the dashboard CSRF token out of band through the console URL fragment
   instead of serving it inside the page to unauthenticated loopback requests.
+- Verify and load the native capture DLL from a private per-process copy,
+  closing the digest-to-load race, and abort loudly when an explicitly pinned
+  native library fails verification instead of degrading to "not installed".

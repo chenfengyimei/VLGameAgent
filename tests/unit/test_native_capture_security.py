@@ -1,21 +1,25 @@
 from __future__ import annotations
 
 import ctypes
+import hashlib
+import os
 import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from tests.helpers import identity
 from uga.capture.frame import BufferHandle, BufferKind, PixelFormat
 from uga.capture.native_adapter import NativeCapturedFrame
 from uga.capture.native_ctypes import (
+    _EXPECTED_ABI,
     CtypesNativeCaptureDriver,
     NativeBackendId,
     NativeCaptureLibrary,
+    load_default_driver,
 )
 from uga.core.errors import BackendUnavailableError, CaptureAccessLostError
 from uga.time.clock import UGATime
@@ -80,6 +84,56 @@ class NativeCaptureSecurityTests(unittest.TestCase):
                 self.assertRaisesRegex(BackendUnavailableError, "SHA-256 mismatch"),
             ):
                 NativeCaptureLibrary(path, expected_sha256="0" * 64)
+            loader.assert_not_called()
+
+    def test_library_loads_a_verified_private_copy(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary) / "uga_capture.dll"
+            payload = b"native capture module bytes"
+            source.write_bytes(payload)
+            digest = hashlib.sha256(payload).hexdigest()
+            with patch("uga.capture.native_ctypes.ctypes.CDLL") as loader:
+                loader.return_value.uga_capture_abi_version = MagicMock(
+                    return_value=_EXPECTED_ABI
+                )
+                library = NativeCaptureLibrary(source, expected_sha256=digest)
+            loader.assert_called_once()
+            loaded = Path(str(loader.call_args[0][0]))
+            self.assertNotEqual(loaded, source)
+            self.assertEqual(hashlib.sha256(loaded.read_bytes()).hexdigest(), digest)
+            self.assertEqual(library.path, loaded)
+
+    def test_explicit_environment_request_fails_loud_when_library_missing(self) -> None:
+        env = {"UGA_NATIVE_CAPTURE_DLL": r"Z:\missing\uga_capture.dll"}
+        with (
+            patch.dict(os.environ, env),
+            patch("uga.capture.native_ctypes.find_native_library", return_value=None),
+        ):
+            with self.assertRaisesRegex(
+                BackendUnavailableError, "explicit native capture library is missing"
+            ):
+                load_default_driver(NativeBackendId.WGC, cast(WindowBackend, FakeWindows()))
+            # An unwired probe request stays graceful even when pinned.
+            self.assertIsNone(load_default_driver(NativeBackendId.WGC, None))
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertIsNone(
+                load_default_driver(NativeBackendId.WGC, cast(WindowBackend, FakeWindows()))
+            )
+
+    def test_explicit_environment_request_fails_loud_on_digest_mismatch(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary) / "uga_capture.dll"
+            source.write_bytes(b"tampered module bytes")
+            env = {
+                "UGA_NATIVE_CAPTURE_DLL": str(source),
+                "UGA_NATIVE_CAPTURE_SHA256": "0" * 64,
+            }
+            with (
+                patch.dict(os.environ, env),
+                patch("uga.capture.native_ctypes.ctypes.CDLL") as loader,
+                self.assertRaisesRegex(BackendUnavailableError, "SHA-256 mismatch"),
+            ):
+                load_default_driver(NativeBackendId.WGC, cast(WindowBackend, FakeWindows()))
             loader.assert_not_called()
 
     def test_identity_change_before_capture_destroys_session(self) -> None:

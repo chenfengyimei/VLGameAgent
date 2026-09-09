@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import atexit
 import ctypes
 import hashlib
 import hmac
 import os
 import re
+import shutil
+import tempfile
 import uuid
 from enum import IntEnum
 from pathlib import Path
@@ -76,27 +79,39 @@ class NativeCaptureLibrary:
     """Validated ctypes wrapper for the panic-contained UGA capture C ABI."""
 
     def __init__(self, path: str | Path, *, expected_sha256: str) -> None:
-        self.path = Path(path).resolve()
+        source = Path(path).resolve()
         if _SHA256.fullmatch(expected_sha256) is None:
             raise BackendUnavailableError("native capture requires a trusted SHA-256 digest")
-        if not self.path.is_file():
+        if not source.is_file():
             raise BackendUnavailableError("native capture library is not a regular file")
-        digest = hashlib.sha256()
+        # Hash and load one private copy so the verified bytes are the loaded
+        # bytes; an attacker with write access to the source directory cannot
+        # race the digest check with a swapped module.
+        self._private_dir = tempfile.mkdtemp(prefix="uga-native-verify-")
+        self.path = Path(self._private_dir) / source.name
+        atexit.register(self._cleanup_private_copy)
         try:
+            shutil.copyfile(source, self.path)
+            digest = hashlib.sha256()
             with self.path.open("rb") as stream:
                 for block in iter(lambda: stream.read(1024 * 1024), b""):
                     digest.update(block)
+            if not hmac.compare_digest(digest.hexdigest(), expected_sha256):
+                raise BackendUnavailableError("native capture library SHA-256 mismatch")
+            self._dll = ctypes.CDLL(str(self.path), winmode=_SAFE_DLL_SEARCH)
         except OSError as exc:
             raise BackendUnavailableError("native capture library cannot be verified") from exc
-        if not hmac.compare_digest(digest.hexdigest(), expected_sha256):
-            raise BackendUnavailableError("native capture library SHA-256 mismatch")
-        self._dll = ctypes.CDLL(str(self.path), winmode=_SAFE_DLL_SEARCH)
         self._configure()
         abi = int(self._dll.uga_capture_abi_version())
         if abi != _EXPECTED_ABI:
             raise BackendUnavailableError(
-                f"native capture ABI mismatch: expected {_EXPECTED_ABI:#x}, got {abi:#x}"
+                f"native capture ABI mismatch: expected {_EXPECTED_ABI:#x}, got {abi}"
             )
+
+    def _cleanup_private_copy(self) -> None:
+        # A loaded DLL stays mapped until process exit, so removal is
+        # best-effort and the OS temp hygiene covers the remainder.
+        shutil.rmtree(self._private_dir, ignore_errors=True)
 
     def _configure(self) -> None:
         self._dll.uga_capture_abi_version.argtypes = []
@@ -260,18 +275,31 @@ def load_default_driver(
     *,
     expected_sha256: str | None = None,
 ) -> CtypesNativeCaptureDriver | None:
+    if windows is None:
+        return None
+    env_path = os.environ.get("UGA_NATIVE_CAPTURE_DLL")
+    env_digest = os.environ.get("UGA_NATIVE_CAPTURE_SHA256")
+    trusted_digest = expected_sha256 or env_digest
+    explicit = expected_sha256 is not None or bool(env_path) or bool(env_digest)
+    if not explicit:
+        # Implicit discovery never loads native code without an explicit pin.
+        return None
+    # A launcher or test that explicitly pins the native library must never
+    # degrade silently: verification failures abort instead of reporting the
+    # provider as "not installed".
     path = find_native_library()
-    trusted_digest = expected_sha256 or os.environ.get("UGA_NATIVE_CAPTURE_SHA256")
-    if path is None or windows is None or trusted_digest is None:
-        return None
-    try:
-        return CtypesNativeCaptureDriver(
-            backend,
-            NativeCaptureLibrary(path, expected_sha256=trusted_digest),
-            windows,
+    if path is None:
+        raise BackendUnavailableError(
+            "explicit native capture library is missing: "
+            f"{env_path or 'no UGA_NATIVE_CAPTURE_DLL override found'}"
         )
-    except (OSError, BackendUnavailableError):
-        return None
+    if trusted_digest is None:
+        raise BackendUnavailableError("explicit native capture requires a trusted SHA-256 digest")
+    return CtypesNativeCaptureDriver(
+        backend,
+        NativeCaptureLibrary(path, expected_sha256=trusted_digest),
+        windows,
+    )
 
 
 def _capability(backend: NativeBackendId) -> CaptureCapability:
