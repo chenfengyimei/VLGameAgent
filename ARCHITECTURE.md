@@ -143,6 +143,14 @@ a wheel, source archive, native capture DLL, launcher, and hashed manifest. The
 manifest is deliberately non-releasable until all environmental, dataset,
 training, generalization, and governance evidence is present.
 
+V1 generalization claim scope (owner decision, 2026-09-10): the
+`generalization-bench` gate is satisfied by the four developer-owned Fixture
+scenarios (Train A/B/C plus the locked `heldout_diagonal` Test D), so V1 claims
+generalization across owned fixture environments only. Claims about real
+commercial games require the V2 corpus: licensed data from three real training
+games plus one locked real held-out game with recorded rights, which the
+fixture benchmark does not substitute for.
+
 Dataset manifests persist episode/session/player/game split ownership, quality
 status, duration, category, source revision, dataset-license metadata, and the
 digest of each Episode checksum manifest. Offline evaluation covers movement,

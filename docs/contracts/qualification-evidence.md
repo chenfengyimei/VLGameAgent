@@ -13,8 +13,10 @@ requires a `LICENSE*` artifact. Placeholder revisions such as
 
 The required gates cover automated tests, package construction and installation,
 capture soak, supervised control hardware tests, ten-minute Recorder/Replay,
-the licensed five-hour dataset milestone, model training, four-game
-generalization, and repository licensing/governance.
+the licensed five-hour dataset milestone, model training, generalization
+across the four developer-owned Fixture scenarios (V1 claim scope; real-game
+generalization with licensed data is deferred to V2), and repository
+licensing/governance.
 
 Typical ledger operations:
 

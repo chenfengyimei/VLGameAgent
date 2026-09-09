@@ -109,6 +109,13 @@
   staying blocked on an owner decision. The dependency inventory declares only
   permissive licenses (MIT, Apache-2.0, BSD-3-Clause, Unicode-3.0), so nothing
   downstream restricts attribution-only redistribution.
+- Record the V1 generalization claim scope: the owner accepted the
+  fixture-scenario scope, so the generalization-bench gate is satisfied by the
+  four developer-owned Fixture scenarios (Train A/B/C plus the locked
+  `heldout_diagonal` Test D) and V1 claims cross-environment generalization
+  within owned fixtures only; real licensed-game data is explicitly deferred
+  to V2, and the claim wording in the architecture and evidence contracts is
+  updated to prevent overclaiming.
 - Reject minimized targets in the GDI fallback probe and capture path, and add
   automated Windows lifecycle tests for resize, minimize/restore, and
   cross-monitor moves against live windows.

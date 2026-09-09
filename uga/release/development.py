@@ -73,7 +73,12 @@ def build_development_manifest(
             ReleaseGate("recorder-10min", GateStatus.NOT_RUN, "supervised gameplay required"),
             ReleaseGate("dataset-5h", GateStatus.NOT_RUN, "licensed reviewed corpus required"),
             ReleaseGate("model-training", GateStatus.NOT_RUN, "GPU training artifacts required"),
-            ReleaseGate("generalization-bench", GateStatus.NOT_RUN, "four-game benchmark required"),
+            ReleaseGate(
+                "generalization-bench",
+                GateStatus.NOT_RUN,
+                "four-scenario fixture benchmark required; V1 claim scope is"
+                " developer-owned fixtures, real-game generalization is V2",
+            ),
             license_gate,
         ),
     )
