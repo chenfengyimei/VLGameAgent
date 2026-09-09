@@ -9,8 +9,10 @@ from uga.release.fixture_corpus import run_fixture_corpus
 from uga.release.fixture_qualification import (
     _emergency_hotkey_passed,
     _select_owned_fixture_target,
+    _watchdog_timeout_passed,
     analyze_fixture_frame,
 )
+from uga.safety.focus_guard import AgentEnableState
 from uga.safety.shutdown import SafetyTrip, ShutdownCause
 from uga.time.clock import UGATime
 from uga.windows.backend import WindowSnapshot
@@ -61,6 +63,23 @@ class FixtureQualificationTests(unittest.TestCase):
             )
         )
         self.assertTrue(_emergency_hotkey_passed(["executed"] * 3, emergency_trip))
+
+    def test_watchdog_exercise_requires_timeout_cause_and_fail_closed_state(self) -> None:
+        emergency_trip = SafetyTrip(ShutdownCause.EMERGENCY_HOTKEY, UGATime(1), 0)
+        watchdog_trip = SafetyTrip(ShutdownCause.WATCHDOG_TIMEOUT, UGATime(1), 0)
+        dirty_watchdog_trip = SafetyTrip(
+            ShutdownCause.WATCHDOG_TIMEOUT, UGATime(1), 0, ("queue flush failed: boom",)
+        )
+        disabled = AgentEnableState(True)
+        disabled.set(False)
+        still_enabled = AgentEnableState(True)
+
+        self.assertFalse(_watchdog_timeout_passed(None, disabled, False))
+        self.assertFalse(_watchdog_timeout_passed(emergency_trip, disabled, False))
+        self.assertFalse(_watchdog_timeout_passed(dirty_watchdog_trip, disabled, False))
+        self.assertFalse(_watchdog_timeout_passed(watchdog_trip, still_enabled, False))
+        self.assertFalse(_watchdog_timeout_passed(watchdog_trip, disabled, True))
+        self.assertTrue(_watchdog_timeout_passed(watchdog_trip, disabled, False))
 
     def test_release_corpus_requires_explicit_input_and_five_train_hours(self) -> None:
         with self.assertRaisesRegex(ContractViolation, "allow-physical-input"):

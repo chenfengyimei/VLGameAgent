@@ -8,7 +8,7 @@ import subprocess
 import sys
 import time
 import uuid
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -434,6 +434,79 @@ def _emergency_hotkey_passed(results: list[str], trip: SafetyTrip | None) -> boo
     )
 
 
+def _watchdog_timeout_passed(
+    trip: SafetyTrip | None,
+    enabled: AgentEnableState,
+    lease_valid: bool,
+) -> bool:
+    return (
+        trip is not None
+        and trip.cause == ShutdownCause.WATCHDOG_TIMEOUT
+        and not trip.cleanup_errors
+        and not enabled.get()
+        and not lease_valid
+    )
+
+
+def _exercise_watchdog_timeout(
+    clock: PerfCounterClock,
+    windows: Win32WindowBackend,
+    keepalive: Callable[[], bool] | None,
+) -> dict[str, object]:
+    """Stall a dedicated supervision stack and verify the watchdog trips closed.
+
+    The run's own watchdog stays live through ``keepalive``; a run that is
+    already tripped (for example by the emergency-hotkey exercise) passes
+    ``None`` because heartbeats would always report false there.
+    """
+    enabled = AgentEnableState(True)
+    leases = ControlLeaseManager(clock)
+    executor = InputExecutor(
+        clock,
+        SendInputBackend(),
+        FocusGuard(windows, Win32IntegrityProvider(), leases, enabled),
+        leases,
+    )
+    scheduler = ActionScheduler(clock, executor, leases)
+    shutdown = SafetyShutdown(clock, leases, scheduler, executor, enabled)
+    watchdog = RuntimeWatchdog(clock, shutdown, timeout_ns=5_000_000_000)
+    monitor = RuntimeWatchdogMonitor(watchdog)
+    lease = leases.grant(
+        ControlOwner.FAST_POLICY,
+        ControlMode.PLAY_3D,
+        10_000_000_000,
+        confidence=1.0,
+        reason="fixture watchdog-timeout qualification",
+    )
+    if not watchdog.heartbeat():
+        return {"exercised": False, "reason": "exercise watchdog could not start"}
+    monitor.start()
+    # Deliberately stop heartbeating: this is the stalled-supervision state
+    # the live run must neutralize without any operator action.
+    deadline = time.monotonic() + 8.0
+    while shutdown.tripped is None and time.monotonic() < deadline:
+        time.sleep(0.05)
+        if keepalive is not None and not keepalive():
+            monitor.close()
+            return {
+                "exercised": False,
+                "reason": "run supervision tripped during the watchdog exercise",
+            }
+    trip = shutdown.tripped
+    monitor.close()
+    lease_valid = leases.validate(lease)
+    return {
+        "exercised": True,
+        "tripped": trip is not None,
+        "cause": None if trip is None else trip.cause.value,
+        "flushed_actions": None if trip is None else trip.flushed_actions,
+        "cleanup_errors": [] if trip is None else list(trip.cleanup_errors),
+        "agent_disabled": not enabled.get(),
+        "lease_revoked": not lease_valid,
+        "passed": _watchdog_timeout_passed(trip, enabled, lease_valid),
+    }
+
+
 def _select_owned_fixture_target(
     windows: Win32WindowBackend,
     *,
@@ -483,6 +556,7 @@ def run_fixture_qualification(
     allow_physical_input: bool,
     exercise_focus_loss: bool,
     exercise_emergency_hotkey: bool,
+    exercise_watchdog_timeout: bool = False,
     fixture_scenario: str = FixtureScenario.EXPLORATION.value,
     expected_pid: int,
     expected_identity: WindowIdentity | None = None,
@@ -807,6 +881,14 @@ def run_fixture_qualification(
             )
         else:
             emergency_report = {"registered": False, "tripped": False, "reason": "not requested"}
+        if exercise_watchdog_timeout:
+            watchdog_report = _exercise_watchdog_timeout(
+                clock,
+                windows,
+                None if shutdown.tripped is not None else watchdog.heartbeat,
+            )
+        else:
+            watchdog_report = {"exercised": False, "reason": "not requested"}
         stats = scheduler.stats()
         guard_rejected = max(
             0,
@@ -827,7 +909,7 @@ def run_fixture_qualification(
         writer.record_event(
             "safety-checks-complete",
             ended,
-            {"focus": focus_report, "emergency": emergency_report},
+            {"focus": focus_report, "emergency": emergency_report, "watchdog": watchdog_report},
         )
         writer.set_metrics(
             {
@@ -864,6 +946,7 @@ def run_fixture_qualification(
     stats = scheduler.stats()
     focus_passed = not exercise_focus_loss or bool(focus_report.get("passed"))
     emergency_passed = not exercise_emergency_hotkey or bool(emergency_report.get("passed"))
+    watchdog_passed = not exercise_watchdog_timeout or bool(watchdog_report.get("passed"))
     passed = (
         success_seen
         and control_passed
@@ -872,6 +955,7 @@ def run_fixture_qualification(
         and quality.status.value == "accepted"
         and focus_passed
         and emergency_passed
+        and watchdog_passed
     )
     report = {
         "schema": "uga.fixture_qualification",
@@ -910,6 +994,7 @@ def run_fixture_qualification(
             "scheduler": asdict(stats),
             "focus_loss": focus_report,
             "emergency_hotkey": emergency_report,
+            "watchdog_timeout": watchdog_report,
         },
         "visual": {
             "initial": None if initial_visual is None else asdict(initial_visual),

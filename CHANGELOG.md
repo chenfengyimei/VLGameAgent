@@ -88,6 +88,12 @@
 - Copy the overlapping sub-rect when a Windows Graphics Capture frame pool
   lags a window resize instead of failing with an unsupported-state error, so
   growing targets keep capturing across the pool recreation.
+- Add a live watchdog-timeout exercise to the fixture qualification command:
+  `--exercise-watchdog-timeout` deliberately stalls a dedicated supervision
+  stack built from the production watchdog, monitor, lease, and shutdown
+  classes and verifies the trip is fail-closed (watchdog cause, agent
+  disabled, lease revoked, clean cleanup), recorded alongside the focus-loss
+  and emergency-hotkey results.
 - Reject minimized targets in the GDI fallback probe and capture path, and add
   automated Windows lifecycle tests for resize, minimize/restore, and
   cross-monitor moves against live windows.

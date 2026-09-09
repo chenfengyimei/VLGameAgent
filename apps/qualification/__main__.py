@@ -112,6 +112,7 @@ def _fixture(args: argparse.Namespace) -> None:
             allow_physical_input=args.allow_physical_input,
             exercise_focus_loss=args.exercise_focus_loss,
             exercise_emergency_hotkey=args.exercise_emergency_hotkey,
+            exercise_watchdog_timeout=args.exercise_watchdog_timeout,
             fixture_scenario=scenario.value,
             expected_pid=args.expected_pid,
         )
@@ -201,6 +202,7 @@ def main() -> None:
     fixture.add_argument("--allow-physical-input", action="store_true")
     fixture.add_argument("--exercise-focus-loss", action="store_true")
     fixture.add_argument("--exercise-emergency-hotkey", action="store_true")
+    fixture.add_argument("--exercise-watchdog-timeout", action="store_true")
     fixture.set_defaults(handler=_fixture)
 
     corpus = subparsers.add_parser(
