@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import ctypes
+import hashlib
+import hmac
 import os
+import re
 import uuid
 from enum import IntEnum
 from pathlib import Path
@@ -16,10 +19,13 @@ from uga.core.errors import (
     CaptureTimeoutError,
 )
 from uga.time.clock import UGATime
+from uga.windows.backend import WindowBackend
 from uga.windows.coordinates import Rect
 from uga.windows.window_identity import WindowIdentity
 
 _EXPECTED_ABI = 0x0001_0001
+_SHA256 = re.compile(r"[0-9a-f]{64}")
+_SAFE_DLL_SEARCH = 0x00000100 | 0x00000800
 
 
 class NativeBackendId(IntEnum):
@@ -69,9 +75,22 @@ def find_native_library() -> Path | None:
 class NativeCaptureLibrary:
     """Validated ctypes wrapper for the panic-contained UGA capture C ABI."""
 
-    def __init__(self, path: str | Path) -> None:
+    def __init__(self, path: str | Path, *, expected_sha256: str) -> None:
         self.path = Path(path).resolve()
-        self._dll = ctypes.CDLL(str(self.path))
+        if _SHA256.fullmatch(expected_sha256) is None:
+            raise BackendUnavailableError("native capture requires a trusted SHA-256 digest")
+        if not self.path.is_file():
+            raise BackendUnavailableError("native capture library is not a regular file")
+        digest = hashlib.sha256()
+        try:
+            with self.path.open("rb") as stream:
+                for block in iter(lambda: stream.read(1024 * 1024), b""):
+                    digest.update(block)
+        except OSError as exc:
+            raise BackendUnavailableError("native capture library cannot be verified") from exc
+        if not hmac.compare_digest(digest.hexdigest(), expected_sha256):
+            raise BackendUnavailableError("native capture library SHA-256 mismatch")
+        self._dll = ctypes.CDLL(str(self.path), winmode=_SAFE_DLL_SEARCH)
         self._configure()
         abi = int(self._dll.uga_capture_abi_version())
         if abi != _EXPECTED_ABI:
@@ -165,44 +184,92 @@ class CtypesNativeCaptureDriver(NativeCaptureDriver):
         self,
         backend: NativeBackendId,
         library: NativeCaptureLibrary,
+        windows: WindowBackend,
         timeout_ms: int = 250,
     ) -> None:
         self._backend = backend
         self._library = library
+        self._windows = windows
         self._timeout_ms = timeout_ms
         self._handle: ctypes.c_void_p | None = None
+        self._target: WindowIdentity | None = None
 
     def probe(self, target: WindowIdentity) -> tuple[bool, str, CaptureCapability]:
         capability = _capability(self._backend)
         try:
+            self._verify_target(target)
             handle = self._library.create(self._backend, target.hwnd)
+            self._verify_target(target)
         except BackendUnavailableError as error:
             return False, str(error), capability
-        self._library.destroy(handle)
+        finally:
+            if "handle" in locals():
+                self._library.destroy(handle)
         return True, f"native ABI {_EXPECTED_ABI:#x} available", capability
 
     def start(self, target: WindowIdentity) -> None:
         if self._handle is not None:
             raise BackendStateError("native capture driver is already started")
-        self._handle = self._library.create(self._backend, target.hwnd)
+        self._verify_target(target)
+        handle = self._library.create(self._backend, target.hwnd)
+        try:
+            self._verify_target(target)
+        except BaseException:
+            self._library.destroy(handle)
+            raise
+        self._target = target
+        self._handle = handle
 
     def capture(self) -> NativeCapturedFrame:
-        if self._handle is None:
+        if self._handle is None or self._target is None:
             raise BackendStateError("native capture driver is not started")
-        return self._library.next(self._handle, self._timeout_ms)
+        try:
+            self._verify_target(self._target)
+        except BaseException:
+            self._invalidate_session()
+            raise
+        frame = self._library.next(self._handle, self._timeout_ms)
+        try:
+            self._verify_target(self._target)
+        except BaseException:
+            self._invalidate_session()
+            raise
+        return frame
 
     def stop(self) -> None:
+        self._invalidate_session()
+
+    def _invalidate_session(self) -> None:
         if self._handle is not None:
             self._library.destroy(self._handle)
-            self._handle = None
+        self._handle = None
+        self._target = None
+
+    def _verify_target(self, expected: WindowIdentity) -> None:
+        try:
+            actual = self._windows.snapshot(expected.hwnd).identity
+        except Exception as exc:
+            raise CaptureAccessLostError("native capture target identity is unavailable") from exc
+        if actual != expected:
+            raise CaptureAccessLostError("native capture target identity changed")
 
 
-def load_default_driver(backend: NativeBackendId) -> CtypesNativeCaptureDriver | None:
+def load_default_driver(
+    backend: NativeBackendId,
+    windows: WindowBackend | None = None,
+    *,
+    expected_sha256: str | None = None,
+) -> CtypesNativeCaptureDriver | None:
     path = find_native_library()
-    if path is None:
+    trusted_digest = expected_sha256 or os.environ.get("UGA_NATIVE_CAPTURE_SHA256")
+    if path is None or windows is None or trusted_digest is None:
         return None
     try:
-        return CtypesNativeCaptureDriver(backend, NativeCaptureLibrary(path))
+        return CtypesNativeCaptureDriver(
+            backend,
+            NativeCaptureLibrary(path, expected_sha256=trusted_digest),
+            windows,
+        )
     except (OSError, BackendUnavailableError):
         return None
 

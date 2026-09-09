@@ -11,6 +11,7 @@ from uga.capture.frame import Frame, PixelFormat
 from uga.capture.native_adapter import NativeCaptureDriver
 from uga.capture.native_ctypes import NativeBackendId, load_default_driver
 from uga.core.errors import BackendUnavailableError
+from uga.windows.backend import WindowBackend
 from uga.windows.window_identity import WindowIdentity
 
 _CAPABILITY = CaptureCapability(
@@ -31,9 +32,16 @@ _CAPABILITY = CaptureCapability(
 class DXGIDuplicationBackend(CaptureBackend):
     backend_id = "dxgi_duplication"
 
-    def __init__(self, driver: NativeCaptureDriver | None = None) -> None:
+    def __init__(
+        self,
+        driver: NativeCaptureDriver | None = None,
+        *,
+        windows: WindowBackend | None = None,
+    ) -> None:
         super().__init__()
-        self._driver = driver if driver is not None else load_default_driver(NativeBackendId.DXGI)
+        self._driver = (
+            driver if driver is not None else load_default_driver(NativeBackendId.DXGI, windows)
+        )
 
     def probe(self, target: WindowIdentity) -> CaptureProbe:
         if self._driver is None:

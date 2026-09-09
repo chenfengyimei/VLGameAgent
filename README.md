@@ -54,12 +54,16 @@ exact target identity, live control lease, and active emergency hotkey.
 The modular `RealtimeAgentLoop` composes capture, latest-state observation,
 mode routing, Fast Policy, control leases, arbitration, 30 Hz scheduling,
 telemetry, and optional Episode recording. The live dashboard binds only to a
-loopback IP and authenticates operator commands with a per-process CSRF token.
+loopback IPv4 address, requires the exact bound `Host` authority, enforces a
+same-origin `Origin` on browser command requests, and authenticates operator
+commands with a per-process CSRF token.
 
 Windows development bundles are built with `scripts/build_release.ps1`. Install
 the bundled wheel, then use `run_uga.ps1` to point the runtime at the bundled
-native capture DLL. Consult `release-manifest.json` before interpreting a bundle
-as qualified.
+native capture DLL. Direct native-capture development runs must also set
+`UGA_NATIVE_CAPTURE_SHA256` to the lowercase SHA-256 of that DLL; the digest is
+checked before any library code is loaded. Consult `release-manifest.json`
+before interpreting a bundle as qualified.
 
 The developer-owned Fixture World provides a deterministic visual target for
 supervised Windows testing. See

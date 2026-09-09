@@ -75,6 +75,9 @@ try {
         $env:UGA_NATIVE_CAPTURE_DLL = (Resolve-Path -LiteralPath (
             Join-Path $bundleRoot "native\uga_capture.dll"
         )).Path
+        $env:UGA_NATIVE_CAPTURE_SHA256 = (Get-FileHash -Algorithm SHA256 -LiteralPath (
+            Join-Path $bundleRoot "native\uga_capture.dll"
+        )).Hash.ToLowerInvariant()
         foreach ($command in @(
             @{ Name = "uga-agent.exe"; Arguments = @() },
             @{ Name = "uga-example-game.exe"; Arguments = @("--headless-smoke") },

@@ -263,8 +263,8 @@ def _capture_registry(preference: str, windows: Win32WindowBackend) -> CaptureBa
         else ("windows_graphics_capture", "dxgi_duplication", "gdi_fallback")
     )
     registry = CaptureBackendRegistry(order)
-    registry.register(WindowsGraphicsCaptureBackend())
-    registry.register(DXGIDuplicationBackend())
+    registry.register(WindowsGraphicsCaptureBackend(windows=windows))
+    registry.register(DXGIDuplicationBackend(windows=windows))
     registry.register(GDIFallbackCaptureBackend(windows))
     return registry
 

@@ -19,7 +19,11 @@ runtime, or emergency stop. Planner, GUI, policy, dashboard, dataset, and model
 components may never call an OS input backend directly.
 
 The dashboard and qualification tools must not accept untrusted remote command
-traffic. Physical-control and long-running fixture tests require a supervising
-operator. Model checkpoints, datasets, videos, and game content are untrusted
-artifacts until their hashes, provenance, licenses, and distribution rights have
-been reviewed.
+traffic. Dashboard requests are restricted to the exact loopback IPv4 authority
+chosen at bind time; browser command requests must also carry the matching
+same-origin `Origin`. Native capture libraries are untrusted until their expected
+SHA-256 is supplied and verified before loading, and every native session remains
+bound to the same composite window identity before and after capture. Physical-
+control and long-running fixture tests require a supervising operator. Model
+checkpoints, datasets, videos, and game content are untrusted artifacts until
+their hashes, provenance, licenses, and distribution rights have been reviewed.

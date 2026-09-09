@@ -92,10 +92,34 @@ class DashboardServerTests(unittest.TestCase):
             authenticated = urllib.request.Request(
                 f"{base}/api/commands/emergency_release",
                 method="POST",
-                headers={"X-UGA-CSRF": "test-token"},
+                headers={
+                    "X-UGA-CSRF": "test-token",
+                    "Origin": base,
+                },
             )
             with urllib.request.urlopen(authenticated, timeout=2) as response:
                 self.assertEqual(response.status, 204)
+            self.assertEqual(control.commands, ["emergency_release"])
+
+            wrong_host = urllib.request.Request(
+                f"{base}/api/state",
+                headers={"Host": "attacker.example"},
+            )
+            with self.assertRaises(urllib.error.HTTPError) as raised:
+                urllib.request.urlopen(wrong_host, timeout=2)
+            self.assertEqual(raised.exception.code, 403)
+
+            cross_origin = urllib.request.Request(
+                f"{base}/api/commands/emergency_release",
+                method="POST",
+                headers={
+                    "X-UGA-CSRF": "test-token",
+                    "Origin": "https://evil.example",
+                },
+            )
+            with self.assertRaises(urllib.error.HTTPError) as raised:
+                urllib.request.urlopen(cross_origin, timeout=2)
+            self.assertEqual(raised.exception.code, 403)
             self.assertEqual(control.commands, ["emergency_release"])
         finally:
             server.shutdown()
@@ -108,6 +132,12 @@ class DashboardServerTests(unittest.TestCase):
                 dashboard_state,
                 DashboardCommandRouter(RecordingOperatorControl()),
                 host="0.0.0.0",
+            )
+        with self.assertRaisesRegex(ContractViolation, "loopback"):
+            create_dashboard_server(
+                dashboard_state,
+                DashboardCommandRouter(RecordingOperatorControl()),
+                host="::1",
             )
 
 

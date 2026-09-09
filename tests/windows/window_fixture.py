@@ -5,6 +5,7 @@ import os
 from collections.abc import Iterator
 from contextlib import contextmanager
 
+from uga.windows.backend import Win32WindowBackend
 from uga.windows.window_identity import WindowIdentity, executable_path_hash
 
 if os.name == "nt":
@@ -45,7 +46,9 @@ if os.name == "nt":
 
 
 @contextmanager
-def capture_test_window() -> Iterator[tuple[int, WindowIdentity]]:
+def capture_test_window(
+    windows: Win32WindowBackend | None = None,
+) -> Iterator[tuple[int, WindowIdentity]]:
     if os.name != "nt":
         raise RuntimeError("Windows-only fixture")
     style = 0x00CF0000 | 0x10000000  # WS_OVERLAPPEDWINDOW | WS_VISIBLE
@@ -77,12 +80,16 @@ def capture_test_window() -> Iterator[tuple[int, WindowIdentity]]:
             _gdi32.DeleteObject(brush)
             _user32.ReleaseDC(hwnd, dc)
         hwnd_value = int(hwnd)
-        identity = WindowIdentity(
-            hwnd=hwnd_value,
-            pid=os.getpid(),
-            executable_path_hash=executable_path_hash(os.path.abspath(os.sys.executable)),
-            process_start_time_100ns=1,
-            window_generation=1,
+        identity = (
+            windows.snapshot(hwnd_value).identity
+            if windows is not None
+            else WindowIdentity(
+                hwnd=hwnd_value,
+                pid=os.getpid(),
+                executable_path_hash=executable_path_hash(os.path.abspath(os.sys.executable)),
+                process_start_time_100ns=1,
+                window_generation=1,
+            )
         )
         yield hwnd_value, identity
     finally:
