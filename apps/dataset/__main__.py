@@ -5,6 +5,7 @@ import json
 from dataclasses import asdict
 from pathlib import Path
 
+from uga.dataset.builder import build_dataset_manifest
 from uga.dataset.manifest import DatasetManifest
 from uga.dataset.opencua import (
     OpenCuaExporter,
@@ -73,6 +74,11 @@ def _manifest(args: argparse.Namespace) -> None:
     )
 
 
+def _build_manifest(args: argparse.Namespace) -> None:
+    manifest = build_dataset_manifest(args.inventory, args.root)
+    print(manifest.write(args.output).resolve())
+
+
 def _opencua_export(args: argparse.Namespace) -> None:
     trajectory = OpenCuaExporter().export(args.episode)
     print(write_opencua_trajectory(trajectory, args.output).resolve())
@@ -120,6 +126,14 @@ def main() -> None:
     manifest.add_argument("manifest", type=Path)
     manifest.add_argument("--root", type=Path, required=True)
     manifest.set_defaults(handler=_manifest)
+
+    build_manifest = subparsers.add_parser(
+        "build-manifest", help="build and verify a Dataset Manifest from YAML inventory"
+    )
+    build_manifest.add_argument("inventory", type=Path)
+    build_manifest.add_argument("--root", type=Path, required=True)
+    build_manifest.add_argument("--output", type=Path, required=True)
+    build_manifest.set_defaults(handler=_build_manifest)
 
     export = subparsers.add_parser("opencua-export", help="export GUI Episode to OpenCUA")
     export.add_argument("episode", type=Path)

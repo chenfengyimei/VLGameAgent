@@ -18,6 +18,7 @@ from uga.control.physical import (
     MouseButtonAction,
 )
 from uga.core.errors import ContractViolation
+from uga.dataset.builder import build_dataset_manifest
 from uga.dataset.manifest import (
     DatasetCategory,
     DatasetEpisode,
@@ -193,6 +194,45 @@ class ChunkScheduler:
 
 
 class DatasetPolicyTests(unittest.TestCase):
+    def test_dataset_manifest_builder_verifies_inventory_and_episode(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            episode = make_episode(root)
+            inventory = root / "inventory.yaml"
+            inventory.write_text(
+                "\n".join(
+                    (
+                        "dataset_id: fixture-dataset",
+                        "dataset_version: '1'",
+                        "source_revision: revision-1",
+                        "locked_test_games: []",
+                        "licenses:",
+                        "  - id: fixture-license",
+                        "    source: developer-owned fixture",
+                        "    dataset_license: test-only",
+                        "    distribution_allowed: false",
+                        "    commercial_allowed: false",
+                        "    review_date: '2026-09-09'",
+                        "episodes:",
+                        f"  - path: {episode.name}",
+                        "    session_id: fixture-session",
+                        "    player_id: fixture-agent",
+                        "    split: train",
+                        "    category: exploration_navigation",
+                        "    license_id: fixture-license",
+                        "    instruction_labeled: true",
+                    )
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            manifest = build_dataset_manifest(inventory, root)
+
+            self.assertEqual(manifest.dataset_id, "fixture-dataset")
+            self.assertEqual(manifest.episodes[0].episode_id, "dataset-episode")
+            manifest.verify_episode_artifacts(root)
+
     def test_validator_processor_viewer_and_locked_game_split(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
