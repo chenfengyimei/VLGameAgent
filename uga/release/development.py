@@ -1,9 +1,21 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from uga.core.errors import ContractViolation
 from uga.release.manifest import GateStatus, ReleaseGate, ReleaseManifest, hash_bundle_tree
+
+_SOURCE_REVISION = re.compile(r"[0-9a-f]{40}")
+_UNVERSIONED = "workspace-unversioned"
+
+
+def _validated_source_revision(source_revision: str) -> str:
+    if source_revision != _UNVERSIONED and _SOURCE_REVISION.fullmatch(source_revision) is None:
+        raise ContractViolation(
+            "source revision must be a full git commit hash or 'workspace-unversioned'"
+        )
+    return source_revision
 
 
 def build_development_manifest(
@@ -14,6 +26,7 @@ def build_development_manifest(
 ) -> ReleaseManifest:
     """Describe a development bundle without overstating V1 qualification."""
     root = Path(bundle_root).resolve()
+    _validated_source_revision(source_revision)
     wheels = sorted(path for path in root.glob("*.whl") if path.is_file())
     source_archives = sorted(path for path in root.glob("*.tar.gz") if path.is_file())
     if len(wheels) != 1 or len(source_archives) != 1:

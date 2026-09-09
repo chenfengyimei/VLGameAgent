@@ -64,11 +64,12 @@ def dashboard_state() -> DashboardState:
 class DashboardServerTests(unittest.TestCase):
     def test_loopback_server_exposes_state_and_authenticated_commands(self) -> None:
         control = RecordingOperatorControl()
+        token = "test-token-0123456789abcdef0123456789"
         server = create_dashboard_server(
             dashboard_state,
             DashboardCommandRouter(control),
             port=0,
-            csrf_token="test-token",
+            csrf_token=token,
         )
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
@@ -76,7 +77,7 @@ class DashboardServerTests(unittest.TestCase):
         try:
             with urllib.request.urlopen(base, timeout=2) as response:
                 document = response.read().decode("utf-8")
-            self.assertNotIn("test-token", document)
+            self.assertNotIn(token, document)
             self.assertNotIn("uga-csrf", document)
             self.assertIn("/api/state", document)
             with urllib.request.urlopen(f"{base}/api/state", timeout=2) as response:
@@ -94,7 +95,7 @@ class DashboardServerTests(unittest.TestCase):
                 f"{base}/api/commands/emergency_release",
                 method="POST",
                 headers={
-                    "X-UGA-CSRF": "test-token",
+                    "X-UGA-CSRF": token,
                     "Origin": base,
                 },
             )
@@ -114,7 +115,7 @@ class DashboardServerTests(unittest.TestCase):
                 f"{base}/api/commands/emergency_release",
                 method="POST",
                 headers={
-                    "X-UGA-CSRF": "test-token",
+                    "X-UGA-CSRF": token,
                     "Origin": "https://evil.example",
                 },
             )
@@ -139,6 +140,15 @@ class DashboardServerTests(unittest.TestCase):
                 dashboard_state,
                 DashboardCommandRouter(RecordingOperatorControl()),
                 host="::1",
+            )
+
+    def test_weak_caller_supplied_csrf_token_is_rejected(self) -> None:
+        with self.assertRaisesRegex(ContractViolation, "at least 32 characters"):
+            create_dashboard_server(
+                dashboard_state,
+                DashboardCommandRouter(RecordingOperatorControl()),
+                port=0,
+                csrf_token="short",
             )
 
 

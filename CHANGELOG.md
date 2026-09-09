@@ -70,3 +70,7 @@
 - Verify and load the native capture DLL from a private per-process copy,
   closing the digest-to-load race, and abort loudly when an explicitly pinned
   native library fails verification instead of degrading to "not installed".
+- Reject weak caller-supplied dashboard CSRF tokens, pin the dashboard CSP to
+  the exact inline script digest instead of `unsafe-inline`, require a full
+  git commit hash for development manifest revisions, and bound the cargo
+  dependency inventory subprocess with a timeout.

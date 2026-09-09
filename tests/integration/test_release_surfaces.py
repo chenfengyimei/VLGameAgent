@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path
 from typing import cast
+from unittest.mock import patch
 
 from tests.integration.test_dataset_policy import make_episode
 from uga.benchmark.fixture import fixture_environments, verified_fixture_environments
@@ -18,6 +20,7 @@ from uga.dashboard.controller import DashboardCommandRouter
 from uga.dashboard.state import DashboardCommand, DashboardState, render_dashboard
 from uga.policy.fast_policy import DecoderCheckpoint
 from uga.recording.debugger import write_replay_debugger
+from uga.release.dependencies import cargo_dependency_records
 from uga.release.development import build_development_manifest
 from uga.release.manifest import GateStatus, ReleaseGate, ReleaseManifest, hash_artifacts
 from uga.release.qualification import (
@@ -311,7 +314,7 @@ class ReleaseSurfaceTests(unittest.TestCase):
             (root / "run_uga.ps1").write_text("Write-Output uga", encoding="utf-8")
             manifest = build_development_manifest(
                 root,
-                source_revision="test-revision",
+                source_revision="a" * 40,
                 package_smoke_passed=True,
             )
             self.assertFalse(manifest.releasable)
@@ -336,6 +339,27 @@ class ReleaseSurfaceTests(unittest.TestCase):
             (root / "run_uga.ps1").write_text("tampered", encoding="utf-8")
             with self.assertRaisesRegex(ContractViolation, "digest mismatch"):
                 loaded.verify(root)
+
+    def test_development_manifest_rejects_fabricated_source_revisions(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "native").mkdir()
+            (root / "package.whl").write_bytes(b"wheel")
+            (root / "package.tar.gz").write_bytes(b"source")
+            (root / "native" / "uga_capture.dll").write_bytes(b"native")
+            (root / "third-party-inventory.json").write_text("{}", encoding="utf-8")
+            with self.assertRaisesRegex(ContractViolation, "source revision"):
+                build_development_manifest(root, source_revision="fabricated-revision")
+
+    def test_cargo_metadata_timeout_fails_closed(self) -> None:
+        with (
+            patch(
+                "uga.release.dependencies.subprocess.run",
+                side_effect=subprocess.TimeoutExpired(cmd="cargo", timeout=60),
+            ),
+            self.assertRaisesRegex(ContractViolation, "timed out"),
+        ):
+            cargo_dependency_records("native/Cargo.toml")
 
     def test_qualification_ledger_hashes_and_revalidates_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

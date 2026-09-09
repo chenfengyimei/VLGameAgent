@@ -64,7 +64,12 @@ def cargo_dependency_records(cargo_manifest: str | Path) -> tuple[dict[str, obje
         "--manifest-path",
         str(Path(cargo_manifest).resolve()),
     )
-    completed = subprocess.run(command, check=False, capture_output=True, text=True)
+    try:
+        completed = subprocess.run(
+            command, check=False, capture_output=True, text=True, timeout=60
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise ContractViolation("cargo metadata timed out") from exc
     if completed.returncode != 0:
         raise ContractViolation(f"cargo metadata failed: {completed.stderr.strip()}")
     try:

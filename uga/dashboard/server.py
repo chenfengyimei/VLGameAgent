@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import hmac
 import ipaddress
 import json
@@ -11,8 +12,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from uga.core.errors import ContractViolation
 from uga.dashboard.controller import DashboardCommandRouter
 from uga.dashboard.state import DashboardCommand, DashboardState, render_dashboard
+from uga.ui import load_ui_script
 
 DashboardStateProvider = Callable[[], DashboardState]
+
+_MINIMUM_CSRF_TOKEN_CHARS = 32
 
 
 class DashboardHttpServer(ThreadingHTTPServer):
@@ -41,6 +45,14 @@ class DashboardHttpServer(ThreadingHTTPServer):
         )
         self.expected_authority = f"{bound_host}:{bound_port}"
         self.expected_origin = f"http://{self.expected_authority}"
+        # The live page embeds one static inline script, so its exact digest
+        # can replace the 'unsafe-inline' CSP escape hatch.
+        script_digest = hashlib.sha256(
+            load_ui_script("dashboard.js").encode("utf-8")
+        ).hexdigest()
+        self.script_csp = (
+            f"default-src 'self'; img-src 'self' data:; script-src 'sha256-{script_digest}'"
+        )
 
 
 class DashboardRequestHandler(BaseHTTPRequestHandler):
@@ -110,7 +122,7 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
         self.send_header("X-Frame-Options", "DENY")
         self.send_header(
             "Content-Security-Policy",
-            "default-src 'self'; img-src 'self' data:; script-src 'unsafe-inline'",
+            self.server.script_csp,
         )
         self.end_headers()
         self.wfile.write(body)
@@ -133,6 +145,12 @@ def create_dashboard_server(
         raise ContractViolation("dashboard host must be a loopback IP address") from error
     if address.version != 4 or not address.is_loopback or not 0 <= port <= 65535:
         raise ContractViolation("dashboard must bind to a valid loopback address and port")
-    return DashboardHttpServer(
-        (host, port), state_provider, command_router, csrf_token or secrets.token_urlsafe(32)
-    )
+    if csrf_token is None:
+        token = secrets.token_urlsafe(32)
+    else:
+        # Caller-supplied tokens must carry real entropy; a short constant would
+        # make command posts brute-forceable even under constant-time comparison.
+        if len(csrf_token) < _MINIMUM_CSRF_TOKEN_CHARS:
+            raise ContractViolation("dashboard CSRF token must be at least 32 characters")
+        token = csrf_token
+    return DashboardHttpServer((host, port), state_provider, command_router, token)
