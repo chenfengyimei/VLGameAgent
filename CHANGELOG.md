@@ -65,3 +65,5 @@
   qualification evidence hashing instead of loading whole files into memory.
 - Keep watchdog enforcement alive when a liveness probe raises and complete the
   emergency neutralization sequence even when the clock backend fails.
+- Deliver the dashboard CSRF token out of band through the console URL fragment
+  instead of serving it inside the page to unauthenticated loopback requests.

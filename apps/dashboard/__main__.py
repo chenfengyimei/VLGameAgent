@@ -54,7 +54,9 @@ def main() -> None:
         bound_host = server.server_address[0]
         if isinstance(bound_host, bytes):
             bound_host = bound_host.decode("ascii")
-        print(f"http://{bound_host}:{server.server_address[1]}")
+        # The token travels out-of-band through the URL fragment; fragments are
+        # never sent back to the server and the page must not embed them.
+        print(f"http://{bound_host}:{server.server_address[1]}/#uga-token={server.csrf_token}")
         try:
             server.serve_forever()
         except KeyboardInterrupt:

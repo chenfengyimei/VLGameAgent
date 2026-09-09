@@ -1,6 +1,6 @@
 "use strict";
 (() => {
-    const csrf = document.querySelector('meta[name="uga-csrf"]')?.content;
+    const csrf = new URLSearchParams(location.hash.slice(1)).get("uga-token");
     const buttons = document.querySelectorAll("[data-command]");
     function display(value) {
         return value === null || value === undefined ? "—" : String(value);

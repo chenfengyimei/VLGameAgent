@@ -76,7 +76,8 @@ class DashboardServerTests(unittest.TestCase):
         try:
             with urllib.request.urlopen(base, timeout=2) as response:
                 document = response.read().decode("utf-8")
-            self.assertIn('meta name="uga-csrf"', document)
+            self.assertNotIn("test-token", document)
+            self.assertNotIn("uga-csrf", document)
             self.assertIn("/api/state", document)
             with urllib.request.urlopen(f"{base}/api/state", timeout=2) as response:
                 payload = json.load(response)

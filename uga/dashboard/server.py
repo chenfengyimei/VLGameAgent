@@ -51,9 +51,7 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
             self._respond(HTTPStatus.FORBIDDEN, b"loopback clients only", "text/plain")
             return
         if self.path == "/":
-            document = render_dashboard(
-                self.server.state_provider(), live=True, csrf_token=self.server.csrf_token
-            ).encode("utf-8")
+            document = render_dashboard(self.server.state_provider(), live=True).encode("utf-8")
             self._respond(HTTPStatus.OK, document, "text/html; charset=utf-8")
             return
         if self.path == "/api/state":
@@ -111,7 +109,8 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
         self.send_header("Cross-Origin-Resource-Policy", "same-origin")
         self.send_header("X-Frame-Options", "DENY")
         self.send_header(
-            "Content-Security-Policy", "default-src 'self'; script-src 'unsafe-inline'"
+            "Content-Security-Policy",
+            "default-src 'self'; img-src 'self' data:; script-src 'unsafe-inline'",
         )
         self.end_headers()
         self.wfile.write(body)

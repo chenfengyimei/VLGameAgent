@@ -19,7 +19,8 @@
     recent_failure: string | null;
   }
 
-  const csrf = document.querySelector<HTMLMetaElement>('meta[name="uga-csrf"]')?.content;
+  // The operator token arrives out-of-band in the URL fragment, never in served HTML.
+  const csrf = new URLSearchParams(location.hash.slice(1)).get("uga-token");
   const buttons = document.querySelectorAll<HTMLButtonElement>("[data-command]");
 
   function display(value: unknown): string {

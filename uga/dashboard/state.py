@@ -45,11 +45,7 @@ class DashboardState:
         return payload
 
 
-def render_dashboard(
-    state: DashboardState, *, live: bool = False, csrf_token: str | None = None
-) -> str:
-    if live and csrf_token is None:
-        raise ValueError("live dashboard rendering requires a CSRF token")
+def render_dashboard(state: DashboardState, *, live: bool = False) -> str:
     values = {
         "frame_id": ("Frame", state.frame_id),
         "goal": ("Goal", state.goal),
@@ -91,12 +87,12 @@ def render_dashboard(
         for command in DashboardCommand
     )
     live_script = ""
-    live_meta = ""
     if live:
-        live_meta = f'<meta name="uga-csrf" content="{html.escape(str(csrf_token))}">'
+        # The operator token is delivered out-of-band via the URL fragment and
+        # must never be served to unauthenticated loopback HTTP clients.
         live_script = f"<script>{load_ui_script('dashboard.js')}</script>"
     return (
-        f"<!doctype html><html><meta charset=utf-8>{live_meta}<title>UGA Dashboard</title>"
+        f"<!doctype html><html><meta charset=utf-8><title>UGA Dashboard</title>"
         "<style>body{font-family:system-ui;margin:2rem;background:#111;color:#eee}"
         "dl{display:grid;grid-template-columns:max-content 1fr;gap:.5rem 1rem}"
         "button{margin:.25rem;padding:.5rem}</style><h1>UGA Dashboard</h1>"
