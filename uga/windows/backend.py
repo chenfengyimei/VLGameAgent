@@ -94,6 +94,8 @@ class Win32WindowBackend:
             self._user32.BringWindowToTop(ctypes.c_void_p(hwnd))
             self._user32.SetForegroundWindow(ctypes.c_void_p(hwnd))
             self._user32.SetFocus(ctypes.c_void_p(hwnd))
+            if self.foreground_hwnd() != hwnd:
+                self._user32.SwitchToThisWindow(ctypes.c_void_p(hwnd), True)
         finally:
             for thread_id in reversed(attached):
                 self._user32.AttachThreadInput(current_thread, thread_id, False)
@@ -221,6 +223,8 @@ class Win32WindowBackend:
         self._user32.BringWindowToTop.restype = ctypes.c_bool
         self._user32.SetFocus.argtypes = [ctypes.c_void_p]
         self._user32.SetFocus.restype = ctypes.c_void_p
+        self._user32.SwitchToThisWindow.argtypes = [ctypes.c_void_p, ctypes.c_bool]
+        self._user32.SwitchToThisWindow.restype = None
         self._user32.AttachThreadInput.argtypes = [
             ctypes.c_ulong,
             ctypes.c_ulong,
