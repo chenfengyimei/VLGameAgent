@@ -35,5 +35,9 @@ path = "src/bin/dx12.rs"
 name = "uga-opengl-fixture"
 path = "src/bin/opengl.rs"
 
+[[bin]]
+name = "uga-vulkan-fixture"
+path = "src/bin/vulkan/main.rs"
+
 [lints]
 workspace = true

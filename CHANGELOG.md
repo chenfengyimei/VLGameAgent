@@ -80,6 +80,14 @@
 - Add developer-owned DX11, DX12, and OpenGL fixture windows with deterministic
   color cycling and resize-safe swap chains, giving the capture qualification
   matrix real D3D and OpenGL render targets beyond the Tk-drawn Fixture World.
+- Add a Vulkan capture fixture on a raw `vulkan-1.dll` loader whose ABI types
+  and constants mirror `vulkan_core.h`, with per-image present semaphores,
+  acquire-fence sync, and bounded acquire/fence waits so occlusion-stalled
+  presents exit visibly instead of hanging; live-verified through WGC and
+  DXGI capture with mid-capture resize tracking.
+- Copy the overlapping sub-rect when a Windows Graphics Capture frame pool
+  lags a window resize instead of failing with an unsupported-state error, so
+  growing targets keep capturing across the pool recreation.
 - Reject minimized targets in the GDI fallback probe and capture path, and add
   automated Windows lifecycle tests for resize, minimize/restore, and
   cross-monitor moves against live windows.
