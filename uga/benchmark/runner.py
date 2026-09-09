@@ -7,6 +7,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 
 from uga.benchmark.schema import BenchmarkEnvironment, BenchmarkRun, BenchmarkTask
+from uga.core.artifact_limits import DEFAULT_ARTIFACT_LIMITS, ArtifactResourceLimits
 from uga.core.errors import ContractViolation
 
 
@@ -43,11 +44,22 @@ class BenchmarkReport:
 
 
 class BenchmarkRunner:
+    def __init__(
+        self,
+        *,
+        limits: ArtifactResourceLimits = DEFAULT_ARTIFACT_LIMITS,
+    ) -> None:
+        self._limits = limits
+
     def run(
         self, tasks: tuple[BenchmarkTask, ...], environments: dict[str, BenchmarkEnvironment]
     ) -> BenchmarkReport:
         if not tasks:
             raise ContractViolation("benchmark requires tasks")
+        if len(tasks) > self._limits.max_benchmark_tasks:
+            raise ContractViolation("benchmark exceeds the task resource limit")
+        if sum(task.repeat for task in tasks) > self._limits.max_benchmark_runs:
+            raise ContractViolation("benchmark plan exceeds the run resource limit")
         runs: list[BenchmarkRun] = []
         for task in tasks:
             try:
@@ -77,6 +89,33 @@ class BenchmarkRunner:
     ) -> BenchmarkReport:
         if not runs:
             raise ContractViolation("benchmark report requires runs")
+        if len(tasks) > self._limits.max_benchmark_tasks:
+            raise ContractViolation("benchmark report exceeds the task resource limit")
+        if len(runs) > self._limits.max_benchmark_runs:
+            raise ContractViolation("benchmark report exceeds the run resource limit")
+        if any(
+            len(values) > self._limits.max_latency_samples_per_group
+            for run in runs
+            for values in (
+                run.capture_latency_ms,
+                run.policy_latency_ms,
+                run.action_age_ms,
+                run.end_to_end_latency_ms,
+            )
+        ):
+            raise ContractViolation("benchmark run exceeds the latency-sample resource limit")
+        latency_count = sum(
+            len(values)
+            for run in runs
+            for values in (
+                run.capture_latency_ms,
+                run.policy_latency_ms,
+                run.action_age_ms,
+                run.end_to_end_latency_ms,
+            )
+        )
+        if latency_count > self._limits.max_latency_samples_total:
+            raise ContractViolation("benchmark report exceeds the latency resource limit")
         self._verify_cohort(runs, tasks)
         policy_digests = {run.policy_artifact_sha256 for run in runs}
         if len(policy_digests) != 1:

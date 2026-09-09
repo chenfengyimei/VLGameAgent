@@ -1,10 +1,15 @@
 from __future__ import annotations
 
-import hashlib
 import importlib
 from pathlib import Path
 from typing import Any
 
+from uga.core.artifact_limits import (
+    DEFAULT_ARTIFACT_LIMITS,
+    ArtifactResourceLimits,
+    read_text_limited,
+    sha256_file_limited,
+)
 from uga.core.errors import BackendUnavailableError, ContractViolation
 from uga.dataset.manifest import (
     DatasetCategory,
@@ -20,19 +25,31 @@ from uga.recording.replay import ReplayEngine
 def build_dataset_manifest(
     inventory_path: str | Path,
     dataset_root: str | Path,
+    *,
+    limits: ArtifactResourceLimits = DEFAULT_ARTIFACT_LIMITS,
 ) -> DatasetManifest:
     """Build a verified manifest from an explicit, reviewable YAML inventory."""
     try:
         yaml = importlib.import_module("yaml")
     except ImportError as exc:
         raise BackendUnavailableError("dataset inventory requires PyYAML") from exc
-    inventory: Any = yaml.safe_load(Path(inventory_path).read_text(encoding="utf-8"))
+    inventory: Any = yaml.safe_load(
+        read_text_limited(
+            inventory_path,
+            limits.max_config_bytes,
+            "dataset inventory",
+        )
+    )
     if not isinstance(inventory, dict):
         raise ContractViolation("dataset inventory root must be an object")
     raw_licenses = inventory.get("licenses")
     raw_episodes = inventory.get("episodes")
     if not isinstance(raw_licenses, list) or not isinstance(raw_episodes, list):
         raise ContractViolation("dataset inventory requires license and Episode lists")
+    if len(raw_licenses) > limits.max_dataset_licenses:
+        raise ContractViolation("dataset inventory exceeds the license resource limit")
+    if len(raw_episodes) > limits.max_dataset_episodes:
+        raise ContractViolation("dataset inventory exceeds the Episode resource limit")
     try:
         licenses = tuple(
             DatasetLicense(
@@ -49,7 +66,7 @@ def build_dataset_manifest(
         if len(licenses) != len(raw_licenses):
             raise ContractViolation("dataset license inventory entry must be an object")
         root = Path(dataset_root).resolve()
-        episodes = tuple(_build_episode(root, item) for item in raw_episodes)
+        episodes = tuple(_build_episode(root, item, limits=limits) for item in raw_episodes)
         return DatasetManifest(
             str(inventory["dataset_id"]),
             str(inventory["dataset_version"]),
@@ -62,15 +79,20 @@ def build_dataset_manifest(
         raise ContractViolation(f"dataset inventory is incomplete: {exc}") from exc
 
 
-def _build_episode(root: Path, item: object) -> DatasetEpisode:
+def _build_episode(
+    root: Path,
+    item: object,
+    *,
+    limits: ArtifactResourceLimits,
+) -> DatasetEpisode:
     if not isinstance(item, dict):
         raise ContractViolation("dataset Episode inventory entry must be an object")
     relative_path = str(item["path"])
     candidate = (root / relative_path).resolve()
     if root not in candidate.parents or not candidate.is_dir():
         raise ContractViolation(f"dataset Episode path is invalid: {relative_path}")
-    replay = ReplayEngine(candidate)
-    quality = DatasetValidator().validate(candidate)
+    replay = ReplayEngine(candidate, limits=limits)
+    quality = DatasetValidator(limits=limits).validate(candidate)
     if quality.status != QualityStatus.ACCEPTED:
         raise ContractViolation(
             f"dataset Episode requires accepted quality: {quality.episode_id} ({quality.status})"
@@ -90,7 +112,11 @@ def _build_episode(root: Path, item: object) -> DatasetEpisode:
         quality.status,
         quality.quality_score,
         str(item["license_id"]),
-        hashlib.sha256(checksum.read_bytes()).hexdigest(),
+        sha256_file_limited(
+            checksum,
+            limits.max_checksum_bytes,
+            "Episode checksum manifest",
+        ),
         _strict_bool(item.get("instruction_labeled", False), "instruction_labeled"),
         _strict_bool(item.get("reasoning_labeled", False), "reasoning_labeled"),
     )

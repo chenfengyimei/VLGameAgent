@@ -4,7 +4,8 @@ import importlib
 from pathlib import Path
 from typing import Any
 
-from uga.core.errors import BackendUnavailableError
+from uga.core.artifact_limits import DEFAULT_ARTIFACT_LIMITS, ArtifactResourceLimits
+from uga.core.errors import BackendUnavailableError, ContractViolation
 
 
 def _arrow() -> tuple[Any, Any]:
@@ -37,6 +38,31 @@ def write_rows(path: Path, rows: list[dict[str, Any]], schema: tuple[ColumnSpec,
     pq.write_table(table, path, compression="zstd")
 
 
-def read_rows(path: Path) -> list[dict[str, Any]]:
+def read_rows(
+    path: Path,
+    *,
+    limits: ArtifactResourceLimits = DEFAULT_ARTIFACT_LIMITS,
+) -> list[dict[str, Any]]:
     _, pq = _arrow()
-    return list(pq.read_table(path).to_pylist())
+    try:
+        with path.open("rb") as stream:
+            stream.seek(0, 2)
+            size = stream.tell()
+            stream.seek(0)
+            if size > limits.max_parquet_file_bytes:
+                raise ContractViolation("Parquet file exceeds the compressed byte limit")
+            parquet = pq.ParquetFile(stream)
+            metadata = parquet.metadata
+            if metadata.num_rows > limits.max_parquet_rows:
+                raise ContractViolation("Parquet file exceeds the row limit")
+            if metadata.num_columns > limits.max_parquet_columns:
+                raise ContractViolation("Parquet file exceeds the column limit")
+            uncompressed = sum(
+                metadata.row_group(index).total_byte_size
+                for index in range(metadata.num_row_groups)
+            )
+            if uncompressed > limits.max_parquet_uncompressed_bytes:
+                raise ContractViolation("Parquet file exceeds the uncompressed byte limit")
+            return list(parquet.read().to_pylist())
+    except OSError as exc:
+        raise ContractViolation(f"cannot read Parquet file: {path}") from exc

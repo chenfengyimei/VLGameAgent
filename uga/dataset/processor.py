@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 
+from uga.core.artifact_limits import DEFAULT_ARTIFACT_LIMITS, ArtifactResourceLimits
 from uga.core.errors import ContractViolation
 from uga.recording.replay import ReplayEngine
 
@@ -41,13 +42,19 @@ class ProcessedEpisode:
 class DatasetProcessor:
     """Aligns by monotonic timestamp/reference, never by array position."""
 
-    def __init__(self, *, max_alignment_delay_ns: int = 1_000_000_000) -> None:
+    def __init__(
+        self,
+        *,
+        max_alignment_delay_ns: int = 1_000_000_000,
+        limits: ArtifactResourceLimits = DEFAULT_ARTIFACT_LIMITS,
+    ) -> None:
         if max_alignment_delay_ns < 0:
             raise ContractViolation("alignment delay cannot be negative")
         self._max_alignment_delay_ns = max_alignment_delay_ns
+        self._limits = limits
 
     def process(self, episode_path: str | Path) -> ProcessedEpisode:
-        replay = ReplayEngine(episode_path)
+        replay = ReplayEngine(episode_path, limits=self._limits)
         observations = sorted(replay.observations, key=lambda row: int(row["timestamp_ns"]))
         observation_by_id = {str(row["observation_id"]): row for row in observations}
         times = [int(str(row["timestamp_ns"])) for row in observations]

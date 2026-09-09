@@ -4,6 +4,7 @@ import hashlib
 import json
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 
 from tests.helpers import frame, identity
@@ -18,6 +19,7 @@ from uga.control.physical import (
     MouseButton,
     MouseButtonAction,
 )
+from uga.core.artifact_limits import DEFAULT_ARTIFACT_LIMITS
 from uga.core.errors import ContractViolation
 from uga.dataset.builder import build_dataset_manifest
 from uga.dataset.manifest import (
@@ -414,6 +416,11 @@ class DatasetPolicyTests(unittest.TestCase):
             written = manifest.write(root / "dataset-manifest.json")
             loaded = DatasetManifest.load(written)
             loaded.verify_episode_artifacts(root)
+            with self.assertRaisesRegex(ContractViolation, "dataset exceeds"):
+                loaded.verify_episode_artifacts(
+                    root,
+                    limits=replace(DEFAULT_ARTIFACT_LIMITS, max_dataset_bytes=1),
+                )
             self.assertGreater(loaded.hours(DatasetSplit.TRAIN), 0)
             self.assertEqual(dict(loaded.category_distribution())[DatasetCategory.COMBAT], 0)
             samples = root / "motor-samples.jsonl"

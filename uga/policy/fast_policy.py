@@ -7,6 +7,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
+from uga.core.artifact_limits import (
+    DEFAULT_ARTIFACT_LIMITS,
+    ArtifactResourceLimits,
+    read_text_limited,
+)
 from uga.core.errors import ContractViolation
 from uga.observation.buffer import TemporalObservation
 from uga.policy.action_chunk import KNOWN_ACTION_BUTTON_MASK, ActionChunk
@@ -86,14 +91,24 @@ class DecoderCheckpoint:
     confidence: float
 
     def __post_init__(self) -> None:
-        if self.input_dim < 1 or len(self.axis_weights) != 4:
+        if (
+            not self.policy_version.strip()
+            or self.input_dim < 1
+            or self.input_dim > DEFAULT_ARTIFACT_LIMITS.max_feature_dimensions
+            or len(self.axis_weights) != 4
+        ):
             raise ContractViolation("decoder checkpoint shape is invalid")
         if any(len(weights) != self.input_dim for weights in self.axis_weights):
             raise ContractViolation("decoder checkpoint weights do not match input dimension")
+        if any(not math.isfinite(value) for row in self.axis_weights for value in row) or any(
+            not math.isfinite(value) for value in self.axis_bias
+        ):
+            raise ContractViolation("decoder checkpoint contains non-finite parameters")
         if (
             not 0 <= self.button_mask <= 0xFFFF
             or self.button_mask & ~KNOWN_ACTION_BUTTON_MASK
             or not 0 <= self.confidence <= 1
+            or not math.isfinite(self.confidence)
         ):
             raise ContractViolation("decoder checkpoint output metadata is invalid")
 
@@ -112,15 +127,42 @@ class DecoderCheckpoint:
         return destination
 
     @classmethod
-    def load(cls, path: str | Path) -> DecoderCheckpoint:
-        payload = json.loads(Path(path).read_text(encoding="utf-8"))
-        if payload.get("schema_version") != "1.1":
+    def load(
+        cls,
+        path: str | Path,
+        *,
+        limits: ArtifactResourceLimits = DEFAULT_ARTIFACT_LIMITS,
+    ) -> DecoderCheckpoint:
+        payload = json.loads(
+            read_text_limited(
+                path,
+                limits.max_document_bytes,
+                "decoder checkpoint",
+            )
+        )
+        if not isinstance(payload, dict) or payload.get("schema_version") != "1.1":
             raise ContractViolation("unsupported decoder checkpoint schema")
+        try:
+            input_dim = int(payload["input_dim"])
+            raw_weights = payload["axis_weights"]
+            raw_bias = payload["axis_bias"]
+            if (
+                input_dim < 1
+                or input_dim > limits.max_feature_dimensions
+                or not isinstance(raw_weights, list)
+                or len(raw_weights) != 4
+                or any(not isinstance(row, list) or len(row) != input_dim for row in raw_weights)
+                or not isinstance(raw_bias, list)
+                or len(raw_bias) != 4
+            ):
+                raise ContractViolation("decoder checkpoint shape exceeds its resource contract")
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ContractViolation(f"invalid decoder checkpoint: {exc}") from exc
         return cls(
             str(payload["policy_version"]),
-            int(payload["input_dim"]),
-            tuple(tuple(float(value) for value in row) for row in payload["axis_weights"]),
-            tuple(float(value) for value in payload["axis_bias"]),  # type: ignore[arg-type]
+            input_dim,
+            tuple(tuple(float(value) for value in row) for row in raw_weights),
+            tuple(float(value) for value in raw_bias),  # type: ignore[arg-type]
             int(payload["button_mask"]),
             float(payload["confidence"]),
         )

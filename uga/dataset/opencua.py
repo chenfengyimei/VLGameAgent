@@ -6,6 +6,11 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from uga.core.artifact_limits import (
+    DEFAULT_ARTIFACT_LIMITS,
+    ArtifactResourceLimits,
+    read_text_limited,
+)
 from uga.core.errors import ContractViolation
 from uga.recording.replay import ReplayEngine
 
@@ -219,17 +224,31 @@ def write_opencua_trajectory(trajectory: OpenCuaTrajectory, path: str | Path) ->
     return destination
 
 
-def load_opencua_trajectory(path: str | Path) -> OpenCuaTrajectory:
+def load_opencua_trajectory(
+    path: str | Path,
+    *,
+    limits: ArtifactResourceLimits = DEFAULT_ARTIFACT_LIMITS,
+) -> OpenCuaTrajectory:
     try:
-        payload: Any = json.loads(Path(path).read_text(encoding="utf-8"))
+        payload: Any = json.loads(
+            read_text_limited(
+                path,
+                limits.max_document_bytes,
+                "OpenCUA trajectory",
+            )
+        )
         if not isinstance(payload, dict) or not isinstance(payload.get("steps"), list):
             raise ContractViolation("OpenCUA trajectory root is invalid")
+        if len(payload["steps"]) > limits.max_parquet_rows:
+            raise ContractViolation("OpenCUA trajectory exceeds the step resource limit")
         steps: list[OpenCuaStep] = []
         for raw_step in payload["steps"]:
             if not isinstance(raw_step, dict) or not isinstance(
                 raw_step.get("ground_truth_actions"), list
             ):
                 raise ContractViolation("OpenCUA step is invalid")
+            if len(raw_step["ground_truth_actions"]) > limits.max_parquet_rows:
+                raise ContractViolation("OpenCUA step exceeds the action resource limit")
             actions = tuple(_action_from_dict(item) for item in raw_step["ground_truth_actions"])
             steps.append(OpenCuaStep(str(raw_step["image"]), actions))
         return OpenCuaTrajectory(

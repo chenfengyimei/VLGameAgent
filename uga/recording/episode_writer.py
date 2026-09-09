@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import math
 import os
 import queue
@@ -15,6 +14,11 @@ from uga.capture.frame import Frame
 from uga.control.canonical import CanonicalAction
 from uga.control.physical import PhysicalAction
 from uga.control.semantic import SemanticAction
+from uga.core.artifact_limits import (
+    DEFAULT_ARTIFACT_LIMITS,
+    ArtifactResourceLimits,
+    sha256_file_limited,
+)
 from uga.core.errors import ContractViolation
 from uga.recording.json_codec import canonical_json, to_json_value, write_json
 from uga.recording.parquet_io import write_rows
@@ -82,6 +86,7 @@ class EpisodeWriter:
         metadata: EpisodeMetadata,
         *,
         require_video: bool = True,
+        limits: ArtifactResourceLimits = DEFAULT_ARTIFACT_LIMITS,
     ) -> None:
         if metadata.result != EpisodeResult.IN_PROGRESS or metadata.end_monotonic_ns is not None:
             raise ContractViolation("new episode metadata must be in progress with no end time")
@@ -99,6 +104,7 @@ class EpisodeWriter:
         (self._staging_path / "thumbnails").mkdir()
         self._metadata = metadata
         self._require_video = require_video
+        self._limits = limits
         self._video: VideoSink | None = None
         self._timeline: list[dict[str, Any]] = []
         self._actions: list[dict[str, Any]] = []
@@ -112,6 +118,9 @@ class EpisodeWriter:
         self._action_ids: set[str] = set()
         self._observation_ids: set[str] = set()
         self._sequence = 0
+        self._buffer_rows = 0
+        self._buffer_bytes = 0
+        self._metrics_bytes = 0
         self._latest_timestamp_ns = metadata.start_monotonic_ns
         self._closed = False
         self._lock = Lock()
@@ -135,16 +144,18 @@ class EpisodeWriter:
         with self._lock:
             self._ensure_open()
             self._validate_timestamp(frame.capture_timestamp)
-            if self._video is None:
-                if self._require_video:
-                    raise ContractViolation("attach a video sink before recording frames")
-            else:
+            if self._video is None and self._require_video:
+                raise ContractViolation("attach a video sink before recording frames")
+            envelope = frame.to_envelope()
+            self._ensure_table_capacity(len(self._timeline), 1, "timeline")
+            self._reserve_buffer(1, envelope)
+            if self._video is not None:
                 self._video.append(frame)
             self._append_timeline(
                 frame.capture_timestamp,
                 TimelineKind.FRAME,
                 frame.frame_id,
-                frame.to_envelope(),
+                envelope,
             )
 
     def record_observation(self, observation_id: str, timestamp: UGATime, payload: object) -> None:
@@ -155,14 +166,16 @@ class EpisodeWriter:
             self._validate_timestamp(timestamp)
             if observation_id in self._observation_ids:
                 raise ContractViolation(f"duplicate observation id: {observation_id}")
+            observation = {
+                "observation_id": observation_id,
+                "timestamp_ns": timestamp.value_ns,
+                "payload_json": canonical_json(payload),
+            }
+            self._ensure_table_capacity(len(self._observations), 1, "observations")
+            self._ensure_table_capacity(len(self._timeline), 1, "timeline")
+            self._reserve_buffer(2, observation, payload)
             self._observation_ids.add(observation_id)
-            self._observations.append(
-                {
-                    "observation_id": observation_id,
-                    "timestamp_ns": timestamp.value_ns,
-                    "payload_json": canonical_json(payload),
-                }
-            )
+            self._observations.append(observation)
             self._append_timeline(timestamp, TimelineKind.OBSERVATION, observation_id, payload)
 
     def record_action(
@@ -203,47 +216,51 @@ class EpisodeWriter:
             self._validate_timestamp(timestamp)
             if action.action_id in self._action_ids:
                 raise ContractViolation(f"duplicate action id: {action.action_id}")
-            self._action_ids.add(action.action_id)
             category = "raw_input" if input_state is not None else "agent_action"
-            self._actions.append(
-                {
-                    "action_id": action.action_id,
-                    "timestamp_ns": timestamp.value_ns,
-                    "effective_from_ns": action.lifetime.effective_from.value_ns,
-                    "expires_at_ns": action.lifetime.expires_at.value_ns,
-                    "category": category,
-                    "action_layer": layer.value,
-                    "action_type": type(action).__name__,
-                    "observation_id": provenance.observation_id,
-                    "payload_json": canonical_json(action),
-                    "input_state_json": (
-                        None if input_state is None else canonical_json(input_state)
-                    ),
-                }
-            )
-            self._provenance.append(
-                {
-                    "action_id": provenance.action_id,
-                    "action_source": provenance.action_source,
-                    "policy_version": provenance.policy_version,
-                    "model_checkpoint": provenance.model_checkpoint,
-                    "observation_id": provenance.observation_id,
-                    "skill_id": provenance.skill_id,
-                    "task_node_id": provenance.task_node_id,
-                    "mode": provenance.mode,
-                    "lease_id": provenance.lease_id,
-                    "confidence": provenance.confidence,
-                    "human_override": provenance.human_override,
-                    "created_at_ns": provenance.lifetime.created_at.value_ns,
-                    "effective_from_ns": provenance.lifetime.effective_from.value_ns,
-                    "expires_at_ns": provenance.lifetime.expires_at.value_ns,
-                }
-            )
+            action_row = {
+                "action_id": action.action_id,
+                "timestamp_ns": timestamp.value_ns,
+                "effective_from_ns": action.lifetime.effective_from.value_ns,
+                "expires_at_ns": action.lifetime.expires_at.value_ns,
+                "category": category,
+                "action_layer": layer.value,
+                "action_type": type(action).__name__,
+                "observation_id": provenance.observation_id,
+                "payload_json": canonical_json(action),
+                "input_state_json": (None if input_state is None else canonical_json(input_state)),
+            }
+            provenance_row = {
+                "action_id": provenance.action_id,
+                "action_source": provenance.action_source,
+                "policy_version": provenance.policy_version,
+                "model_checkpoint": provenance.model_checkpoint,
+                "observation_id": provenance.observation_id,
+                "skill_id": provenance.skill_id,
+                "task_node_id": provenance.task_node_id,
+                "mode": provenance.mode,
+                "lease_id": provenance.lease_id,
+                "confidence": provenance.confidence,
+                "human_override": provenance.human_override,
+                "created_at_ns": provenance.lifetime.created_at.value_ns,
+                "effective_from_ns": provenance.lifetime.effective_from.value_ns,
+                "expires_at_ns": provenance.lifetime.expires_at.value_ns,
+            }
+            timeline_payload = {
+                "action_type": type(action).__name__,
+                "source": provenance.action_source,
+            }
+            self._ensure_table_capacity(len(self._actions), 1, "actions")
+            self._ensure_table_capacity(len(self._provenance), 1, "provenance")
+            self._ensure_table_capacity(len(self._timeline), 1, "timeline")
+            self._reserve_buffer(3, action_row, provenance_row, timeline_payload)
+            self._action_ids.add(action.action_id)
+            self._actions.append(action_row)
+            self._provenance.append(provenance_row)
             self._append_timeline(
                 timestamp,
                 TimelineKind.RAW_INPUT if input_state is not None else TimelineKind.ACTION,
                 action.action_id,
-                {"action_type": type(action).__name__, "source": provenance.action_source},
+                timeline_payload,
             )
 
     def record_event(self, event_id: str, timestamp: UGATime, payload: object) -> None:
@@ -264,9 +281,11 @@ class EpisodeWriter:
         with self._lock:
             self._ensure_open()
             self._validate_timestamp(timestamp)
-            self._tasks.append(
-                {"task_id": task_id, "timestamp_ns": timestamp.value_ns, "payload": payload}
-            )
+            row = {"task_id": task_id, "timestamp_ns": timestamp.value_ns, "payload": payload}
+            self._ensure_table_capacity(len(self._tasks), 1, "tasks")
+            self._ensure_table_capacity(len(self._timeline), 1, "timeline")
+            self._reserve_buffer(2, row, payload)
+            self._tasks.append(row)
             self._append_timeline(timestamp, TimelineKind.TASK, task_id, payload)
 
     def record_planner(self, decision_id: str, timestamp: UGATime, payload: object) -> None:
@@ -287,6 +306,16 @@ class EpisodeWriter:
             raise ContractViolation("recorder metrics must be finite numbers")
         with self._lock:
             self._ensure_open()
+            metrics_bytes = len(canonical_json(metrics).encode("utf-8"))
+            if metrics_bytes > self._limits.max_document_bytes:
+                raise ContractViolation("recorder metrics exceed the document resource limit")
+            if (
+                self._buffer_bytes - self._metrics_bytes + metrics_bytes
+                > self._limits.max_episode_buffer_bytes
+            ):
+                raise ContractViolation("Episode recorder exceeds the buffer resource limit")
+            self._buffer_bytes += metrics_bytes - self._metrics_bytes
+            self._metrics_bytes = metrics_bytes
             self._metrics = dict(metrics)
 
     def finalize(self, result: EpisodeResult, end: UGATime | None = None) -> Path:
@@ -320,13 +349,15 @@ class EpisodeWriter:
         with self._lock:
             self._ensure_open()
             self._validate_timestamp(timestamp)
-            destination.append(
-                {
-                    "id": record_id,
-                    "timestamp_ns": timestamp.value_ns,
-                    "payload": to_json_value(payload),
-                }
-            )
+            row = {
+                "id": record_id,
+                "timestamp_ns": timestamp.value_ns,
+                "payload": to_json_value(payload),
+            }
+            self._ensure_table_capacity(len(destination), 1, kind.value)
+            self._ensure_table_capacity(len(self._timeline), 1, "timeline")
+            self._reserve_buffer(2, row, payload)
+            destination.append(row)
             self._append_timeline(timestamp, kind, record_id, payload)
 
     def _append_timeline(
@@ -351,6 +382,22 @@ class EpisodeWriter:
                 "payload_json": record.payload_json,
             }
         )
+
+    def _ensure_table_capacity(self, current: int, additional: int, label: str) -> None:
+        if current + additional > self._limits.max_parquet_rows:
+            raise ContractViolation(f"Episode {label} exceeds the row resource limit")
+
+    def _reserve_buffer(self, rows: int, *payloads: object) -> None:
+        sizes = tuple(len(canonical_json(payload).encode("utf-8")) for payload in payloads)
+        if any(size > self._limits.max_jsonl_line_bytes for size in sizes):
+            raise ContractViolation("Episode record exceeds the per-record resource limit")
+        added_bytes = sum(sizes)
+        if self._buffer_rows + rows > self._limits.max_parquet_rows * 4:
+            raise ContractViolation("Episode recorder exceeds the record resource limit")
+        if self._buffer_bytes + added_bytes > self._limits.max_episode_buffer_bytes:
+            raise ContractViolation("Episode recorder exceeds the buffer resource limit")
+        self._buffer_rows += rows
+        self._buffer_bytes += added_bytes
 
     def _validate_timestamp(self, timestamp: UGATime) -> None:
         if timestamp.value_ns < self._metadata.start_monotonic_ns:
@@ -418,10 +465,28 @@ class EpisodeWriter:
 
     def _checksums(self) -> dict[str, object]:
         files: dict[str, str] = {}
+        total_bytes = 0
         for path in sorted(self._staging_path.rglob("*")):
             if path.is_file() and path != self._staging_path / "checksum.json":
+                if len(files) >= self._limits.max_episode_files - 1:
+                    raise ContractViolation("Episode exceeds the file-count resource limit")
                 relative = path.relative_to(self._staging_path).as_posix()
-                files[relative] = hashlib.sha256(path.read_bytes()).hexdigest()
+                try:
+                    total_bytes += path.stat().st_size
+                except OSError as exc:
+                    raise ContractViolation(f"cannot inspect Episode file: {path}") from exc
+                if total_bytes > self._limits.max_episode_bytes:
+                    raise ContractViolation("Episode exceeds the total byte resource limit")
+                maximum = (
+                    self._limits.max_video_bytes
+                    if path.name == "video.mp4"
+                    else self._limits.max_parquet_file_bytes
+                    if path.suffix == ".parquet"
+                    else self._limits.max_jsonl_bytes
+                    if path.suffix == ".jsonl"
+                    else self._limits.max_document_bytes
+                )
+                files[relative] = sha256_file_limited(path, maximum, f"Episode file {relative}")
         return {"algorithm": "sha256", "files": files}
 
     def _ensure_open(self) -> None:

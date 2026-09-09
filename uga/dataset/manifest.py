@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import math
 import re
@@ -10,6 +9,12 @@ from enum import StrEnum
 from pathlib import Path, PurePosixPath
 from typing import Any, ClassVar
 
+from uga.core.artifact_limits import (
+    DEFAULT_ARTIFACT_LIMITS,
+    ArtifactResourceLimits,
+    read_text_limited,
+    sha256_file_limited,
+)
 from uga.core.errors import ContractViolation
 from uga.core.schema import VersionedMixin
 from uga.dataset.processor import DatasetSplit, LeakageSafeSplitRegistry
@@ -117,6 +122,10 @@ class DatasetManifest(VersionedMixin):
             raise ContractViolation("dataset license ids must be unique")
         if not licenses:
             raise ContractViolation("dataset manifest requires license records")
+        if len(self.licenses) > DEFAULT_ARTIFACT_LIMITS.max_dataset_licenses:
+            raise ContractViolation("dataset manifest exceeds the license resource limit")
+        if len(self.episodes) > DEFAULT_ARTIFACT_LIMITS.max_dataset_episodes:
+            raise ContractViolation("dataset manifest exceeds the Episode resource limit")
         registry = LeakageSafeSplitRegistry()
         episode_ids: set[str] = set()
         for episode in self.episodes:
@@ -166,18 +175,40 @@ class DatasetManifest(VersionedMixin):
             for category in DatasetCategory
         )
 
-    def verify_episode_artifacts(self, root: str | Path) -> None:
+    def verify_episode_artifacts(
+        self,
+        root: str | Path,
+        *,
+        limits: ArtifactResourceLimits = DEFAULT_ARTIFACT_LIMITS,
+    ) -> None:
         base = Path(root).resolve()
+        total_bytes = 0
         for episode in self.episodes:
-            checksum_path = (base / episode.relative_path / "checksum.json").resolve()
+            episode_path = (base / episode.relative_path).resolve()
+            checksum_path = episode_path / "checksum.json"
             if base not in checksum_path.parents or not checksum_path.is_file():
                 raise ContractViolation(
                     f"dataset episode artifact is missing: {episode.episode_id}"
                 )
-            digest = hashlib.sha256(checksum_path.read_bytes()).hexdigest()
+            for candidate in episode_path.rglob("*"):
+                if not candidate.is_file():
+                    continue
+                try:
+                    total_bytes += candidate.stat().st_size
+                except OSError as exc:
+                    raise ContractViolation(
+                        f"cannot inspect dataset artifact: {candidate}"
+                    ) from exc
+                if total_bytes > limits.max_dataset_bytes:
+                    raise ContractViolation("dataset exceeds the total byte resource limit")
+            digest = sha256_file_limited(
+                checksum_path,
+                limits.max_checksum_bytes,
+                "Episode checksum manifest",
+            )
             if digest != episode.checksum_digest:
                 raise ContractViolation(f"dataset episode digest mismatch: {episode.episode_id}")
-            ReplayEngine(checksum_path.parent)
+            ReplayEngine(checksum_path.parent, limits=limits)
 
     def write(self, path: str | Path) -> Path:
         destination = Path(path)
@@ -207,8 +238,19 @@ class DatasetManifest(VersionedMixin):
         return destination
 
     @classmethod
-    def load(cls, path: str | Path) -> DatasetManifest:
-        payload: Any = json.loads(Path(path).read_text(encoding="utf-8"))
+    def load(
+        cls,
+        path: str | Path,
+        *,
+        limits: ArtifactResourceLimits = DEFAULT_ARTIFACT_LIMITS,
+    ) -> DatasetManifest:
+        payload: Any = json.loads(
+            read_text_limited(
+                path,
+                limits.max_document_bytes,
+                "Dataset Manifest",
+            )
+        )
         if (
             not isinstance(payload, dict)
             or payload.get("schema") != cls.SCHEMA_NAME
@@ -221,6 +263,10 @@ class DatasetManifest(VersionedMixin):
         raw_episodes = data.get("episodes")
         if not isinstance(raw_licenses, list) or not isinstance(raw_episodes, list):
             raise ContractViolation("dataset manifest lists are invalid")
+        if len(raw_licenses) > limits.max_dataset_licenses:
+            raise ContractViolation("dataset manifest exceeds the license resource limit")
+        if len(raw_episodes) > limits.max_dataset_episodes:
+            raise ContractViolation("dataset manifest exceeds the Episode resource limit")
         licenses = tuple(DatasetLicense(**item) for item in raw_licenses if isinstance(item, dict))
         episodes = tuple(cls._episode_from_payload(item) for item in raw_episodes)
         if len(licenses) != len(raw_licenses):

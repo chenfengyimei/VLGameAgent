@@ -8,6 +8,11 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
+from uga.core.artifact_limits import (
+    DEFAULT_ARTIFACT_LIMITS,
+    ArtifactResourceLimits,
+    read_text_limited,
+)
 from uga.core.errors import BackendUnavailableError, ContractViolation
 
 _SHA256 = re.compile(r"[0-9a-f]{64}")
@@ -35,7 +40,11 @@ class BenchmarkTask:
             for value in (self.task_id, self.game_id, self.instruction, self.evaluator)
         ):
             raise ContractViolation("benchmark task has blank fields")
-        if self.timeout_seconds < 1 or self.repeat < 1:
+        if (
+            self.timeout_seconds < 1
+            or self.repeat < 1
+            or self.repeat > DEFAULT_ARTIFACT_LIMITS.max_benchmark_repeat
+        ):
             raise ContractViolation("benchmark timeout and repeat must be positive")
 
 
@@ -101,6 +110,11 @@ class BenchmarkRun:
             self.end_to_end_latency_ms,
         )
         if any(
+            len(values) > DEFAULT_ARTIFACT_LIMITS.max_latency_samples_per_group
+            for values in latency_groups
+        ):
+            raise ContractViolation("benchmark run exceeds the latency-sample resource limit")
+        if any(
             not values or any(value < 0 or not math.isfinite(value) for value in values)
             for values in latency_groups
         ):
@@ -117,15 +131,21 @@ class BenchmarkEnvironment(Protocol):
     def run(self, task: BenchmarkTask, repetition: int) -> BenchmarkRun: ...
 
 
-def load_benchmark_tasks(path: str | Path) -> tuple[BenchmarkTask, ...]:
+def load_benchmark_tasks(
+    path: str | Path,
+    *,
+    limits: ArtifactResourceLimits = DEFAULT_ARTIFACT_LIMITS,
+) -> tuple[BenchmarkTask, ...]:
     try:
         yaml = importlib.import_module("yaml")
     except ImportError as exc:
         raise BackendUnavailableError("benchmark YAML requires PyYAML") from exc
-    raw = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
+    raw = yaml.safe_load(read_text_limited(path, limits.max_config_bytes, "benchmark config"))
     values = raw.get("tasks") if isinstance(raw, dict) else None
     if not isinstance(values, list):
         raise ContractViolation("benchmark file requires a tasks list")
+    if len(values) > limits.max_benchmark_tasks:
+        raise ContractViolation("benchmark config exceeds the task resource limit")
     tasks: list[BenchmarkTask] = []
     for value in values:
         if not isinstance(value, dict):
@@ -133,15 +153,18 @@ def load_benchmark_tasks(path: str | Path) -> tuple[BenchmarkTask, ...]:
         success = value.get("success", {})
         if not isinstance(success, dict):
             raise ContractViolation("benchmark success must be an object")
-        tasks.append(
-            BenchmarkTask(
-                str(value["id"]),
-                str(value["game"]),
-                str(value["instruction"]),
-                int(value["timeout_seconds"]),
-                int(value.get("repeat", 1)),
-                str(success["evaluator"]),
-                BenchmarkSplit(str(value.get("split", "test"))),
-            )
+        task = BenchmarkTask(
+            str(value["id"]),
+            str(value["game"]),
+            str(value["instruction"]),
+            int(value["timeout_seconds"]),
+            int(value.get("repeat", 1)),
+            str(success["evaluator"]),
+            BenchmarkSplit(str(value.get("split", "test"))),
         )
+        if task.repeat > limits.max_benchmark_repeat:
+            raise ContractViolation("benchmark task repeat exceeds the resource limit")
+        tasks.append(task)
+        if sum(item.repeat for item in tasks) > limits.max_benchmark_runs:
+            raise ContractViolation("benchmark plan exceeds the run resource limit")
     return tuple(tasks)

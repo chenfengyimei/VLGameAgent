@@ -29,6 +29,13 @@ and Action exist and are linked in the recorded Parquet tables. Its artifact
 manifest binds the checkpoint, Dataset Manifest, training configuration, and
 sample file with SHA-256 digests; `uga-train verify` rechecks all four.
 
+Dataset, sample, training, checkpoint, benchmark, and video readers share finite
+byte, record, dimension, epoch, work, latency-sample, and decoded-frame budgets.
+JSONL is read incrementally with per-line limits, Parquet metadata is checked
+before table materialization, and video decoding stops as soon as the expected
+or global frame ceiling is exceeded. Every overrun fails closed with a contract
+violation (or a rejected Dataset validation report).
+
 Offline evaluation includes movement MSE/accuracy, camera MAE/smoothness,
 button accuracy/F1, whole-ActionChunk accuracy, mode accuracy, confidence error,
 and reasoning-gate precision/recall/F1. Slow inference degrades through the

@@ -7,6 +7,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from uga.core.artifact_limits import (
+    DEFAULT_ARTIFACT_LIMITS,
+    ArtifactResourceLimits,
+    read_text_limited,
+    sha256_file_limited,
+)
 from uga.core.errors import ContractViolation
 from uga.recording.json_codec import canonical_json
 from uga.recording.parquet_io import read_rows
@@ -25,14 +31,6 @@ _REQUIRED_FILES = frozenset(
     }
 )
 _CHECKSUM_NAME = "checksum.json"
-
-
-def _sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for block in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,10 +54,18 @@ class ReplayValidation:
 class ReplayEngine:
     """Read-only deterministic episode replay on the recorded monotonic timeline."""
 
-    def __init__(self, episode_path: str | Path, *, verify_checksums: bool = True) -> None:
+    def __init__(
+        self,
+        episode_path: str | Path,
+        *,
+        verify_checksums: bool = True,
+        limits: ArtifactResourceLimits = DEFAULT_ARTIFACT_LIMITS,
+    ) -> None:
         self.path = Path(episode_path).resolve()
+        self._limits = limits
         if not self.path.is_dir():
             raise FileNotFoundError(self.path)
+        self._verify_resource_limits()
         missing = sorted(name for name in _REQUIRED_FILES if not (self.path / name).is_file())
         if missing:
             raise ContractViolation(f"episode is incomplete; missing: {', '.join(missing)}")
@@ -68,10 +74,10 @@ class ReplayEngine:
         self.metadata = self._read_json(self.path / "metadata.json")
         if self.metadata.get("schema_version") != "1.1":
             raise ContractViolation("unsupported episode schema version")
-        self.timeline = read_rows(self.path / "timeline.parquet")
-        self.actions = read_rows(self.path / "actions.parquet")
-        self.observations = read_rows(self.path / "observations.parquet")
-        self.provenance = read_rows(self.path / "provenance.parquet")
+        self.timeline = read_rows(self.path / "timeline.parquet", limits=limits)
+        self.actions = read_rows(self.path / "actions.parquet", limits=limits)
+        self.observations = read_rows(self.path / "observations.parquet", limits=limits)
+        self.provenance = read_rows(self.path / "provenance.parquet", limits=limits)
         self._events = self._validate_and_materialize()
         self._cursor = 0
 
@@ -206,13 +212,51 @@ class ReplayEngine:
                 raise ContractViolation(f"checksummed file is missing: {relative}")
             if not isinstance(expected, str) or len(expected) != 64:
                 raise ContractViolation(f"invalid checksum digest: {relative}")
-            actual = _sha256_file(candidate)
+            actual = sha256_file_limited(
+                candidate,
+                self._file_limit(candidate),
+                f"Episode file {relative}",
+            )
             if actual != expected:
                 raise ContractViolation(f"checksum mismatch: {relative}")
 
-    @staticmethod
-    def _read_json(path: Path) -> dict[str, Any]:
-        value = json.loads(path.read_text(encoding="utf-8"))
+    def _verify_resource_limits(self) -> None:
+        file_count = 0
+        total_bytes = 0
+        for path in self.path.rglob("*"):
+            if not path.is_file():
+                continue
+            file_count += 1
+            if file_count > self._limits.max_episode_files:
+                raise ContractViolation("Episode exceeds the file-count resource limit")
+            try:
+                size = path.stat().st_size
+            except OSError as exc:
+                raise ContractViolation(f"cannot inspect Episode file: {path}") from exc
+            if size > self._file_limit(path):
+                raise ContractViolation(f"Episode file exceeds its resource limit: {path.name}")
+            total_bytes += size
+            if total_bytes > self._limits.max_episode_bytes:
+                raise ContractViolation("Episode exceeds the total byte resource limit")
+
+    def _file_limit(self, path: Path) -> int:
+        if path.name == _CHECKSUM_NAME and path.parent == self.path:
+            return self._limits.max_checksum_bytes
+        if path.suffix == ".parquet":
+            return self._limits.max_parquet_file_bytes
+        if path.name == "video.mp4":
+            return self._limits.max_video_bytes
+        if path.suffix == ".jsonl":
+            return self._limits.max_jsonl_bytes
+        return self._limits.max_document_bytes
+
+    def _read_json(self, path: Path) -> dict[str, Any]:
+        maximum = (
+            self._limits.max_checksum_bytes
+            if path.name == _CHECKSUM_NAME
+            else self._limits.max_document_bytes
+        )
+        value = json.loads(read_text_limited(path, maximum, path.name))
         if not isinstance(value, dict):
             raise ContractViolation(f"expected JSON object: {path.name}")
         return value

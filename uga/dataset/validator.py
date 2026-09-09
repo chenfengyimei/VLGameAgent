@@ -6,6 +6,11 @@ from dataclasses import dataclass
 from enum import IntEnum, StrEnum
 from pathlib import Path
 
+from uga.core.artifact_limits import (
+    DEFAULT_ARTIFACT_LIMITS,
+    ArtifactResourceLimits,
+    ensure_file_size,
+)
 from uga.core.errors import ContractViolation
 from uga.recording.replay import ReplayEngine
 
@@ -46,17 +51,19 @@ class DatasetValidator:
         max_capture_gap_ns: int = 500_000_000,
         max_input_gap_ns: int = 500_000_000,
         max_mouse_delta: int = 5000,
+        limits: ArtifactResourceLimits = DEFAULT_ARTIFACT_LIMITS,
     ) -> None:
         if max_capture_gap_ns <= 0 or max_input_gap_ns <= 0 or max_mouse_delta <= 0:
             raise ContractViolation("dataset validation thresholds must be positive")
         self._max_capture_gap_ns = max_capture_gap_ns
         self._max_input_gap_ns = max_input_gap_ns
         self._max_mouse_delta = max_mouse_delta
+        self._limits = limits
 
     def validate(self, episode_path: str | Path) -> ValidationReport:
         path = Path(episode_path)
         try:
-            replay = ReplayEngine(path)
+            replay = ReplayEngine(path, limits=self._limits)
         except (FileNotFoundError, ContractViolation, OSError, ValueError) as exc:
             return ValidationReport(
                 path.name,
@@ -219,17 +226,39 @@ class DatasetValidator:
             if token in event_text:
                 findings.append(QualityFinding(code, severity, f"timeline contains {token}"))
 
-    @staticmethod
-    def _check_video(path: Path, expected_frames: int, findings: list[QualityFinding]) -> None:
+    def _check_video(
+        self,
+        path: Path,
+        expected_frames: int,
+        findings: list[QualityFinding],
+    ) -> None:
         if not path.is_file():
             findings.append(
                 QualityFinding("missing_video", FindingSeverity.ERROR, "video.mp4 is missing")
             )
             return
         try:
+            ensure_file_size(path, self._limits.max_video_bytes, "Episode video")
+            if expected_frames > self._limits.max_video_frames:
+                raise ContractViolation("video exceeds the expected-frame resource limit")
             av = importlib.import_module("av")
             with av.open(str(path)) as container:
-                decoded = sum(1 for _ in container.decode(video=0))
+                stream = container.streams.video[0]
+                self._check_video_dimensions(
+                    int(stream.codec_context.width),
+                    int(stream.codec_context.height),
+                )
+                declared_frames = int(stream.frames or 0)
+                if declared_frames > self._limits.max_video_frames:
+                    raise ContractViolation("video exceeds the declared-frame resource limit")
+                decoded = 0
+                for frame in container.decode(video=0):
+                    decoded += 1
+                    if decoded > self._limits.max_video_frames:
+                        raise ContractViolation("video exceeds the decoded-frame resource limit")
+                    self._check_video_dimensions(int(frame.width), int(frame.height))
+                    if decoded > expected_frames:
+                        break
             if decoded != expected_frames:
                 findings.append(
                     QualityFinding(
@@ -238,5 +267,17 @@ class DatasetValidator:
                         f"decoded {decoded} video frames for {expected_frames} timeline frames",
                     )
                 )
+        except ContractViolation as exc:
+            findings.append(QualityFinding("video_resource_limit", FindingSeverity.ERROR, str(exc)))
         except Exception as exc:
             findings.append(QualityFinding("corrupted_video", FindingSeverity.ERROR, str(exc)))
+
+    def _check_video_dimensions(self, width: int, height: int) -> None:
+        if (
+            width < 1
+            or height < 1
+            or width > self._limits.max_video_dimension
+            or height > self._limits.max_video_dimension
+            or width * height > self._limits.max_video_pixels
+        ):
+            raise ContractViolation("video dimensions exceed the resource limit")

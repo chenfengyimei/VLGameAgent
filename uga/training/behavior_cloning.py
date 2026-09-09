@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
+from uga.core.artifact_limits import DEFAULT_ARTIFACT_LIMITS, ArtifactResourceLimits
 from uga.core.errors import ContractViolation
 from uga.policy.action_chunk import KNOWN_ACTION_BUTTON_MASK
 from uga.policy.fast_policy import DecoderCheckpoint
@@ -61,12 +62,22 @@ class BehaviorCloningTrainer:
         policy_version: str,
         epochs: int = 100,
         learning_rate: float = 0.05,
+        limits: ArtifactResourceLimits = DEFAULT_ARTIFACT_LIMITS,
     ) -> tuple[DecoderCheckpoint, TrainingMetrics]:
         if not samples or epochs < 1 or learning_rate <= 0:
             raise ContractViolation("invalid behavior-cloning training request")
+        if len(samples) > limits.max_training_samples:
+            raise ContractViolation("behavior-cloning samples exceed the resource limit")
+        if epochs > limits.max_training_epochs:
+            raise ContractViolation("behavior-cloning epochs exceed the resource limit")
         input_dim = len(samples[0].features)
+        if input_dim > limits.max_feature_dimensions:
+            raise ContractViolation("behavior-cloning features exceed the dimension limit")
         if any(len(sample.features) != input_dim for sample in samples):
             raise ContractViolation("training feature dimensions are inconsistent")
+        work = len(samples) * epochs * input_dim * 4
+        if work > limits.max_training_work:
+            raise ContractViolation("behavior-cloning work exceeds the resource limit")
         weights = [[0.0] * input_dim for _ in range(4)]
         biases = [0.0] * 4
         for _ in range(epochs):

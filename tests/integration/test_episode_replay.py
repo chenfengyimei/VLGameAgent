@@ -4,12 +4,15 @@ import importlib
 import json
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 
 from tests.helpers import frame
 from uga.control.lifetime import ActionLifetime
 from uga.control.physical import KeyboardAction
+from uga.core.artifact_limits import DEFAULT_ARTIFACT_LIMITS
 from uga.core.errors import ContractViolation
+from uga.dataset.processor import DatasetProcessor
 from uga.recording.episode_writer import EpisodeWriter, RecorderChannel
 from uga.recording.replay import ReplayEngine
 from uga.recording.schema import (
@@ -23,6 +26,39 @@ from uga.time.clock import UGATime
 
 
 class EpisodeReplayTests(unittest.TestCase):
+    def test_writer_rejects_buffer_growth_during_recording(self) -> None:
+        metadata = EpisodeMetadata(
+            episode_id="bounded-episode",
+            game_id="fixture-game",
+            game_version="1.0",
+            window_size=(2, 2),
+            capture_backend="fixture",
+            start_monotonic_ns=100,
+            task="bounded recording",
+            result=EpisodeResult.IN_PROGRESS,
+            agent_version="test-agent",
+            policy_version="test-policy",
+            human_controlled=False,
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            writer = EpisodeWriter(
+                temporary,
+                metadata,
+                require_video=False,
+                limits=replace(DEFAULT_ARTIFACT_LIMITS, max_episode_buffer_bytes=1),
+            )
+            with self.assertRaisesRegex(ContractViolation, "buffer resource limit"):
+                writer.record_event("event", UGATime(100), {"payload": "too large"})
+
+            finalize_writer = EpisodeWriter(
+                temporary,
+                replace(metadata, episode_id="bounded-finalize"),
+                require_video=False,
+                limits=replace(DEFAULT_ARTIFACT_LIMITS, max_episode_bytes=1),
+            )
+            with self.assertRaisesRegex(ContractViolation, "total byte resource limit"):
+                finalize_writer.finalize(EpisodeResult.SUCCESS, UGATime(100))
+
     def _record_episode(self, root: Path) -> Path:
         metadata = EpisodeMetadata(
             episode_id="episode-00001",
@@ -139,6 +175,19 @@ class EpisodeReplayTests(unittest.TestCase):
 
             with self.assertRaisesRegex(ContractViolation, "file set mismatch"):
                 ReplayEngine(episode)
+
+    def test_replay_rejects_episode_and_parquet_resource_overruns(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            episode = self._record_episode(Path(temporary))
+            file_limits = replace(DEFAULT_ARTIFACT_LIMITS, max_episode_files=1)
+            with self.assertRaisesRegex(ContractViolation, "file-count"):
+                ReplayEngine(episode, limits=file_limits)
+
+            row_limits = replace(DEFAULT_ARTIFACT_LIMITS, max_parquet_rows=1)
+            with self.assertRaisesRegex(ContractViolation, "row limit"):
+                ReplayEngine(episode, limits=row_limits)
+            with self.assertRaisesRegex(ContractViolation, "row limit"):
+                DatasetProcessor(limits=row_limits).process(episode)
 
     def test_recorder_channel_preserves_submission_order(self) -> None:
         observed: list[int] = []

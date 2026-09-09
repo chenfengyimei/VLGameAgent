@@ -37,3 +37,10 @@ Replay is read-only: it verifies checksums and schema version, validates the
 timeline and references, then supports reset, elapsed-time seek, event stepping,
 observation-to-action lookup, and a stable content digest. Replay never emits OS
 input.
+
+All artifact ingestion is governed by the shared finite
+`ArtifactResourceLimits` contract. Replay checks the Episode file count and byte
+budget before parsing, validates Parquet compressed/uncompressed size, columns,
+and rows before materialization, and hashes through bounded streaming reads.
+Trusted callers may inject a larger finite limits object; inputs are never
+silently truncated or sampled when a budget is exceeded.

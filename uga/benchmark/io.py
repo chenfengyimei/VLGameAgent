@@ -7,18 +7,50 @@ from typing import Any
 
 from uga.benchmark.runner import BenchmarkReport
 from uga.benchmark.schema import BenchmarkRun, BenchmarkSplit
+from uga.core.artifact_limits import (
+    DEFAULT_ARTIFACT_LIMITS,
+    ArtifactResourceLimits,
+    iter_text_lines_limited,
+)
 from uga.core.errors import ContractViolation
 
 
-def load_benchmark_runs(path: str | Path) -> tuple[BenchmarkRun, ...]:
+def load_benchmark_runs(
+    path: str | Path,
+    *,
+    limits: ArtifactResourceLimits = DEFAULT_ARTIFACT_LIMITS,
+) -> tuple[BenchmarkRun, ...]:
     runs: list[BenchmarkRun] = []
-    for line_number, line in enumerate(Path(path).read_text(encoding="utf-8").splitlines(), 1):
+    latency_samples = 0
+    for line_number, line in iter_text_lines_limited(
+        path,
+        maximum_bytes=limits.max_benchmark_jsonl_bytes,
+        maximum_line_bytes=limits.max_benchmark_line_bytes,
+        label="benchmark JSONL",
+    ):
         if not line.strip():
             continue
         try:
             payload: Any = json.loads(line)
             if not isinstance(payload, dict):
                 raise TypeError("expected object")
+            latency_names = (
+                "capture_latency_ms",
+                "policy_latency_ms",
+                "action_age_ms",
+                "end_to_end_latency_ms",
+            )
+            if any(
+                not isinstance(payload.get(name), list)
+                or len(payload[name]) > limits.max_latency_samples_per_group
+                for name in latency_names
+            ):
+                raise ContractViolation("benchmark latency samples exceed the resource limit")
+            latency_samples += sum(len(payload[name]) for name in latency_names)
+            if latency_samples > limits.max_latency_samples_total:
+                raise ContractViolation("benchmark JSONL exceeds the total latency resource limit")
+            if len(runs) >= limits.max_benchmark_runs:
+                raise ContractViolation("benchmark JSONL exceeds the run resource limit")
             success = _strict_bool(payload["success"], "success")
             stuck = _strict_bool(payload["stuck"], "stuck")
             runs.append(

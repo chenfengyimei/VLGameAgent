@@ -7,6 +7,12 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
+from uga.core.artifact_limits import (
+    DEFAULT_ARTIFACT_LIMITS,
+    ArtifactResourceLimits,
+    iter_text_lines_limited,
+    read_text_limited,
+)
 from uga.core.errors import BackendUnavailableError, ContractViolation
 from uga.dataset.manifest import DatasetManifest
 from uga.dataset.processor import DatasetProcessor, DatasetSplit
@@ -50,16 +56,24 @@ class MotorTrainingResult:
     artifact_manifest: Path
 
 
-def export_motor_samples(episode_paths: tuple[str | Path, ...], output_path: str | Path) -> Path:
+def export_motor_samples(
+    episode_paths: tuple[str | Path, ...],
+    output_path: str | Path,
+    *,
+    limits: ArtifactResourceLimits = DEFAULT_ARTIFACT_LIMITS,
+) -> Path:
     """Export provenance-preserving motor samples from canonical Episode actions."""
     if not episode_paths:
         raise ContractViolation("motor sample export requires at least one Episode")
     rows: list[str] = []
+    output_bytes = 0
     for episode_path in episode_paths:
-        episode = DatasetProcessor().process(episode_path)
+        episode = DatasetProcessor(limits=limits).process(episode_path)
         if not episode.samples:
             raise ContractViolation(f"Episode has no canonical motor samples: {episode_path}")
         for aligned in episode.samples:
+            if len(rows) >= limits.max_training_samples:
+                raise ContractViolation("motor sample export exceeds the sample resource limit")
             try:
                 observation: Any = json.loads(aligned.observation_json)
                 action: Any = json.loads(aligned.action_json)
@@ -81,39 +95,49 @@ def export_motor_samples(episode_paths: tuple[str | Path, ...], output_path: str
                 raise ContractViolation(
                     f"Episode contains an invalid motor sample {aligned.action_id}: {exc}"
                 ) from exc
-            rows.append(
-                json.dumps(
-                    {
-                        "features": sample.features,
-                        "move_x": sample.move_x,
-                        "move_y": sample.move_y,
-                        "look_x": sample.look_x,
-                        "look_y": sample.look_y,
-                        "buttons": sample.buttons,
-                        "episode_id": sample.episode_id,
-                        "observation_id": sample.observation_id,
-                        "action_id": sample.action_id,
-                    },
-                    separators=(",", ":"),
-                    sort_keys=True,
-                )
+            encoded = json.dumps(
+                {
+                    "features": sample.features,
+                    "move_x": sample.move_x,
+                    "move_y": sample.move_y,
+                    "look_x": sample.look_x,
+                    "look_y": sample.look_y,
+                    "buttons": sample.buttons,
+                    "episode_id": sample.episode_id,
+                    "observation_id": sample.observation_id,
+                    "action_id": sample.action_id,
+                },
+                separators=(",", ":"),
+                sort_keys=True,
             )
+            if len(encoded.encode("utf-8")) > limits.max_jsonl_line_bytes:
+                raise ContractViolation("motor sample exceeds the line resource limit")
+            output_bytes += len(encoded.encode("utf-8")) + 1
+            if output_bytes > limits.max_jsonl_bytes:
+                raise ContractViolation("motor sample export exceeds the byte resource limit")
+            rows.append(encoded)
     destination = Path(output_path).resolve()
     destination.parent.mkdir(parents=True, exist_ok=True)
     destination.write_text("\n".join(rows) + "\n", encoding="utf-8")
     return destination
 
 
-def load_motor_training_config(path: str | Path) -> MotorTrainingConfig:
+def load_motor_training_config(
+    path: str | Path,
+    *,
+    limits: ArtifactResourceLimits = DEFAULT_ARTIFACT_LIMITS,
+) -> MotorTrainingConfig:
     try:
         yaml = importlib.import_module("yaml")
     except ImportError as exc:
         raise BackendUnavailableError("motor training config requires PyYAML") from exc
-    payload: Any = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
+    payload: Any = yaml.safe_load(
+        read_text_limited(path, limits.max_config_bytes, "motor training config")
+    )
     if not isinstance(payload, dict):
         raise ContractViolation("motor training config root must be an object")
     try:
-        return MotorTrainingConfig(
+        config = MotorTrainingConfig(
             str(payload["stage"]),
             str(payload["base_model"]),
             int(payload.get("epochs", 100)),
@@ -121,19 +145,43 @@ def load_motor_training_config(path: str | Path) -> MotorTrainingConfig:
             float(payload["tick_rate_hz"]),
             int(payload["action_horizon"]),
         )
+        if config.epochs > limits.max_training_epochs:
+            raise ContractViolation("motor training epochs exceed the resource limit")
+        return config
     except (KeyError, TypeError, ValueError) as exc:
         raise ContractViolation(f"motor training config is incomplete: {exc}") from exc
 
 
-def load_motor_samples(path: str | Path) -> tuple[MotorTrainingSample, ...]:
+def load_motor_samples(
+    path: str | Path,
+    *,
+    limits: ArtifactResourceLimits = DEFAULT_ARTIFACT_LIMITS,
+    training_epochs: int | None = None,
+) -> tuple[MotorTrainingSample, ...]:
     samples: list[MotorTrainingSample] = []
-    for line_number, line in enumerate(Path(path).read_text(encoding="utf-8").splitlines(), 1):
+    feature_values = 0
+    for line_number, line in iter_text_lines_limited(
+        path,
+        maximum_bytes=limits.max_jsonl_bytes,
+        maximum_line_bytes=limits.max_jsonl_line_bytes,
+        label="motor training samples",
+    ):
         if not line.strip():
             continue
         try:
             payload: Any = json.loads(line)
             if not isinstance(payload, dict) or not isinstance(payload.get("features"), list):
                 raise TypeError("sample must be an object with a features list")
+            if len(payload["features"]) > limits.max_feature_dimensions:
+                raise ContractViolation("motor sample exceeds the feature dimension limit")
+            if len(samples) >= limits.max_training_samples:
+                raise ContractViolation("motor samples exceed the sample resource limit")
+            feature_values += len(payload["features"])
+            if (
+                training_epochs is not None
+                and feature_values * training_epochs * 4 > limits.max_training_work
+            ):
+                raise ContractViolation("motor training work exceeds the resource limit")
             samples.append(
                 MotorTrainingSample(
                     tuple(float(value) for value in payload["features"]),
@@ -166,19 +214,25 @@ def train_motor_policy(
     policy_version: str,
     source_revision: str,
     base_model_license: str,
+    limits: ArtifactResourceLimits = DEFAULT_ARTIFACT_LIMITS,
 ) -> MotorTrainingResult:
     if any(not value.strip() for value in (policy_version, source_revision, base_model_license)):
         raise ContractViolation("motor training identity/license arguments cannot be blank")
-    dataset = DatasetManifest.load(dataset_manifest_path)
-    dataset.verify_episode_artifacts(dataset_root)
-    config = load_motor_training_config(training_config_path)
-    samples = load_motor_samples(samples_path)
-    _verify_training_sample_provenance(samples, dataset, dataset_root)
+    config = load_motor_training_config(training_config_path, limits=limits)
+    dataset = DatasetManifest.load(dataset_manifest_path, limits=limits)
+    dataset.verify_episode_artifacts(dataset_root, limits=limits)
+    samples = load_motor_samples(
+        samples_path,
+        limits=limits,
+        training_epochs=config.epochs,
+    )
+    _verify_training_sample_provenance(samples, dataset, dataset_root, limits=limits)
     checkpoint, metrics = BehaviorCloningTrainer().train(
         samples,
         policy_version=policy_version,
         epochs=config.epochs,
         learning_rate=config.learning_rate,
+        limits=limits,
     )
     output = Path(output_directory).resolve()
     output.mkdir(parents=True, exist_ok=False)
@@ -218,7 +272,7 @@ def train_motor_policy(
         license_metadata,
     )
     artifact_path = artifact.write(output / "training-artifact.json")
-    TrainingArtifactManifest.load(artifact_path).verify(output)
+    TrainingArtifactManifest.load(artifact_path, limits=limits).verify(output, limits=limits)
     return MotorTrainingResult(output, checkpoint_path, metrics_path, artifact_path)
 
 
@@ -249,6 +303,8 @@ def _verify_training_sample_provenance(
     samples: tuple[MotorTrainingSample, ...],
     dataset: DatasetManifest,
     dataset_root: str | Path,
+    *,
+    limits: ArtifactResourceLimits = DEFAULT_ARTIFACT_LIMITS,
 ) -> None:
     episodes = {episode.episode_id: episode for episode in dataset.episodes}
     grouped: dict[str, list[MotorTrainingSample]] = {}
@@ -270,17 +326,20 @@ def _verify_training_sample_provenance(
         episode = episodes[episode_id]
         episode_path = (root / episode.relative_path).resolve()
         observations: dict[str, tuple[float, ...]] = {}
-        for row in read_rows(episode_path / "observations.parquet"):
+        for row in read_rows(episode_path / "observations.parquet", limits=limits):
             observation_id = str(row["observation_id"])
             observation_payload = json.loads(str(row["payload_json"]))
             features = observation_payload.get("features")
             if not isinstance(features, list):
                 raise ContractViolation("recorded observation has no motor features")
+            if len(features) > limits.max_feature_dimensions:
+                raise ContractViolation("recorded observation exceeds the feature dimension limit")
             if observation_id in observations:
                 raise ContractViolation("Episode contains duplicate observation identifiers")
             observations[observation_id] = tuple(float(value) for value in features)
         actions = {
-            str(row["action_id"]): row for row in read_rows(episode_path / "actions.parquet")
+            str(row["action_id"]): row
+            for row in read_rows(episode_path / "actions.parquet", limits=limits)
         }
         for sample in episode_samples:
             assert sample.observation_id is not None and sample.action_id is not None
