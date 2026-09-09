@@ -94,6 +94,11 @@
   classes and verifies the trip is fail-closed (watchdog cause, agent
   disabled, lease revoked, clean cleanup), recorded alongside the focus-loss
   and emergency-hotkey results.
+- Automate launcher integrity, rollback, and removal evidence: live tests run
+  the bundle launcher against synthetic bundles with production-built
+  manifests, asserting every corrupted or missing artifact is refused before
+  the agent starts, a failed candidate leaves the previous bundle runnable,
+  and removal leaves no persistent environment state.
 - Reject minimized targets in the GDI fallback probe and capture path, and add
   automated Windows lifecycle tests for resize, minimize/restore, and
   cross-monitor moves against live windows.
