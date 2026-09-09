@@ -52,6 +52,9 @@ def _run_window(scenario: FixtureScenario) -> None:
     root.resizable(True, True)
     canvas = tk.Canvas(root, highlightthickness=0, background="#111827")
     canvas.pack(fill="both", expand=True)
+    root.lift()
+    root.focus_force()
+    root.after(250, lambda: (root.lift(), root.focus_force()))
     previous_mouse_x: int | None = None
     last_tick = clock.now()
     user32 = ctypes.WinDLL("user32", use_last_error=True) if os.name == "nt" else None
