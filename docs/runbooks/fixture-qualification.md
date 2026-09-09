@@ -116,12 +116,14 @@ uga-train motor `
 
 uga-benchmark fixture `
   --config configs/benchmarks/uga-bench-fixture.yaml `
-  --checkpoint runs/qualification-v1/models/fixture-motor-v1/decoder-checkpoint.json `
+  --artifact runs/qualification-v1/models/fixture-motor-v1/training-artifact.json `
   --output runs/qualification-v1/models/fixture-benchmark-runs.jsonl `
   --report runs/qualification-v1/models/fixture-benchmark-report.json
 
 uga-benchmark validate-config configs/benchmarks/uga-bench-smoke.yaml
-uga-benchmark summarize <benchmark-runs.jsonl> --output <benchmark-report.json>
+uga-benchmark summarize <benchmark-runs.jsonl> `
+  --config <benchmark-config.yaml> `
+  --output <benchmark-report.json>
 ```
 
 Do not record a gate as passed until its complete artifact set is inside the

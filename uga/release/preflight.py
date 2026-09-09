@@ -10,6 +10,7 @@ from uga.dataset.manifest import DatasetManifest
 from uga.dataset.processor import DatasetSplit
 from uga.release.manifest import GateStatus
 from uga.release.qualification import QualificationLedger
+from uga.training.artifact import TrainingArtifactManifest
 
 
 @dataclass(frozen=True, slots=True)
@@ -27,6 +28,7 @@ class QualificationPreflight:
     source_revision_matches_ledger: bool
     license_files: tuple[str, ...]
     gpu_devices: tuple[str, ...]
+    training_artifact_id: str | None
     dataset_id: str | None
     dataset_hours: float
     train_games: tuple[str, ...]
@@ -60,12 +62,25 @@ def build_qualification_preflight(
     project_root: str | Path,
     *,
     host: HostQualificationProbe | None = None,
+    training_artifact_path: str | Path | None = None,
     dataset_manifest_path: str | Path | None = None,
     dataset_root: str | Path | None = None,
 ) -> QualificationPreflight:
     root = Path(project_root).resolve()
     detected = host or probe_host(root)
     licenses = tuple(sorted(path.name for path in root.glob("LICENSE*") if path.is_file()))
+    artifact: TrainingArtifactManifest | None = None
+    if training_artifact_path is not None:
+        artifact_path = Path(training_artifact_path).resolve()
+        artifact = TrainingArtifactManifest.load(artifact_path)
+        artifact.verify(artifact_path.parent)
+        artifact_dataset_path = Path(artifact.dataset_manifest).resolve()
+        if (
+            dataset_manifest_path is not None
+            and Path(dataset_manifest_path).resolve() != artifact_dataset_path
+        ):
+            raise ContractViolation("training artifact and explicit Dataset Manifest do not match")
+        dataset_manifest_path = artifact_dataset_path
     dataset: DatasetManifest | None = None
     if dataset_manifest_path is not None:
         dataset = DatasetManifest.load(dataset_manifest_path)
@@ -83,9 +98,28 @@ def build_qualification_preflight(
         blockers.append("qualification ledger source revision does not match Git HEAD")
     if not licenses:
         blockers.append("repository license has not been selected")
+    if artifact is None:
+        blockers.append("verified training artifact was not supplied")
     if dataset is None:
         blockers.append("licensed Dataset Manifest was not supplied")
     else:
+        if artifact is not None:
+            if artifact.source_revision != dataset.source_revision:
+                blockers.append("training artifact source revision does not match Dataset Manifest")
+            if artifact.source_revision != ledger.source_revision:
+                blockers.append(
+                    "training artifact source revision does not match qualification ledger"
+                )
+            blockers.extend(_license_metadata_blockers(artifact, dataset))
+        if dataset.source_revision != ledger.source_revision:
+            blockers.append("Dataset Manifest source revision does not match qualification ledger")
+        for item in dataset.licenses:
+            if not item.distribution_allowed:
+                blockers.append(
+                    f"dataset license does not allow release distribution: {item.license_id}"
+                )
+            if not item.commercial_allowed:
+                blockers.append(f"dataset license does not allow commercial use: {item.license_id}")
         if dataset.hours() < 5.0:
             blockers.append("dataset contains less than the required 5 hours")
         train_games = {
@@ -118,6 +152,7 @@ def build_qualification_preflight(
         detected.source_revision is not None and ledger.source_revision == detected.source_revision,
         licenses,
         detected.gpu_devices,
+        None if artifact is None else artifact.artifact_id,
         None if dataset is None else dataset.dataset_id,
         0.0 if dataset is None else dataset.hours(),
         train_games_tuple,
@@ -125,6 +160,29 @@ def build_qualification_preflight(
         statuses,
         tuple(blockers),
     )
+
+
+def _license_metadata_blockers(
+    artifact: TrainingArtifactManifest,
+    dataset: DatasetManifest,
+) -> tuple[str, ...]:
+    metadata = dict(artifact.license_metadata)
+    blockers: list[str] = []
+    for item in dataset.licenses:
+        expected = {
+            f"dataset:{item.license_id}:source": item.source,
+            f"dataset:{item.license_id}:license": item.dataset_license,
+            f"dataset:{item.license_id}:distribution_allowed": str(
+                item.distribution_allowed
+            ).lower(),
+            f"dataset:{item.license_id}:commercial_allowed": str(item.commercial_allowed).lower(),
+            f"dataset:{item.license_id}:review_date": item.review_date,
+        }
+        if any(metadata.get(name) != value for name, value in expected.items()):
+            blockers.append(
+                f"training artifact license metadata does not match dataset: {item.license_id}"
+            )
+    return tuple(blockers)
 
 
 def _run_line(command: tuple[str, ...], cwd: Path) -> str | None:

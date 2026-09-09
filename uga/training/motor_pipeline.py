@@ -185,7 +185,21 @@ def train_motor_policy(
     checkpoint_path = checkpoint.save(output / "decoder-checkpoint.json")
     metrics_path = _write_metrics(metrics, output / "metrics.json")
     license_metadata = tuple(
-        (f"dataset:{item.license_id}", item.dataset_license) for item in dataset.licenses
+        entry
+        for item in dataset.licenses
+        for entry in (
+            (f"dataset:{item.license_id}:source", item.source),
+            (f"dataset:{item.license_id}:license", item.dataset_license),
+            (
+                f"dataset:{item.license_id}:distribution_allowed",
+                str(item.distribution_allowed).lower(),
+            ),
+            (
+                f"dataset:{item.license_id}:commercial_allowed",
+                str(item.commercial_allowed).lower(),
+            ),
+            (f"dataset:{item.license_id}:review_date", item.review_date),
+        )
     ) + (("base_model", base_model_license),)
     artifact = TrainingArtifactManifest(
         policy_version,
@@ -251,12 +265,20 @@ def _verify_training_sample_provenance(
         grouped.setdefault(episode_id, []).append(sample)
 
     root = Path(dataset_root).resolve()
+    seen_provenance: set[tuple[str, str, str]] = set()
     for episode_id, episode_samples in grouped.items():
         episode = episodes[episode_id]
         episode_path = (root / episode.relative_path).resolve()
-        observations = {
-            str(row["observation_id"]) for row in read_rows(episode_path / "observations.parquet")
-        }
+        observations: dict[str, tuple[float, ...]] = {}
+        for row in read_rows(episode_path / "observations.parquet"):
+            observation_id = str(row["observation_id"])
+            observation_payload = json.loads(str(row["payload_json"]))
+            features = observation_payload.get("features")
+            if not isinstance(features, list):
+                raise ContractViolation("recorded observation has no motor features")
+            if observation_id in observations:
+                raise ContractViolation("Episode contains duplicate observation identifiers")
+            observations[observation_id] = tuple(float(value) for value in features)
         actions = {
             str(row["action_id"]): row for row in read_rows(episode_path / "actions.parquet")
         }
@@ -272,6 +294,16 @@ def _verify_training_sample_provenance(
             )
             if linked_observation != sample.observation_id:
                 raise ContractViolation("motor sample action/observation provenance does not match")
+            provenance_key = (episode_id, sample.observation_id, sample.action_id)
+            if provenance_key in seen_provenance:
+                raise ContractViolation("motor sample provenance tuple is duplicated")
+            seen_provenance.add(provenance_key)
+            recorded_features = observations[sample.observation_id]
+            if len(recorded_features) != len(sample.features) or any(
+                not math.isclose(recorded, supplied, rel_tol=0.0, abs_tol=1e-9)
+                for recorded, supplied in zip(recorded_features, sample.features, strict=True)
+            ):
+                raise ContractViolation("motor sample features do not match the observation")
             if action.get("action_layer") != "canonical":
                 raise ContractViolation("motor sample must reference a canonical action")
             payload = json.loads(str(action["payload_json"]))

@@ -12,6 +12,7 @@ from uga.environment.fixture_world import (
     fixture_policy_features,
 )
 from uga.policy.fast_policy import DecoderCheckpoint
+from uga.training.artifact import TrainingArtifactManifest, sha256_file
 
 
 class FixtureBenchmarkEnvironment:
@@ -21,9 +22,11 @@ class FixtureBenchmarkEnvironment:
         self,
         scenario: FixtureScenario,
         checkpoint: DecoderCheckpoint | None = None,
+        policy_artifact_sha256: str | None = None,
     ) -> None:
         self._scenario = scenario
         self._checkpoint = checkpoint
+        self._policy_artifact_sha256 = policy_artifact_sha256
 
     @property
     def game_id(self) -> str:
@@ -90,6 +93,7 @@ class FixtureBenchmarkEnvironment:
             tuple(end_to_end_latencies),
             human_baseline,
             task.split,
+            self._policy_artifact_sha256,
         )
 
     def _movement_keys(self, world: FixtureWorld) -> tuple[str, ...]:
@@ -130,9 +134,28 @@ class FixtureBenchmarkEnvironment:
 
 def fixture_environments(
     checkpoint_path: str | Path | None = None,
+    policy_artifact_sha256: str | None = None,
 ) -> dict[str, FixtureBenchmarkEnvironment]:
     checkpoint = None if checkpoint_path is None else DecoderCheckpoint.load(checkpoint_path)
     environments = tuple(
-        FixtureBenchmarkEnvironment(scenario, checkpoint) for scenario in FixtureScenario
+        FixtureBenchmarkEnvironment(scenario, checkpoint, policy_artifact_sha256)
+        for scenario in FixtureScenario
     )
     return {environment.game_id: environment for environment in environments}
+
+
+def verified_fixture_environments(
+    artifact_manifest_path: str | Path,
+) -> tuple[dict[str, FixtureBenchmarkEnvironment], str]:
+    artifact_path = Path(artifact_manifest_path).resolve()
+    artifact = TrainingArtifactManifest.load(artifact_path)
+    artifact.verify(artifact_path.parent)
+    checkpoint = DecoderCheckpoint.load(artifact_path.parent / artifact.model_file)
+    if checkpoint.policy_version != artifact.artifact_id:
+        raise ContractViolation("training artifact identity does not match its decoder checkpoint")
+    artifact_digest = sha256_file(artifact_path)
+    environments = tuple(
+        FixtureBenchmarkEnvironment(scenario, checkpoint, artifact_digest)
+        for scenario in FixtureScenario
+    )
+    return ({environment.game_id: environment for environment in environments}, artifact_digest)

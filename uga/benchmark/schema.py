@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import importlib
 import math
+import re
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
 from uga.core.errors import BackendUnavailableError, ContractViolation
+
+_SHA256 = re.compile(r"[0-9a-f]{64}")
 
 
 class BenchmarkSplit(StrEnum):
@@ -58,8 +61,11 @@ class BenchmarkRun:
     end_to_end_latency_ms: tuple[float, ...]
     human_baseline_seconds: float | None = None
     split: BenchmarkSplit = BenchmarkSplit.TEST
+    policy_artifact_sha256: str | None = None
 
     def __post_init__(self) -> None:
+        if type(self.success) is not bool or type(self.stuck) is not bool:
+            raise ContractViolation("benchmark run success and stuck must be booleans")
         if not self.task_id.strip() or not self.game_id.strip() or self.repetition < 0:
             raise ContractViolation("benchmark run identity is invalid")
         counts = (
@@ -99,6 +105,11 @@ class BenchmarkRun:
             for values in latency_groups
         ):
             raise ContractViolation("benchmark run latency samples are invalid")
+        if (
+            self.policy_artifact_sha256 is not None
+            and _SHA256.fullmatch(self.policy_artifact_sha256) is None
+        ):
+            raise ContractViolation("benchmark policy artifact digest must be SHA-256")
 
 
 @runtime_checkable

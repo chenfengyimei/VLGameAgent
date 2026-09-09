@@ -5,7 +5,7 @@ import json
 from dataclasses import asdict
 from pathlib import Path
 
-from uga.benchmark.fixture import fixture_environments
+from uga.benchmark.fixture import fixture_environments, verified_fixture_environments
 from uga.benchmark.io import load_benchmark_runs, write_benchmark_report, write_benchmark_runs
 from uga.benchmark.runner import BenchmarkRunner
 from uga.benchmark.schema import load_benchmark_tasks
@@ -26,7 +26,9 @@ def _validate_config(args: argparse.Namespace) -> None:
 
 
 def _summarize(args: argparse.Namespace) -> None:
-    report = BenchmarkRunner().summarize(load_benchmark_runs(args.runs))
+    report = BenchmarkRunner().summarize(
+        load_benchmark_runs(args.runs), load_benchmark_tasks(args.config)
+    )
     if args.output:
         print(write_benchmark_report(report, args.output).resolve())
     else:
@@ -35,14 +37,20 @@ def _summarize(args: argparse.Namespace) -> None:
 
 def _fixture(args: argparse.Namespace) -> None:
     tasks = load_benchmark_tasks(args.config)
-    environments = fixture_environments(args.checkpoint)
+    if args.artifact is None:
+        environments = fixture_environments()
+        artifact_digest = None
+    else:
+        environments, artifact_digest = verified_fixture_environments(args.artifact)
     runs = tuple(
         environments[task.game_id].run(task, repetition)
         for task in tasks
         for repetition in range(task.repeat)
     )
     output = write_benchmark_runs(runs, args.output)
-    report = BenchmarkRunner().summarize(runs)
+    report = BenchmarkRunner().summarize(
+        runs, tasks, expected_policy_artifact_sha256=artifact_digest
+    )
     report_path = write_benchmark_report(report, args.report)
     print(json.dumps({"runs": str(output), "report": str(report_path)}, indent=2))
 
@@ -57,6 +65,7 @@ def main() -> None:
 
     summarize = subparsers.add_parser("summarize", help="aggregate benchmark JSONL runs")
     summarize.add_argument("runs", type=Path)
+    summarize.add_argument("--config", type=Path, required=True)
     summarize.add_argument("--output", type=Path)
     summarize.set_defaults(handler=_summarize)
 
@@ -66,7 +75,9 @@ def main() -> None:
     fixture.add_argument("--config", type=Path, required=True)
     fixture.add_argument("--output", type=Path, required=True)
     fixture.add_argument("--report", type=Path, required=True)
-    fixture.add_argument("--checkpoint", type=Path)
+    policy = fixture.add_mutually_exclusive_group(required=True)
+    policy.add_argument("--artifact", type=Path)
+    policy.add_argument("--rule-baseline", action="store_true")
     fixture.set_defaults(handler=_fixture)
 
     args = parser.parse_args()

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -416,17 +417,7 @@ class DatasetPolicyTests(unittest.TestCase):
             self.assertGreater(loaded.hours(DatasetSplit.TRAIN), 0)
             self.assertEqual(dict(loaded.category_distribution())[DatasetCategory.COMBAT], 0)
             samples = root / "motor-samples.jsonl"
-            samples.write_text(
-                '{"features":[-1,1],"move_x":-1,"move_y":0.5,'
-                '"look_x":-0.2,"look_y":0.1,"buttons":0,'
-                '"episode_id":"dataset-episode","observation_id":"obs-1",'
-                '"action_id":"canonical-action-1"}\n'
-                '{"features":[1,1],"move_x":-1,"move_y":0.5,'
-                '"look_x":-0.2,"look_y":0.1,"buttons":0,'
-                '"episode_id":"dataset-episode","observation_id":"obs-1",'
-                '"action_id":"canonical-action-1"}\n',
-                encoding="utf-8",
-            )
+            export_motor_samples((episode_path,), samples)
             project = Path(__file__).resolve().parents[2]
             trained = train_motor_policy(
                 samples_path=samples,
@@ -443,6 +434,33 @@ class DatasetPolicyTests(unittest.TestCase):
             TrainingArtifactManifest.load(trained.artifact_manifest).verify(
                 trained.output_directory
             )
+            original = samples.read_text(encoding="utf-8")
+            payload = json.loads(original)
+            payload["features"][0] += 0.25
+            samples.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+            with self.assertRaisesRegex(ContractViolation, "features do not match"):
+                train_motor_policy(
+                    samples_path=samples,
+                    dataset_manifest_path=written,
+                    dataset_root=root,
+                    training_config_path=project / "configs" / "training" / "motor_bc.yaml",
+                    output_directory=root / "tampered-checkpoint",
+                    policy_version="motor-fixture-v1",
+                    source_revision="test-revision",
+                    base_model_license="fixture-only",
+                )
+            samples.write_text(original + original, encoding="utf-8")
+            with self.assertRaisesRegex(ContractViolation, "duplicated"):
+                train_motor_policy(
+                    samples_path=samples,
+                    dataset_manifest_path=written,
+                    dataset_root=root,
+                    training_config_path=project / "configs" / "training" / "motor_bc.yaml",
+                    output_directory=root / "duplicate-checkpoint",
+                    policy_version="motor-fixture-v1",
+                    source_revision="test-revision",
+                    base_model_license="fixture-only",
+                )
 
     def test_motor_sample_export_preserves_episode_provenance(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

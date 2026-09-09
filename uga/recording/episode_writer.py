@@ -419,7 +419,7 @@ class EpisodeWriter:
     def _checksums(self) -> dict[str, object]:
         files: dict[str, str] = {}
         for path in sorted(self._staging_path.rglob("*")):
-            if path.is_file() and path.name != "checksum.json":
+            if path.is_file() and path != self._staging_path / "checksum.json":
                 relative = path.relative_to(self._staging_path).as_posix()
                 files[relative] = hashlib.sha256(path.read_bytes()).hexdigest()
         return {"algorithm": "sha256", "files": files}

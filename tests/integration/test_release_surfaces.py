@@ -3,10 +3,12 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
+from typing import cast
 
 from tests.integration.test_dataset_policy import make_episode
-from uga.benchmark.fixture import fixture_environments
+from uga.benchmark.fixture import fixture_environments, verified_fixture_environments
 from uga.benchmark.io import load_benchmark_runs, write_benchmark_report, write_benchmark_runs
 from uga.benchmark.runner import BenchmarkRunner
 from uga.benchmark.schema import BenchmarkRun, BenchmarkSplit, BenchmarkTask, load_benchmark_tasks
@@ -80,6 +82,13 @@ class FakeOperatorControl:
 
 
 class ReleaseSurfaceTests(unittest.TestCase):
+    def test_benchmark_run_requires_runtime_booleans(self) -> None:
+        task = BenchmarkTask("task-1", "game-d", "collect wood", 300, 1, "adapter")
+        run = FakeBenchmarkEnvironment().run(task, 0)
+
+        with self.assertRaisesRegex(ContractViolation, "must be booleans"):
+            replace(run, success=cast(bool, 1))
+
     def test_cross_game_benchmark_aggregates_required_metrics(self) -> None:
         benchmark_config = (
             Path(__file__).resolve().parents[2] / "configs" / "benchmarks" / "uga-bench-smoke.yaml"
@@ -124,12 +133,51 @@ class ReleaseSurfaceTests(unittest.TestCase):
             1.0,
         )
         with tempfile.TemporaryDirectory() as temporary:
-            checkpoint_path = checkpoint.save(Path(temporary) / "checkpoint.json")
+            artifact_root = Path(temporary)
+            checkpoint_path = checkpoint.save(artifact_root / "checkpoint.json")
+            dataset = artifact_root / "dataset.json"
+            config = artifact_root / "config.yaml"
+            samples = artifact_root / "samples.jsonl"
+            for path in (dataset, config, samples):
+                path.write_text(path.name, encoding="utf-8")
+            artifact = TrainingArtifactManifest(
+                "fixture-policy",
+                checkpoint_path.name,
+                "1.1",
+                str(dataset),
+                "test-revision",
+                str(config),
+                str(samples),
+                "fixture",
+                sha256_file(checkpoint_path),
+                sha256_file(dataset),
+                sha256_file(config),
+                sha256_file(samples),
+                (("move_mse", 0.0),),
+                (("base_model", "fixture-only"),),
+            )
+            artifact_path = artifact.write(artifact_root / "training-artifact.json")
+            environments, artifact_digest = verified_fixture_environments(artifact_path)
 
-            report = BenchmarkRunner().run(tasks, fixture_environments(checkpoint_path))
+            runs = tuple(
+                environments[task.game_id].run(task, repetition)
+                for task in tasks
+                for repetition in range(task.repeat)
+            )
+            report = BenchmarkRunner().summarize(
+                runs,
+                tasks,
+                expected_policy_artifact_sha256=artifact_digest,
+            )
+
+            mismatched = replace(artifact, artifact_id="claimed-policy")
+            mismatched_path = mismatched.write(artifact_root / "mismatched-training-artifact.json")
+            with self.assertRaisesRegex(ContractViolation, "identity does not match"):
+                verified_fixture_environments(mismatched_path)
 
         self.assertEqual(report.success_rate, 1.0)
         self.assertEqual(dict(report.split_success_rates)["test"], 1.0)
+        self.assertEqual(report.policy_artifact_sha256, artifact_digest)
 
     def test_benchmark_jsonl_loads_and_writes_self_describing_report(self) -> None:
         task = BenchmarkTask(
@@ -147,9 +195,25 @@ class ReleaseSurfaceTests(unittest.TestCase):
             runs = root / "runs.jsonl"
             write_benchmark_runs((run,), runs)
             loaded = load_benchmark_runs(runs)
-            report = BenchmarkRunner().summarize(loaded)
+            report = BenchmarkRunner().summarize(loaded, (task,))
             output = write_benchmark_report(report, root / "report.json")
             self.assertEqual(json.loads(output.read_text(encoding="utf-8"))["runs"], 1)
+            self.assertEqual(len(report.task_plan_sha256), 64)
+
+            payload = json.loads(runs.read_text(encoding="utf-8"))
+            payload["success"] = "false"
+            runs.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+            with self.assertRaisesRegex(ContractViolation, "JSON boolean"):
+                load_benchmark_runs(runs)
+
+    def test_benchmark_summary_rejects_incomplete_or_duplicate_cohort(self) -> None:
+        task = BenchmarkTask("task-1", "game-d", "collect wood", 300, 2, "adapter")
+        run = FakeBenchmarkEnvironment().run(task, 0)
+
+        with self.assertRaisesRegex(ContractViolation, "expected task cohort"):
+            BenchmarkRunner().summarize((run,), (task,))
+        with self.assertRaisesRegex(ContractViolation, "duplicate run identities"):
+            BenchmarkRunner().summarize((run, run), (task,))
 
     def test_dashboard_renders_state_and_routes_operator_commands(self) -> None:
         state = DashboardState(

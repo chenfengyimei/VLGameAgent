@@ -132,8 +132,8 @@ def _inventory(
                 "id": "uga-developer-owned-fixture",
                 "source": "UGA Fixture World generated locally",
                 "dataset_license": "project-owner-controlled",
-                "distribution_allowed": False,
-                "commercial_allowed": False,
+                "distribution_allowed": True,
+                "commercial_allowed": True,
                 "review_date": date.today().isoformat(),
             }
         ],

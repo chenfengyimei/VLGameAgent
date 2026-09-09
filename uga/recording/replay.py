@@ -24,6 +24,15 @@ _REQUIRED_FILES = frozenset(
         "checksum.json",
     }
 )
+_CHECKSUM_NAME = "checksum.json"
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
 
 
 @dataclass(frozen=True, slots=True)
@@ -176,13 +185,28 @@ class ReplayEngine:
         document = self._read_json(self.path / "checksum.json")
         if document.get("algorithm") != "sha256" or not isinstance(document.get("files"), dict):
             raise ContractViolation("invalid checksum manifest")
-        for relative, expected in document["files"].items():
+        declared = document["files"]
+        actual_files = {
+            path.relative_to(self.path).as_posix()
+            for path in self.path.rglob("*")
+            if path.is_file() and path != self.path / _CHECKSUM_NAME
+        }
+        declared_files = {str(relative) for relative in declared}
+        if declared_files != actual_files:
+            missing = sorted(actual_files - declared_files)
+            extra = sorted(declared_files - actual_files)
+            raise ContractViolation(
+                f"checksum manifest file set mismatch; missing={missing}, extra={extra}"
+            )
+        for relative, expected in declared.items():
             candidate = (self.path / str(relative)).resolve()
             if candidate.parent != self.path and self.path not in candidate.parents:
                 raise ContractViolation("checksum manifest contains an unsafe path")
             if not candidate.is_file():
                 raise ContractViolation(f"checksummed file is missing: {relative}")
-            actual = hashlib.sha256(candidate.read_bytes()).hexdigest()
+            if not isinstance(expected, str) or len(expected) != 64:
+                raise ContractViolation(f"invalid checksum digest: {relative}")
+            actual = _sha256_file(candidate)
             if actual != expected:
                 raise ContractViolation(f"checksum mismatch: {relative}")
 

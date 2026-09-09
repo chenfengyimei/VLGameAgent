@@ -119,6 +119,27 @@ class EpisodeReplayTests(unittest.TestCase):
             with self.assertRaisesRegex(ContractViolation, "checksum mismatch"):
                 ReplayEngine(episode)
 
+    def test_checksum_manifest_cannot_omit_episode_payload(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            episode = self._record_episode(Path(temporary))
+            checksum_path = episode / "checksum.json"
+            checksum = json.loads(checksum_path.read_text(encoding="utf-8"))
+            del checksum["files"]["events.jsonl"]
+            checksum_path.write_text(json.dumps(checksum), encoding="utf-8")
+
+            with self.assertRaisesRegex(ContractViolation, "file set mismatch"):
+                ReplayEngine(episode)
+
+    def test_nested_checksum_named_file_is_not_exempt_from_manifest(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            episode = self._record_episode(Path(temporary))
+            nested = episode / "nested" / "checksum.json"
+            nested.parent.mkdir()
+            nested.write_text("{}", encoding="utf-8")
+
+            with self.assertRaisesRegex(ContractViolation, "file set mismatch"):
+                ReplayEngine(episode)
+
     def test_recorder_channel_preserves_submission_order(self) -> None:
         observed: list[int] = []
         channel = RecorderChannel(capacity=1)

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import math
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -36,6 +38,8 @@ class BenchmarkReport:
     policy_latency: LatencyPercentiles
     action_age: LatencyPercentiles
     end_to_end_latency: LatencyPercentiles
+    task_plan_sha256: str
+    policy_artifact_sha256: str | None
 
 
 class BenchmarkRunner:
@@ -56,16 +60,33 @@ class BenchmarkRunner:
                     result.task_id != task.task_id
                     or result.game_id != task.game_id
                     or result.split != task.split
+                    or result.repetition != repetition
                 ):
                     raise ContractViolation(
                         "benchmark environment returned the wrong task identity"
                     )
                 runs.append(result)
-        return self.summarize(tuple(runs))
+        return self.summarize(tuple(runs), tasks)
 
-    def summarize(self, runs: tuple[BenchmarkRun, ...]) -> BenchmarkReport:
+    def summarize(
+        self,
+        runs: tuple[BenchmarkRun, ...],
+        tasks: tuple[BenchmarkTask, ...],
+        *,
+        expected_policy_artifact_sha256: str | None = None,
+    ) -> BenchmarkReport:
         if not runs:
             raise ContractViolation("benchmark report requires runs")
+        self._verify_cohort(runs, tasks)
+        policy_digests = {run.policy_artifact_sha256 for run in runs}
+        if len(policy_digests) != 1:
+            raise ContractViolation("benchmark runs mix policy artifact identities")
+        policy_artifact_sha256 = next(iter(policy_digests))
+        if (
+            expected_policy_artifact_sha256 is not None
+            and policy_artifact_sha256 != expected_policy_artifact_sha256
+        ):
+            raise ContractViolation("benchmark policy artifact identity does not match")
         count = len(runs)
         actions = sum(run.total_actions for run in runs)
         recoveries = sum(run.recovery_attempts for run in runs)
@@ -96,7 +117,43 @@ class BenchmarkRunner:
             self._latency(value for run in runs for value in run.policy_latency_ms),
             self._latency(value for run in runs for value in run.action_age_ms),
             self._latency(value for run in runs for value in run.end_to_end_latency_ms),
+            self._task_plan_digest(tasks),
+            policy_artifact_sha256,
         )
+
+    @staticmethod
+    def _verify_cohort(runs: tuple[BenchmarkRun, ...], tasks: tuple[BenchmarkTask, ...]) -> None:
+        if not tasks:
+            raise ContractViolation("benchmark summary requires an expected task plan")
+        expected = [
+            (task.task_id, task.game_id, repetition, task.split)
+            for task in tasks
+            for repetition in range(task.repeat)
+        ]
+        actual = [(run.task_id, run.game_id, run.repetition, run.split) for run in runs]
+        if len(set(expected)) != len(expected):
+            raise ContractViolation("benchmark task plan contains duplicate run identities")
+        if len(set(actual)) != len(actual):
+            raise ContractViolation("benchmark results contain duplicate run identities")
+        if set(actual) != set(expected):
+            raise ContractViolation("benchmark results do not match the expected task cohort")
+
+    @staticmethod
+    def _task_plan_digest(tasks: tuple[BenchmarkTask, ...]) -> str:
+        payload = [
+            {
+                "task_id": task.task_id,
+                "game_id": task.game_id,
+                "instruction": task.instruction,
+                "timeout_seconds": task.timeout_seconds,
+                "repeat": task.repeat,
+                "evaluator": task.evaluator,
+                "split": task.split.value,
+            }
+            for task in tasks
+        ]
+        encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
 
     @staticmethod
     def _success_rates(

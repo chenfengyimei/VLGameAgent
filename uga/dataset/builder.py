@@ -39,8 +39,8 @@ def build_dataset_manifest(
                 str(item["id"]),
                 str(item["source"]),
                 str(item["dataset_license"]),
-                bool(item["distribution_allowed"]),
-                bool(item["commercial_allowed"]),
+                _strict_bool(item["distribution_allowed"], "distribution_allowed"),
+                _strict_bool(item["commercial_allowed"], "commercial_allowed"),
                 str(item["review_date"]),
             )
             for item in raw_licenses
@@ -91,6 +91,12 @@ def _build_episode(root: Path, item: object) -> DatasetEpisode:
         quality.quality_score,
         str(item["license_id"]),
         hashlib.sha256(checksum.read_bytes()).hexdigest(),
-        bool(item.get("instruction_labeled", False)),
-        bool(item.get("reasoning_labeled", False)),
+        _strict_bool(item.get("instruction_labeled", False), "instruction_labeled"),
+        _strict_bool(item.get("reasoning_labeled", False), "reasoning_labeled"),
     )
+
+
+def _strict_bool(value: object, field: str) -> bool:
+    if type(value) is not bool:
+        raise ContractViolation(f"dataset inventory {field} must be a boolean")
+    return value

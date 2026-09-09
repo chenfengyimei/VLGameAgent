@@ -19,17 +19,19 @@ def load_benchmark_runs(path: str | Path) -> tuple[BenchmarkRun, ...]:
             payload: Any = json.loads(line)
             if not isinstance(payload, dict):
                 raise TypeError("expected object")
+            success = _strict_bool(payload["success"], "success")
+            stuck = _strict_bool(payload["stuck"], "stuck")
             runs.append(
                 BenchmarkRun(
                     str(payload["task_id"]),
                     str(payload["game_id"]),
                     int(payload["repetition"]),
-                    bool(payload["success"]),
+                    success,
                     float(payload["completion_seconds"]),
                     int(payload["human_interventions"]),
                     int(payload["recovery_attempts"]),
                     int(payload["recovery_successes"]),
-                    bool(payload["stuck"]),
+                    stuck,
                     int(payload["wrong_mode_count"]),
                     int(payload["lease_conflicts"]),
                     int(payload["expired_actions"]),
@@ -45,6 +47,11 @@ def load_benchmark_runs(path: str | Path) -> tuple[BenchmarkRun, ...]:
                         else float(payload["human_baseline_seconds"])
                     ),
                     BenchmarkSplit(str(payload.get("split", "test"))),
+                    (
+                        None
+                        if payload.get("policy_artifact_sha256") is None
+                        else str(payload["policy_artifact_sha256"])
+                    ),
                 )
             )
         except (KeyError, TypeError, ValueError, ContractViolation) as exc:
@@ -52,6 +59,12 @@ def load_benchmark_runs(path: str | Path) -> tuple[BenchmarkRun, ...]:
     if not runs:
         raise ContractViolation("benchmark JSONL contains no runs")
     return tuple(runs)
+
+
+def _strict_bool(value: object, field: str) -> bool:
+    if type(value) is not bool:
+        raise ContractViolation(f"benchmark {field} must be a JSON boolean")
+    return value
 
 
 def write_benchmark_report(report: BenchmarkReport, path: str | Path) -> Path:

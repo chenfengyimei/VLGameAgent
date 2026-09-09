@@ -5,6 +5,7 @@ import json
 import math
 import re
 from dataclasses import dataclass
+from datetime import date
 from enum import StrEnum
 from pathlib import Path, PurePosixPath
 from typing import Any, ClassVar
@@ -13,6 +14,7 @@ from uga.core.errors import ContractViolation
 from uga.core.schema import VersionedMixin
 from uga.dataset.processor import DatasetSplit, LeakageSafeSplitRegistry
 from uga.dataset.validator import QualityStatus
+from uga.recording.replay import ReplayEngine
 
 _SHA256 = re.compile(r"[0-9a-f]{64}")
 
@@ -41,6 +43,12 @@ class DatasetLicense:
             for value in (self.license_id, self.source, self.dataset_license, self.review_date)
         ):
             raise ContractViolation("dataset license record is incomplete")
+        if type(self.distribution_allowed) is not bool or type(self.commercial_allowed) is not bool:
+            raise ContractViolation("dataset license permissions must be booleans")
+        try:
+            date.fromisoformat(self.review_date)
+        except ValueError as exc:
+            raise ContractViolation("dataset license review date must be ISO-8601") from exc
 
 
 @dataclass(frozen=True, slots=True)
@@ -169,6 +177,7 @@ class DatasetManifest(VersionedMixin):
             digest = hashlib.sha256(checksum_path.read_bytes()).hexdigest()
             if digest != episode.checksum_digest:
                 raise ContractViolation(f"dataset episode digest mismatch: {episode.episode_id}")
+            ReplayEngine(checksum_path.parent)
 
     def write(self, path: str | Path) -> Path:
         destination = Path(path)
@@ -261,6 +270,12 @@ class DatasetManifest(VersionedMixin):
             float(item["quality_score"]),
             str(item["license_id"]),
             str(item["checksum_digest"]),
-            bool(item.get("instruction_labeled", False)),
-            bool(item.get("reasoning_labeled", False)),
+            _strict_bool(item.get("instruction_labeled", False), "instruction_labeled"),
+            _strict_bool(item.get("reasoning_labeled", False), "reasoning_labeled"),
         )
+
+
+def _strict_bool(value: object, field: str) -> bool:
+    if type(value) is not bool:
+        raise ContractViolation(f"dataset {field} must be a boolean")
+    return value

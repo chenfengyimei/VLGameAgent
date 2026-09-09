@@ -5,6 +5,7 @@ import unittest
 from pathlib import Path
 
 from uga.core.errors import ContractViolation
+from uga.dataset.manifest import DatasetLicense
 from uga.training.motor_pipeline import load_motor_samples, load_motor_training_config
 
 
@@ -30,6 +31,17 @@ class MotorPipelineTests(unittest.TestCase):
             path.write_text("", encoding="utf-8")
             with self.assertRaises(ContractViolation):
                 load_motor_samples(path)
+
+    def test_license_permissions_require_exact_booleans(self) -> None:
+        with self.assertRaisesRegex(ContractViolation, "must be booleans"):
+            DatasetLicense(
+                "license",
+                "source",
+                "license-text",
+                "false",  # type: ignore[arg-type]
+                False,
+                "2026-09-09",
+            )
 
 
 if __name__ == "__main__":
