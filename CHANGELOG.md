@@ -74,3 +74,6 @@
   the exact inline script digest instead of `unsafe-inline`, require a full
   git commit hash for development manifest revisions, and bound the cargo
   dependency inventory subprocess with a timeout.
+- Add an optional out-of-band `-ManifestSha256` anchor to the bundle launcher:
+  the manifest itself is verified first when supplied, and operators are warned
+  that verification is otherwise self-referential.
