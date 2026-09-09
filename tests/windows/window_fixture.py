@@ -69,9 +69,13 @@ def capture_test_window(
     if os.name != "nt":
         raise RuntimeError("Windows-only fixture")
     style = 0x00CF0000 | 0x10000000  # WS_OVERLAPPEDWINDOW | WS_VISIBLE
+    # A STATIC-class window hit-tests transparent, which makes
+    # WindowFromPoint (and anything built on it, such as click-point
+    # ownership checks) see straight through it to the desktop; BUTTON
+    # hit-tests normally while behaving identically for capture purposes.
     hwnd = _user32.CreateWindowExW(
         0,
-        "STATIC",
+        "BUTTON",
         "UGA Native Capture Fixture",
         style,
         100,
@@ -151,6 +155,21 @@ def move_window(hwnd: int, x: int, y: int) -> None:
         0,
         0,
         _SWP_NOSIZE | _SWP_NOZORDER | _SWP_NOACTIVATE,
+    )
+    if not ok:
+        raise ctypes.WinError(ctypes.get_last_error())
+
+
+def raise_window(hwnd: int) -> None:
+    """Places the window in the topmost band so nothing can cover it."""
+    ok = _user32.SetWindowPos(
+        ctypes.c_void_p(hwnd),
+        ctypes.c_void_p(-1),
+        0,
+        0,
+        0,
+        0,
+        _SWP_NOSIZE | _SWP_NOMOVE | _SWP_NOACTIVATE,
     )
     if not ok:
         raise ctypes.WinError(ctypes.get_last_error())

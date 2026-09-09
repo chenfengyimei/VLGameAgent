@@ -67,6 +67,19 @@ class Win32WindowBackend:
         hwnd = int(self._user32.GetForegroundWindow() or 0)
         return hwnd or None
 
+    def window_at(self, x: int, y: int) -> int | None:
+        """Resolve a screen point (this process's coordinate space) to its root owner."""
+        point = _POINT(x, y)
+        # WindowFromPoint, not WindowFromPhysicalPoint: the harness computes
+        # and injects in this process's virtualized coordinate space, so the
+        # ownership check must resolve in the same space to stay consistent
+        # with the rects and the injected clicks it validates.
+        hwnd = int(self._user32.WindowFromPoint(point) or 0)
+        if not hwnd:
+            return None
+        root = int(self._user32.GetAncestor(ctypes.c_void_p(hwnd), 2) or 0)
+        return root or hwnd or None
+
     def request_foreground(self, hwnd: int) -> bool:
         """Restore and request focus for an already validated target window."""
         self.snapshot(hwnd)
@@ -250,6 +263,10 @@ class Win32WindowBackend:
         self._user32.GetClientRect.restype = ctypes.c_bool
         self._user32.ClientToScreen.argtypes = [ctypes.c_void_p, ctypes.POINTER(_POINT)]
         self._user32.ClientToScreen.restype = ctypes.c_bool
+        self._user32.WindowFromPoint.argtypes = [_POINT]
+        self._user32.WindowFromPoint.restype = ctypes.c_void_p
+        self._user32.GetAncestor.argtypes = [ctypes.c_void_p, ctypes.c_uint]
+        self._user32.GetAncestor.restype = ctypes.c_void_p
         self._kernel32.OpenProcess.argtypes = [ctypes.c_ulong, ctypes.c_bool, ctypes.c_ulong]
         self._kernel32.OpenProcess.restype = ctypes.c_void_p
         self._kernel32.GetCurrentThreadId.argtypes = []

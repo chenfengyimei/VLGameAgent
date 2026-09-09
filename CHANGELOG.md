@@ -99,6 +99,10 @@
   manifests, asserting every corrupted or missing artifact is refused before
   the agent starts, a failed candidate leaves the previous bundle runnable,
   and removal leaves no persistent environment state.
+- Abort fixture qualification loudly when another window covers the fixture's
+  resume-click point: the point resolves to its root owner before inputs are
+  scheduled, turning a silent wrong-window click (world stuck in its GUI
+  state, degraded occluded capture) into an operator-actionable failure.
 - Reject minimized targets in the GDI fallback probe and capture path, and add
   automated Windows lifecycle tests for resize, minimize/restore, and
   cross-monitor moves against live windows.

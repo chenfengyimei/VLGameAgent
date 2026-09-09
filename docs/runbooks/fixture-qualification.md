@@ -21,10 +21,19 @@ GUI menu, and R to reset. The target profile is
 `configs/games/uga-fixture-world.yaml` and requires the exact title
 `UGA Fixture World`.
 
+Keep the fixture window completely visible for the whole run. A window that
+overlaps the fixture swallows the scripted resume click (the world stays in its
+GUI state and never succeeds), degrades capture of the occluded window, and
+steals focus that the harness must fight to restore; the qualification aborts
+loudly when it detects the click point is covered. Park the fixture away from
+consoles — a second monitor works well — and do not interact with the machine
+while the run is in progress.
+
 Four deterministic scenarios are available for dataset and generalization work:
 `exploration`, `realtime_control`, `gui_navigation`, and the locked-test candidate
 `heldout_diagonal`. Launch and qualify a non-default scenario with matching
-`--scenario` arguments, for example:
+`--scenario` arguments (the game window and the qualification must agree or the
+scripted movement goes the wrong way), for example:
 
 ```powershell
 uga-example-game --scenario realtime_control

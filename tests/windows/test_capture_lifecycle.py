@@ -8,6 +8,7 @@ from tests.windows.window_fixture import (
     distinct_monitor_position,
     minimize_window,
     move_window,
+    raise_window,
     resize_window,
     restore_window,
 )
@@ -80,6 +81,22 @@ class GdiCaptureLifecycleTests(unittest.TestCase):
                 )
             finally:
                 backend.stop()
+
+    def test_window_at_reports_root_owner_of_visible_point(self) -> None:
+        with capture_test_window(self.windows) as (hwnd, target):
+            position = distinct_monitor_position(hwnd)
+            if position is None:
+                self.skipTest("requires a second monitor")
+            # Park deep inside the second display: its top-left corner is a
+            # common resting spot for operator windows that would cover the
+            # point no matter the test window's own z-order.
+            move_window(hwnd, position[0] + 420, position[1] + 640)
+            raise_window(hwnd)
+            snapshot = self.windows.snapshot(hwnd)
+            client = snapshot.client_screen_rect
+            center_x = round((client.left + client.right) / 2)
+            center_y = round((client.top + client.bottom) / 2)
+            self.assertEqual(self.windows.window_at(center_x, center_y), hwnd)
 
 
 if __name__ == "__main__":

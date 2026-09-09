@@ -280,6 +280,26 @@ def _activate(windows: Win32WindowBackend, hwnd: int, timeout_seconds: float = 2
     return False
 
 
+def _require_click_point_owned(windows: Win32WindowBackend, target: WindowSnapshot) -> None:
+    """Fail loudly when another window covers the fixture's resume click.
+
+    An obstructed fixture silently receives nothing: the injected click lands
+    on the covering window, the world stays in its GUI state, and capture of
+    the occluded window degrades. That failure mode is operator-actionable,
+    so it must abort before inputs are scheduled, not after a silent miss.
+    """
+    client = target.client_screen_rect
+    center_x = round((client.left + client.right) / 2)
+    center_y = round((client.top + client.bottom) / 2)
+    owner = windows.window_at(center_x, center_y - 20)
+    if owner != target.identity.hwnd:
+        covering = "unknown" if owner is None else str(owner)
+        raise ContractViolation(
+            "fixture window is obstructed at its resume-click point by"
+            f" window {covering}; move overlapping windows away before qualifying"
+        )
+
+
 @contextlib.contextmanager
 def _owned_focus_sink(windows: Win32WindowBackend) -> Iterator[WindowSnapshot]:
     executable = Path(sys.executable)
@@ -581,6 +601,7 @@ def run_fixture_qualification(
     )
     if not _activate(windows, target.identity.hwnd):
         raise ContractViolation("fixture window could not become foreground")
+    _require_click_point_owned(windows, target)
 
     registry = _capture_registry(backend_preference, windows)
     candidates = registry.candidates(target.identity)
@@ -703,6 +724,7 @@ def run_fixture_qualification(
                     break
                 if not _activate(windows, target.identity.hwnd):
                     raise ContractViolation("fixture focus could not be restored for next cycle")
+                _require_click_point_owned(windows, target)
                 created = clock.now()
                 actions, success_check = _build_fixture_cycle(
                     created,

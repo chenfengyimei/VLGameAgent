@@ -8,6 +8,7 @@ from uga.core.errors import ContractViolation
 from uga.release.fixture_corpus import run_fixture_corpus
 from uga.release.fixture_qualification import (
     _emergency_hotkey_passed,
+    _require_click_point_owned,
     _select_owned_fixture_target,
     _watchdog_timeout_passed,
     analyze_fixture_frame,
@@ -51,6 +52,39 @@ class FixtureQualificationTests(unittest.TestCase):
                 expected_pid=12,
                 expected_identity=None,
             )
+
+    def test_click_point_ownership_guard_requires_unobstructed_fixture(self) -> None:
+        identity = WindowIdentity(1, 10, "a" * 64, 1, 1)
+        target = WindowSnapshot(
+            identity,
+            "UGA Fixture World",
+            Rect(80, 40, 900, 700),
+            Rect(90, 80, 880, 680),
+            96,
+            True,
+            True,
+        )
+
+        class Owned:
+            @staticmethod
+            def window_at(x: int, y: int) -> int | None:
+                return identity.hwnd
+
+        class Obstructed:
+            @staticmethod
+            def window_at(x: int, y: int) -> int | None:
+                return 4242
+
+        class Covered:
+            @staticmethod
+            def window_at(x: int, y: int) -> int | None:
+                return None
+
+        _require_click_point_owned(Owned(), target)  # type: ignore[arg-type]
+        with self.assertRaisesRegex(ContractViolation, "obstructed"):
+            _require_click_point_owned(Obstructed(), target)  # type: ignore[arg-type]
+        with self.assertRaisesRegex(ContractViolation, "obstructed"):
+            _require_click_point_owned(Covered(), target)  # type: ignore[arg-type]
 
     def test_emergency_exercise_requires_hotkey_cause_and_executed_inputs(self) -> None:
         watchdog_trip = SafetyTrip(ShutdownCause.WATCHDOG_TIMEOUT, UGATime(1), 0)
