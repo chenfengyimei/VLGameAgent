@@ -203,9 +203,15 @@ def _wait_for_owned_window(process: subprocess.Popen[bytes], title: str) -> None
     while time.monotonic() < deadline:
         if process.poll() is not None:
             raise ContractViolation(f"fixture process exited before opening {title}")
-        if any(
-            item.identity.pid == process.pid and item.title == title for item in windows.discover()
-        ):
+        owned = next(
+            (
+                item
+                for item in windows.discover()
+                if item.identity.pid == process.pid and item.title == title
+            ),
+            None,
+        )
+        if owned is not None and windows.request_foreground(owned.identity.hwnd):
             return
         time.sleep(0.05)
     raise ContractViolation(f"fixture window did not open: {title}")
