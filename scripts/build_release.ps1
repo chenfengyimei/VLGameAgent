@@ -8,6 +8,13 @@ $projectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $nativeRoot = Join-Path $projectRoot "native"
 $distRoot = Join-Path $projectRoot "dist"
 $bundleRoot = Join-Path $distRoot $BundleName
+$sourceRevision = (& git -C $projectRoot rev-parse HEAD).Trim()
+if ($LASTEXITCODE -ne 0 -or -not $sourceRevision) {
+    throw "Unable to resolve the source Git revision"
+}
+$dirty = & git -C $projectRoot status --porcelain
+if ($LASTEXITCODE -ne 0) { throw "Unable to inspect the source worktree" }
+if ($dirty) { throw "Release builds require a clean committed worktree" }
 
 if (Test-Path -LiteralPath $bundleRoot) {
     throw "Release bundle already exists: $bundleRoot"
@@ -57,7 +64,45 @@ try {
         --npm-lock (Join-Path $projectRoot "package-lock.json") `
         --output (Join-Path $bundleRoot "third-party-inventory.json")
     if ($LASTEXITCODE -ne 0) { throw "Dependency inventory failed with exit code $LASTEXITCODE" }
-    & $Python -m apps.release_manifest $bundleRoot
+    $smokeRoot = Join-Path $distRoot (".uga-install-smoke-" + [guid]::NewGuid().ToString("N"))
+    try {
+        & $Python -m venv $smokeRoot
+        if ($LASTEXITCODE -ne 0) { throw "Clean venv creation failed with exit code $LASTEXITCODE" }
+        $smokePython = Join-Path $smokeRoot "Scripts\python.exe"
+        $wheel = Get-ChildItem -LiteralPath $bundleRoot -Filter "*.whl" -File
+        & $smokePython -m pip install --no-deps $wheel.FullName
+        if ($LASTEXITCODE -ne 0) { throw "Wheel installation failed with exit code $LASTEXITCODE" }
+        $env:UGA_NATIVE_CAPTURE_DLL = (Resolve-Path -LiteralPath (
+            Join-Path $bundleRoot "native\uga_capture.dll"
+        )).Path
+        foreach ($command in @(
+            @{ Name = "uga-agent.exe"; Arguments = @() },
+            @{ Name = "uga-example-game.exe"; Arguments = @("--headless-smoke") },
+            @{ Name = "uga-capture-probe.exe"; Arguments = @("--help") },
+            @{ Name = "uga-dataset.exe"; Arguments = @("--help") },
+            @{ Name = "uga-benchmark.exe"; Arguments = @("--help") },
+            @{ Name = "uga-qualify.exe"; Arguments = @("--help") },
+            @{ Name = "uga-train.exe"; Arguments = @("--help") }
+        )) {
+            $executable = Join-Path $smokeRoot ("Scripts\" + $command.Name)
+            & $executable @($command.Arguments)
+            if ($LASTEXITCODE -ne 0) {
+                throw "$($command.Name) smoke failed with exit code $LASTEXITCODE"
+            }
+        }
+    }
+    finally {
+        if (Test-Path -LiteralPath $smokeRoot) {
+            $resolvedSmoke = (Resolve-Path -LiteralPath $smokeRoot).Path
+            if ((Split-Path -Parent $resolvedSmoke) -ne $distRoot) {
+                throw "Refusing to remove unexpected smoke directory: $resolvedSmoke"
+            }
+            Remove-Item -LiteralPath $resolvedSmoke -Recurse -Force
+        }
+    }
+    & $Python -m apps.release_manifest $bundleRoot `
+        --source-revision $sourceRevision `
+        --package-smoke-passed
     if ($LASTEXITCODE -ne 0) { throw "Release manifest failed with exit code $LASTEXITCODE" }
     Write-Output $bundleRoot
 }
