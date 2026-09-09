@@ -163,14 +163,15 @@ impl WgcCapture {
         let texture: ID3D11Texture2D = unsafe { access.GetInterface()? };
         let mut source_desc = D3D11_TEXTURE2D_DESC::default();
         unsafe { texture.GetDesc(&raw mut source_desc) };
-        if width > source_desc.Width || height > source_desc.Height {
-            return Err(CaptureError::Unsupported(
-                "WGC content exceeds its frame surface",
-            ));
-        }
+        // The frame pool lags window resizes: until it is recreated, frames
+        // keep arriving on the old surface size while ContentSize already
+        // reports the new one. Copy the overlapping sub-rect for this frame
+        // and recreate the pool afterwards so later frames match.
+        let copy_width = width.min(source_desc.Width);
+        let copy_height = height.min(source_desc.Height);
         let staging = self.staging_texture(source_desc)?;
         unsafe { self.context.CopyResource(&staging, &texture) };
-        let bytes = map_tightly_packed(&self.context, &staging, width, height)?;
+        let bytes = map_tightly_packed(&self.context, &staging, copy_width, copy_height)?;
 
         let mut physical_rect = RECT::default();
         unsafe { GetWindowRect(self.hwnd, &raw mut physical_rect)? };
@@ -193,9 +194,9 @@ impl WgcCapture {
             captured_at: self.clock.now()?,
             present_estimate,
             physical_rect,
-            width,
-            height,
-            stride_bytes: width * 4,
+            width: copy_width,
+            height: copy_height,
+            stride_bytes: copy_width * 4,
             bytes,
         })
     }
