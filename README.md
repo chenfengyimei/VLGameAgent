@@ -4,10 +4,16 @@ UGA is a Windows-first, generalist game computer-use agent. It observes pixels,
 reasons about goals, selects skills, and emits keyboard, mouse, or gamepad input
 through explicit safety and ownership boundaries.
 
-The repository has implementation coverage through **UGA-074**, including a
-deterministic Goal-to-Replay loop, dataset/Fast Policy tooling, UGA-Bench,
-dashboard/replay UIs, and Windows development packaging. UGA-075 remains a
-qualification milestone; no V1 release claim is made yet.
+**[中文完整介绍与使用教程](docs/usage.zh-CN.md) — recommended for first-time users.**
+
+The repository implements the full observe→decide→control→record→dataset→train→
+benchmark pipeline, including three capture backends (WGC, DXGI duplication,
+GDI fallback), lease-arbitrated input with watchdog and emergency-stop safety,
+transactional Episode recording with deterministic replay, dataset tooling with
+quality gates, deterministic motor-policy training, UGA-Bench, offline
+dashboard/replay/dataset UIs, a developer-owned Fixture World, qualification
+evidence tooling, and verified Windows development packaging. The project is
+licensed under [MIT](LICENSE).
 
 ## Architectural rules
 
