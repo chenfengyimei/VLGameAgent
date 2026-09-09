@@ -131,15 +131,20 @@ def analyze_fixture_frame(frame: Frame) -> FixtureVisualState:
 
 
 def _visual_features(
-    state: FixtureVisualState, width: int, height: int
-) -> tuple[float, float, float, float]:
+    state: FixtureVisualState,
+    width: int,
+    height: int,
+    scenario: FixtureScenario,
+) -> tuple[float, ...]:
+    scenario_features = tuple(float(scenario == item) for item in FixtureScenario)
     if state.player_center is None or state.target_center is None:
-        return (0.0, 0.0, float(state.success_visible), 1.0)
+        return (0.0, 0.0, float(state.success_visible), 1.0, *scenario_features)
     return (
         (state.target_center[0] - state.player_center[0]) / max(width, 1),
         (state.target_center[1] - state.player_center[1]) / max(height, 1),
         float(state.success_visible),
         1.0,
+        *scenario_features,
     )
 
 
@@ -591,6 +596,7 @@ def run_fixture_qualification(
                             latest_visual,
                             round(target.client_screen_rect.width),
                             round(target.client_screen_rect.height),
+                            scenario,
                         ),
                         "visual": asdict(latest_visual),
                     },

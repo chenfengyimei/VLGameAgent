@@ -63,6 +63,10 @@ guards, leases, arbitration, the 30 Hz scheduler, physical SendInput, MP4 and
 Parquet recording, canonical training targets, replay verification, and dataset
 validation in one run. Long runs acquire a fresh short lease for each five-second
 control cycle so a transient focus loss cannot revive stale queued input.
+Fixture motor features contain normalized pixel-space player/target geometry and
+the selected Game Profile scenario identity; the latter prevents distinct known
+control profiles from collapsing when a previous cycle ends with overlapping
+sprites.
 Native capture loss is handled within the same Episode by retiring the failed
 backend, selecting the next ranked backend, and recording the transition and
 error in both the timeline and qualification report.
