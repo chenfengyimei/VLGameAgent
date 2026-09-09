@@ -26,7 +26,9 @@ use windows::Win32::Graphics::Dxgi::{
     DXGI_SWAP_CHAIN_FLAG, DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL, DXGI_USAGE_RENDER_TARGET_OUTPUT,
     IDXGIFactory2, IDXGISwapChain,
 };
-use windows::Win32::System::Threading::{CREATE_EVENT, CreateEventExW, WaitForSingleObject};
+use windows::Win32::System::Threading::{
+    CREATE_EVENT, CreateEventExW, EVENT_ALL_ACCESS, WaitForSingleObject,
+};
 use windows::Win32::UI::WindowsAndMessaging::GetClientRect;
 use windows::core::{Interface, Result};
 
@@ -111,7 +113,10 @@ impl Dx12Renderer {
             command_list.Close()?;
         }
         let fence: ID3D12Fence = unsafe { device.CreateFence(0, D3D12_FENCE_FLAG_NONE)? };
-        let fence_event = unsafe { CreateEventExW(None, None, CREATE_EVENT(0), 0)? };
+        // EVENT_ALL_ACCESS is required: a zero desired-access mask makes the
+        // fence event unusable (SetEventOnCompletion fails with access denied).
+        let fence_event =
+            unsafe { CreateEventExW(None, None, CREATE_EVENT(0), EVENT_ALL_ACCESS.0)? };
         let mut renderer = Self {
             device,
             queue,
@@ -184,9 +189,11 @@ impl Dx12Renderer {
         let buffer: ID3D12Resource = unsafe { self.swap.GetBuffer(frame_index)? };
         let handle = self.render_target_handle(frame_index);
         let color_rgba = [color.0, color.1, color.2, 1.0];
-        unsafe {
-            self.allocator.Reset()?;
-            self.command_list.Reset(&self.allocator, None)?;
+        stage("allocator-reset", || unsafe { self.allocator.Reset() })?;
+        stage("list-reset", || unsafe {
+            self.command_list.Reset(&self.allocator, None)
+        })?;
+        stage("barriers-clear-close", || unsafe {
             self.command_list.ResourceBarrier(&[transition_barrier(
                 &buffer,
                 D3D12_RESOURCE_STATE_PRESENT,
@@ -199,17 +206,26 @@ impl Dx12Renderer {
                 D3D12_RESOURCE_STATE_RENDER_TARGET,
                 D3D12_RESOURCE_STATE_PRESENT,
             )]);
-            self.command_list.Close()?;
+            self.command_list.Close()
+        })?;
+        stage("execute", || unsafe {
             let command_list: ID3D12CommandList = self.command_list.cast()?;
             self.queue.ExecuteCommandLists(&[Some(command_list)]);
-            self.swap.Present(1, DXGI_PRESENT(0)).ok()?;
-            self.wait_for_fence()?;
-        }
+            Ok(())
+        })?;
+        stage("present", || unsafe {
+            self.swap.Present(1, DXGI_PRESENT(0)).ok()
+        })?;
+        stage("fence", || unsafe { self.wait_for_fence() })?;
         // FLIP_SEQUENTIAL with two buffers alternates the back buffer index
         // deterministically after each Present.
         self.frame_index = (self.frame_index + 1) % BUFFER_COUNT;
         Ok(())
     }
+}
+
+fn stage<T>(name: &str, call: impl FnOnce() -> Result<T>) -> Result<T> {
+    call().inspect_err(|error| eprintln!("dx12 stage {name}: {error}"))
 }
 
 fn transition_barrier(
@@ -255,7 +271,8 @@ fn main() -> Result<()> {
                 return;
             }
             let color = cycle_color(start.elapsed());
-            if renderer.render(color).is_err() {
+            if let Err(error) = renderer.render(color) {
+                eprintln!("dx12 render failed: {error}");
                 uga_api_fixtures::common::request_quit();
             }
         },
