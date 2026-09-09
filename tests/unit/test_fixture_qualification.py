@@ -1,0 +1,71 @@
+from __future__ import annotations
+
+import unittest
+
+from uga.capture.frame import BufferHandle, BufferKind, Frame, PixelFormat
+from uga.core.errors import ContractViolation
+from uga.release.fixture_qualification import analyze_fixture_frame
+from uga.time.clock import UGATime
+from uga.windows.coordinates import Rect
+from uga.windows.window_identity import WindowIdentity
+
+
+class FixtureQualificationTests(unittest.TestCase):
+    def test_fixture_color_analysis_uses_captured_pixels(self) -> None:
+        width, height = 16, 8
+        pixels = bytearray(width * height * 4)
+        colors = (
+            ((248, 189, 56, 255), 24),
+            ((94, 197, 34, 255), 24),
+            ((21, 204, 250, 255), 24),
+        )
+        index = 0
+        for color, count in colors:
+            for _ in range(count):
+                pixels[index : index + 4] = bytes(color)
+                index += 4
+        identity = WindowIdentity(1, 1, "a" * 64, 1, 1)
+        frame = Frame(
+            "fixture-frame",
+            UGATime(1),
+            None,
+            identity,
+            width,
+            height,
+            width * 4,
+            PixelFormat.BGRA8,
+            Rect(0, 0, width, height),
+            Rect(0, 0, width, height),
+            "test",
+            BufferHandle("pixels", BufferKind.CPU_BYTES, len(pixels), pixels),
+        )
+
+        state = analyze_fixture_frame(frame)
+
+        self.assertEqual(state.player_pixels, 24)
+        self.assertEqual(state.target_pixels, 24)
+        self.assertEqual(state.success_pixels, 24)
+        self.assertTrue(state.success_visible)
+
+    def test_fixture_color_analysis_rejects_non_cpu_frame(self) -> None:
+        identity = WindowIdentity(1, 1, "a" * 64, 1, 1)
+        frame = Frame(
+            "fixture-frame",
+            UGATime(1),
+            None,
+            identity,
+            1,
+            1,
+            4,
+            PixelFormat.BGRA8,
+            Rect(0, 0, 1, 1),
+            Rect(0, 0, 1, 1),
+            "test",
+            BufferHandle("native", BufferKind.NATIVE, 0, object()),
+        )
+        with self.assertRaisesRegex(ContractViolation, "CPU-addressable"):
+            analyze_fixture_frame(frame)
+
+
+if __name__ == "__main__":
+    unittest.main()

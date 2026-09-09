@@ -36,6 +36,7 @@ class PyAvVideoRecorder:
         self._stream: Any | None = None
         self._start_timestamp_ns: int | None = None
         self._last_timestamp_ns: int | None = None
+        self._last_pts: int | None = None
 
     def append(self, frame: Frame) -> None:
         frame.validate()
@@ -74,8 +75,12 @@ class PyAvVideoRecorder:
         if self._start_timestamp_ns is None:
             self._start_timestamp_ns = timestamp_ns
         self._last_timestamp_ns = timestamp_ns
-        video_frame.pts = timestamp_ns - self._start_timestamp_ns
-        video_frame.time_base = Fraction(1, 1_000_000_000)
+        pts = round((timestamp_ns - self._start_timestamp_ns) * self._fps / 1_000_000_000)
+        if self._last_pts is not None:
+            pts = max(pts, self._last_pts + 1)
+        self._last_pts = pts
+        video_frame.pts = pts
+        video_frame.time_base = Fraction(1, self._fps)
         for packet in self._stream.encode(video_frame):
             self._container.mux(packet)
 
@@ -88,3 +93,6 @@ class PyAvVideoRecorder:
         self._container.close()
         self._container = None
         self._stream = None
+        self._start_timestamp_ns = None
+        self._last_timestamp_ns = None
+        self._last_pts = None

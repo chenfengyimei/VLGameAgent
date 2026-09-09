@@ -40,7 +40,9 @@ class EpisodeReplayTests(unittest.TestCase):
         writer = EpisodeWriter(root, metadata)
         writer.attach_video(PyAvVideoRecorder(writer.video_path, fps=30))
         writer.record_frame(frame(1, timestamp_ns=100))
-        writer.record_frame(frame(2, timestamp_ns=33_333_433))
+        # Adjacent source timestamps may quantize to the same codec tick; the
+        # recorder must still emit strictly monotonic PTS values.
+        writer.record_frame(frame(2, timestamp_ns=101))
         writer.record_event("event-1", UGATime(105), {"name": "capture_started"})
         writer.record_observation("observation-1", UGATime(110), {"frame_id": "frame-1"})
         writer.record_task("task-1", UGATime(115), {"goal": "press forward"})

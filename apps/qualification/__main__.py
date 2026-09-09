@@ -4,6 +4,7 @@ import argparse
 import json
 from pathlib import Path
 
+from uga.release.fixture_qualification import run_fixture_qualification
 from uga.release.manifest import GateStatus
 from uga.release.preflight import build_qualification_preflight
 from uga.release.qualification import (
@@ -91,6 +92,22 @@ def _preflight(args: argparse.Namespace) -> None:
     print(report.write(output))
 
 
+def _fixture(args: argparse.Namespace) -> None:
+    print(
+        run_fixture_qualification(
+            title_pattern=args.title,
+            duration_seconds=args.duration_seconds,
+            target_fps=args.target_fps,
+            backend_preference=args.backend,
+            episode_root=args.episode_root,
+            report_path=args.output,
+            allow_physical_input=args.allow_physical_input,
+            exercise_focus_loss=args.exercise_focus_loss,
+            exercise_emergency_hotkey=args.exercise_emergency_hotkey,
+        )
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Manage UGA V1 qualification evidence")
     subparsers = parser.add_subparsers(required=True)
@@ -128,6 +145,24 @@ def main() -> None:
     preflight.add_argument("--dataset-root", type=Path)
     preflight.add_argument("--output", type=Path)
     preflight.set_defaults(handler=_preflight)
+
+    fixture = subparsers.add_parser(
+        "fixture", help="run supervised capture, physical-input, Recorder, and Replay checks"
+    )
+    fixture.add_argument("--title", default="^UGA Fixture World$")
+    fixture.add_argument("--duration-seconds", type=float, default=8.0)
+    fixture.add_argument("--target-fps", type=float, default=30.0)
+    fixture.add_argument(
+        "--backend",
+        choices=("auto", "windows_graphics_capture", "dxgi_duplication", "gdi_fallback"),
+        default="gdi_fallback",
+    )
+    fixture.add_argument("--episode-root", type=Path, required=True)
+    fixture.add_argument("--output", type=Path, required=True)
+    fixture.add_argument("--allow-physical-input", action="store_true")
+    fixture.add_argument("--exercise-focus-loss", action="store_true")
+    fixture.add_argument("--exercise-emergency-hotkey", action="store_true")
+    fixture.set_defaults(handler=_fixture)
 
     args = parser.parse_args()
     args.handler(args)

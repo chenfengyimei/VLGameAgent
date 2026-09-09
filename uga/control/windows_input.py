@@ -189,7 +189,11 @@ class SendInputBackend:
 
     def _send(self, item: _INPUT) -> None:
         ctypes.set_last_error(0)
-        sent = int(self._user32.SendInput(1, ctypes.byref(item), ctypes.sizeof(_INPUT)))
+        # SendInput consumes an LPINPUT array. Passing a byref CArgObject can
+        # update global key state without reliably dispatching window messages
+        # on current Windows builds; use the exact array ABI even for one item.
+        batch = (_INPUT * 1)(item)
+        sent = int(self._user32.SendInput(1, batch, ctypes.sizeof(_INPUT)))
         if sent != 1:
             error = ctypes.get_last_error()
             detail = f"Win32 error {error}" if error else "blocked, possibly by UIPI"

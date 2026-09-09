@@ -42,6 +42,28 @@ changes, backend transitions, and operator notes are reviewed together.
 The probe accumulates diagnostics without retaining frame pixel buffers, so a
 long soak has bounded frame-memory use; only latency samples are retained.
 
+## Integrated physical-input and Recorder check
+
+With the fixture visible, run the explicit opt-in qualification command. It
+uses the exact target title, developer-owned safety policy, focus and integrity
+guards, leases, arbitration, the 30 Hz scheduler, physical SendInput, MP4 and
+Parquet recording, replay verification, and dataset validation in one run.
+
+```powershell
+uga-qualify fixture `
+  --duration-seconds 8 `
+  --backend gdi_fallback `
+  --episode-root runs/qualification-v1/episodes `
+  --output runs/qualification-v1/fixture-smoke.json `
+  --allow-physical-input `
+  --exercise-focus-loss `
+  --exercise-emergency-hotkey
+```
+
+The command intentionally refuses to run without `--allow-physical-input`.
+Ctrl+Shift+F12 remains the global emergency stop. Use a 600-second duration for
+the Recorder acceptance run after the smoke report passes.
+
 ## Dataset and benchmark checks
 
 ```powershell

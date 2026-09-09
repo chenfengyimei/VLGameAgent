@@ -53,6 +53,7 @@ class Win32WindowBackend:
     """ctypes Win32 discovery isolated behind the stable WindowBackend protocol."""
 
     PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+    _SW_RESTORE = 9
 
     def __init__(self, tracker: WindowIdentityTracker | None = None) -> None:
         if os.name != "nt":
@@ -65,6 +66,38 @@ class Win32WindowBackend:
     def foreground_hwnd(self) -> int | None:
         hwnd = int(self._user32.GetForegroundWindow() or 0)
         return hwnd or None
+
+    def request_foreground(self, hwnd: int) -> bool:
+        """Restore and request focus for an already validated target window."""
+        self.snapshot(hwnd)
+        foreground = int(self._user32.GetForegroundWindow() or 0)
+        current_thread = int(self._kernel32.GetCurrentThreadId())
+        foreground_thread = (
+            int(self._user32.GetWindowThreadProcessId(ctypes.c_void_p(foreground), None))
+            if foreground
+            else 0
+        )
+        target_thread = int(
+            self._user32.GetWindowThreadProcessId(ctypes.c_void_p(hwnd), None)
+        )
+        attached: list[int] = []
+        try:
+            for thread_id in (foreground_thread, target_thread):
+                if (
+                    thread_id
+                    and thread_id != current_thread
+                    and thread_id not in attached
+                    and self._user32.AttachThreadInput(current_thread, thread_id, True)
+                ):
+                    attached.append(thread_id)
+            self._user32.ShowWindow(ctypes.c_void_p(hwnd), self._SW_RESTORE)
+            self._user32.BringWindowToTop(ctypes.c_void_p(hwnd))
+            self._user32.SetForegroundWindow(ctypes.c_void_p(hwnd))
+            self._user32.SetFocus(ctypes.c_void_p(hwnd))
+        finally:
+            for thread_id in reversed(attached):
+                self._user32.AttachThreadInput(current_thread, thread_id, False)
+        return self.foreground_hwnd() == hwnd
 
     def discover(self, *, executable_name: str | None = None) -> tuple[WindowSnapshot, ...]:
         handles: list[int] = []
@@ -180,6 +213,20 @@ class Win32WindowBackend:
     def _configure_signatures(self) -> None:
         """Prevent pointer truncation by declaring all 64-bit Win32 signatures."""
         self._user32.GetForegroundWindow.restype = ctypes.c_void_p
+        self._user32.ShowWindow.argtypes = [ctypes.c_void_p, ctypes.c_int]
+        self._user32.ShowWindow.restype = ctypes.c_bool
+        self._user32.SetForegroundWindow.argtypes = [ctypes.c_void_p]
+        self._user32.SetForegroundWindow.restype = ctypes.c_bool
+        self._user32.BringWindowToTop.argtypes = [ctypes.c_void_p]
+        self._user32.BringWindowToTop.restype = ctypes.c_bool
+        self._user32.SetFocus.argtypes = [ctypes.c_void_p]
+        self._user32.SetFocus.restype = ctypes.c_void_p
+        self._user32.AttachThreadInput.argtypes = [
+            ctypes.c_ulong,
+            ctypes.c_ulong,
+            ctypes.c_bool,
+        ]
+        self._user32.AttachThreadInput.restype = ctypes.c_bool
         self._user32.IsWindow.argtypes = [ctypes.c_void_p]
         self._user32.IsWindow.restype = ctypes.c_bool
         self._user32.IsWindowVisible.argtypes = [ctypes.c_void_p]
@@ -201,6 +248,8 @@ class Win32WindowBackend:
         self._user32.ClientToScreen.restype = ctypes.c_bool
         self._kernel32.OpenProcess.argtypes = [ctypes.c_ulong, ctypes.c_bool, ctypes.c_ulong]
         self._kernel32.OpenProcess.restype = ctypes.c_void_p
+        self._kernel32.GetCurrentThreadId.argtypes = []
+        self._kernel32.GetCurrentThreadId.restype = ctypes.c_ulong
         self._kernel32.QueryFullProcessImageNameW.argtypes = [
             ctypes.c_void_p,
             ctypes.c_ulong,

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import argparse
+import ctypes
 import json
 import math
+import os
 
 from uga.environment.fixture_world import FixtureMode, FixtureSnapshot, FixtureWorld
 from uga.time.clock import PerfCounterClock
@@ -42,6 +44,20 @@ def _run_window() -> None:
     canvas.pack(fill="both", expand=True)
     previous_mouse_x: int | None = None
     last_tick = clock.now()
+    user32 = ctypes.WinDLL("user32", use_last_error=True) if os.name == "nt" else None
+    if user32 is not None:
+        user32.GetAsyncKeyState.argtypes = [ctypes.c_int]
+        user32.GetAsyncKeyState.restype = ctypes.c_short
+    polled_keys = {
+        "w": 0x57,
+        "a": 0x41,
+        "s": 0x53,
+        "d": 0x44,
+        "e": 0x45,
+        "f": 0x46,
+        "r": 0x52,
+        "escape": 0x1B,
+    }
 
     def key_down(event: tk.Event[tk.Misc]) -> None:
         world.set_key(str(event.keysym), True)
@@ -57,6 +73,7 @@ def _run_window() -> None:
         previous_mouse_x = x
 
     def click(event: tk.Event[tk.Misc]) -> None:
+        canvas.focus_set()
         world.click(
             float(event.x) * world.width / max(canvas.winfo_width(), 1),
             float(event.y) * world.height / max(canvas.winfo_height(), 1),
@@ -136,16 +153,24 @@ def _run_window() -> None:
                 justify="center",
             )
 
+    def poll_keys() -> None:
+        if user32 is None:
+            return
+        for name, virtual_key in polled_keys.items():
+            world.set_key(name, bool(user32.GetAsyncKeyState(virtual_key) & 0x8000))
+
     def loop() -> None:
         nonlocal last_tick
         now = clock.now()
+        poll_keys()
         snapshot = world.tick(now.value_ns - last_tick.value_ns)
         last_tick = now
         render(snapshot)
         root.after(16, loop)
 
-    root.bind("<KeyPress>", key_down)
-    root.bind("<KeyRelease>", key_up)
+    if user32 is None:
+        root.bind_all("<KeyPress>", key_down)
+        root.bind_all("<KeyRelease>", key_up)
     canvas.bind("<Motion>", mouse_move)
     canvas.bind("<Button-1>", click)
     canvas.focus_set()
@@ -153,12 +178,33 @@ def _run_window() -> None:
     root.mainloop()
 
 
+def _run_focus_sink() -> None:
+    import tkinter as tk
+
+    root = tk.Tk()
+    root.title("UGA Focus Sink")
+    root.geometry("320x120")
+    root.resizable(False, False)
+    label = tk.Label(
+        root,
+        text="Developer-owned focus-loss qualification window",
+        background="#172554",
+        foreground="white",
+        font=("Segoe UI", 11),
+    )
+    label.pack(fill="both", expand=True)
+    root.mainloop()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run the developer-owned UGA fixture world")
     parser.add_argument("--headless-smoke", action="store_true")
+    parser.add_argument("--focus-sink", action="store_true")
     args = parser.parse_args()
     if args.headless_smoke:
         _headless_smoke()
+    elif args.focus_sink:
+        _run_focus_sink()
     else:
         _run_window()
 

@@ -1,0 +1,647 @@
+from __future__ import annotations
+
+import contextlib
+import json
+import math
+import re
+import subprocess
+import sys
+import time
+import uuid
+from collections.abc import Iterator
+from dataclasses import asdict, dataclass
+from pathlib import Path
+
+from uga.capture.base import CaptureBackend
+from uga.capture.diagnostics import CaptureDiagnosticsAccumulator
+from uga.capture.dxgi import DXGIDuplicationBackend
+from uga.capture.fallback import GDIFallbackCaptureBackend
+from uga.capture.frame import BufferKind, Frame, PixelFormat
+from uga.capture.registry import CaptureBackendRegistry
+from uga.capture.windows_graphics_capture import WindowsGraphicsCaptureBackend
+from uga.control.arbiter import ActionArbiter
+from uga.control.executor import InputExecutor
+from uga.control.lease import ControlLease, ControlMode, ControlOwner
+from uga.control.lease_manager import ControlLeaseManager
+from uga.control.lifetime import ActionLifetime
+from uga.control.physical import (
+    AbsolutePointerAction,
+    KeyboardAction,
+    KeyEncoding,
+    MouseButton,
+    MouseButtonAction,
+    PhysicalAction,
+    RelativeMouseAction,
+)
+from uga.control.proposal import ActionProposal
+from uga.control.scheduler import ActionScheduler
+from uga.control.windows_input import SendInputBackend
+from uga.core.errors import ContractViolation
+from uga.dataset.validator import DatasetValidator
+from uga.recording.episode_writer import EpisodeWriter
+from uga.recording.replay import ReplayEngine
+from uga.recording.schema import ActionProvenance, EpisodeMetadata, EpisodeResult
+from uga.recording.video import PyAvVideoRecorder
+from uga.safety.emergency_stop import EmergencyStop, Win32EmergencyHotkey
+from uga.safety.environment_policy import (
+    EnvironmentClass,
+    EnvironmentSafetyManifest,
+    require_safe_environment,
+)
+from uga.safety.focus_guard import AgentEnableState, FocusGuard
+from uga.safety.shutdown import SafetyShutdown
+from uga.time.clock import PerfCounterClock, UGATime
+from uga.windows.backend import Win32WindowBackend, WindowSnapshot
+from uga.windows.coordinates import CoordinateSpace
+from uga.windows.integrity import Win32IntegrityProvider
+
+
+@dataclass(frozen=True, slots=True)
+class FixtureVisualState:
+    player_pixels: int
+    player_center: tuple[float, float] | None
+    target_pixels: int
+    target_center: tuple[float, float] | None
+    success_pixels: int
+
+    @property
+    def success_visible(self) -> bool:
+        return self.success_pixels >= 20
+
+
+def _matches_rgb(
+    blue: int,
+    green: int,
+    red: int,
+    expected: tuple[int, int, int],
+    tolerance: int = 12,
+) -> bool:
+    expected_red, expected_green, expected_blue = expected
+    return (
+        abs(red - expected_red) <= tolerance
+        and abs(green - expected_green) <= tolerance
+        and abs(blue - expected_blue) <= tolerance
+    )
+
+
+def analyze_fixture_frame(frame: Frame) -> FixtureVisualState:
+    """Read only developer-owned fixture colors from a captured CPU frame."""
+    if frame.buffer_handle.kind != BufferKind.CPU_BYTES:
+        raise ContractViolation("fixture analysis requires CPU-addressable pixels")
+    if frame.pixel_format not in (PixelFormat.BGRA8, PixelFormat.RGBA8):
+        raise ContractViolation("fixture analysis requires a four-channel pixel format")
+    source = frame.buffer_handle.readonly_view().cast("B")
+    colors = {
+        "player": (56, 189, 248),
+        "target": (34, 197, 94),
+        "success": (250, 204, 21),
+    }
+    counts = {name: 0 for name in colors}
+    x_sums = {name: 0 for name in colors}
+    y_sums = {name: 0 for name in colors}
+    rgba = frame.pixel_format == PixelFormat.RGBA8
+    for y in range(frame.height):
+        row = y * frame.stride_bytes
+        for x in range(frame.width):
+            offset = row + x * 4
+            if rgba:
+                red, green, blue = source[offset], source[offset + 1], source[offset + 2]
+            else:
+                blue, green, red = source[offset], source[offset + 1], source[offset + 2]
+            for name, expected in colors.items():
+                if _matches_rgb(blue, green, red, expected):
+                    counts[name] += 1
+                    x_sums[name] += x
+                    y_sums[name] += y
+                    break
+
+    def center(name: str) -> tuple[float, float] | None:
+        count = counts[name]
+        return None if count == 0 else (x_sums[name] / count, y_sums[name] / count)
+
+    return FixtureVisualState(
+        counts["player"],
+        center("player"),
+        counts["target"],
+        center("target"),
+        counts["success"],
+    )
+
+
+def _success_pixel_count(frame: Frame) -> int:
+    if frame.buffer_handle.kind != BufferKind.CPU_BYTES:
+        raise ContractViolation("fixture analysis requires CPU-addressable pixels")
+    if frame.pixel_format == PixelFormat.BGRA8:
+        color = (21, 204, 250)
+    elif frame.pixel_format == PixelFormat.RGBA8:
+        color = (250, 204, 21)
+    else:
+        raise ContractViolation("fixture analysis requires a four-channel pixel format")
+    payload = frame.buffer_handle.readonly_view().tobytes()
+    return sum(payload.count(bytes((*color, alpha))) for alpha in (0, 255))
+
+
+def _lifetime(
+    created: UGATime,
+    effective_ns: int,
+    *,
+    ttl_ns: int = 1_000_000_000,
+) -> ActionLifetime:
+    return ActionLifetime(created, UGATime(effective_ns), UGATime(effective_ns + ttl_ns))
+
+
+def _build_fixture_actions(
+    created: UGATime,
+    target: WindowSnapshot,
+    duration_seconds: float,
+) -> tuple[tuple[PhysicalAction, ...], tuple[int, ...]]:
+    if duration_seconds < 4.5 or not math.isfinite(duration_seconds):
+        raise ContractViolation("fixture qualification duration must be at least 4.5 seconds")
+    start_ns = created.value_ns
+    cycle_ns = 5_000_000_000
+    available_ns = round(duration_seconds * 1_000_000_000)
+    cycle_count = max(1, (available_ns - 500_000_000) // cycle_ns)
+    center_x = round((target.client_screen_rect.left + target.client_screen_rect.right) / 2)
+    resume_y = round((target.client_screen_rect.top + target.client_screen_rect.bottom) / 2 - 20)
+    actions: list[PhysicalAction] = []
+    success_checks: list[int] = []
+
+    def key(
+        cycle: int,
+        name: str,
+        offset_ns: int,
+        code: int,
+        is_down: bool,
+        encoding: KeyEncoding = KeyEncoding.SCAN_CODE,
+    ) -> KeyboardAction:
+        effective = start_ns + cycle * cycle_ns + offset_ns
+        return KeyboardAction(
+            f"fixture-{cycle:04d}-{name}",
+            _lifetime(created, effective),
+            code,
+            is_down,
+            encoding,
+        )
+
+    for cycle in range(cycle_count):
+        base = start_ns + cycle * cycle_ns
+        actions.extend(
+            (
+                key(cycle, "reset-down", 100_000_000, 19, True),
+                key(cycle, "reset-up", 150_000_000, 19, False),
+                key(cycle, "menu-down", 350_000_000, 0x1B, True, KeyEncoding.VIRTUAL_KEY),
+                key(cycle, "menu-up", 400_000_000, 0x1B, False, KeyEncoding.VIRTUAL_KEY),
+                AbsolutePointerAction(
+                    f"fixture-{cycle:04d}-resume-move",
+                    _lifetime(created, base + 550_000_000),
+                    center_x,
+                    resume_y,
+                    CoordinateSpace.PHYSICAL_SCREEN_PIXEL,
+                ),
+                MouseButtonAction(
+                    f"fixture-{cycle:04d}-resume-down",
+                    _lifetime(created, base + 600_000_000),
+                    MouseButton.LEFT,
+                    True,
+                ),
+                MouseButtonAction(
+                    f"fixture-{cycle:04d}-resume-up",
+                    _lifetime(created, base + 650_000_000),
+                    MouseButton.LEFT,
+                    False,
+                ),
+                RelativeMouseAction(
+                    f"fixture-{cycle:04d}-look",
+                    _lifetime(created, base + 800_000_000),
+                    12,
+                    0,
+                ),
+                key(cycle, "right-down", 1_000_000_000, 32, True),
+                key(cycle, "right-up", 3_780_000_000, 32, False),
+                key(cycle, "interact-down", 3_900_000_000, 18, True),
+                key(cycle, "interact-up", 3_950_000_000, 18, False),
+            )
+        )
+        success_checks.append(base + 4_200_000_000)
+    return tuple(actions), tuple(success_checks)
+
+
+def _capture_registry(preference: str, windows: Win32WindowBackend) -> CaptureBackendRegistry:
+    order = (
+        (preference,)
+        if preference != "auto"
+        else ("windows_graphics_capture", "dxgi_duplication", "gdi_fallback")
+    )
+    registry = CaptureBackendRegistry(order)
+    registry.register(WindowsGraphicsCaptureBackend())
+    registry.register(DXGIDuplicationBackend())
+    registry.register(GDIFallbackCaptureBackend(windows))
+    return registry
+
+
+def _activate(windows: Win32WindowBackend, hwnd: int, timeout_seconds: float = 2.0) -> bool:
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        if windows.request_foreground(hwnd) and windows.foreground_hwnd() == hwnd:
+            return True
+        time.sleep(0.05)
+    return False
+
+
+@contextlib.contextmanager
+def _owned_focus_sink(windows: Win32WindowBackend) -> Iterator[WindowSnapshot]:
+    executable = Path(sys.executable)
+    pythonw = executable.with_name("pythonw.exe")
+    if pythonw.is_file():
+        executable = pythonw
+    process = subprocess.Popen(
+        [str(executable), "-m", "apps.example_game", "--focus-sink"],
+        cwd=Path.cwd(),
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        deadline = time.monotonic() + 8.0
+        sink: WindowSnapshot | None = None
+        while time.monotonic() < deadline:
+            sink = next(
+                (
+                    item
+                    for item in windows.discover()
+                    if item.title == "UGA Focus Sink" and item.identity.pid == process.pid
+                ),
+                None,
+            )
+            if sink is not None:
+                break
+            if process.poll() is not None:
+                break
+            time.sleep(0.05)
+        if sink is None:
+            raise ContractViolation("developer-owned focus sink did not become ready")
+        yield sink
+    finally:
+        if process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=5.0)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=5.0)
+
+
+def _provenance(action: PhysicalAction, lease_id: str, observation_id: str) -> ActionProvenance:
+    return ActionProvenance(
+        action.action_id,
+        "fixture-qualification",
+        "fixture-script-v1",
+        None,
+        observation_id,
+        "fixture-navigation",
+        "fixture-complete-task",
+        ControlMode.PLAY_3D.value,
+        lease_id,
+        1.0,
+        False,
+        action.lifetime,
+    )
+
+
+def _exercise_focus_loss(
+    windows: Win32WindowBackend,
+    focus_sink: WindowSnapshot,
+    target: WindowSnapshot,
+    executor: InputExecutor,
+    lease: ControlLease,
+) -> dict[str, object]:
+    try:
+        moved = _activate(windows, focus_sink.identity.hwnd)
+    except Exception as error:
+        return {"exercised": False, "reason": str(error)}
+    if not moved or windows.foreground_hwnd() == target.identity.hwnd:
+        return {"exercised": False, "reason": "Windows denied the foreground transition"}
+    now = PerfCounterClock().now()
+    probe = KeyboardAction(
+        f"focus-loss-probe-{uuid.uuid4().hex}",
+        ActionLifetime(now, now, UGATime(now.value_ns + 1_000_000_000)),
+        32,
+        False,
+    )
+    result = executor.execute(probe, target.identity, lease)
+    _activate(windows, target.identity.hwnd)
+    return {
+        "exercised": True,
+        "executed": result.executed,
+        "reason": str(result.reason),
+        "passed": not result.executed and str(result.reason) == "target_not_foreground",
+    }
+
+
+def _exercise_emergency_hotkey(
+    target: WindowSnapshot,
+    executor: InputExecutor,
+    lease: ControlLease,
+    emergency: EmergencyStop,
+) -> dict[str, object]:
+    listener = Win32EmergencyHotkey(emergency.trigger)
+    listener.start()
+    results: list[str] = []
+    try:
+        for name, code in (("control", 0x11), ("shift", 0x10), ("f12", 0x7B)):
+            now = PerfCounterClock().now()
+            action = KeyboardAction(
+                f"emergency-{name}-{uuid.uuid4().hex}",
+                ActionLifetime(now, now, UGATime(now.value_ns + 2_000_000_000)),
+                code,
+                True,
+                KeyEncoding.VIRTUAL_KEY,
+            )
+            result = executor.execute(action, target.identity, lease)
+            results.append(str(result.reason))
+            time.sleep(0.03)
+        deadline = time.monotonic() + 2.0
+        while emergency.tripped is None and time.monotonic() < deadline:
+            time.sleep(0.02)
+        trip = emergency.tripped
+        return {
+            "registered": True,
+            "input_results": results,
+            "tripped": trip is not None,
+            "cause": None if trip is None else trip.cause.value,
+            "flushed_actions": None if trip is None else trip.flushed_actions,
+            "cleanup_errors": [] if trip is None else list(trip.cleanup_errors),
+            "passed": trip is not None and not trip.cleanup_errors,
+        }
+    finally:
+        listener.close()
+        executor.release_all()
+
+
+def run_fixture_qualification(
+    *,
+    title_pattern: str,
+    duration_seconds: float,
+    target_fps: float,
+    backend_preference: str,
+    episode_root: Path,
+    report_path: Path,
+    allow_physical_input: bool,
+    exercise_focus_loss: bool,
+    exercise_emergency_hotkey: bool,
+) -> Path:
+    if not allow_physical_input:
+        raise ContractViolation("fixture qualification requires --allow-physical-input")
+    if not 1 <= target_fps <= 120 or not math.isfinite(target_fps):
+        raise ContractViolation("fixture qualification target FPS must be in [1, 120]")
+    require_safe_environment(
+        EnvironmentSafetyManifest(EnvironmentClass.DEVELOPER_OWNED, True, False, False)
+    )
+    pattern = re.compile(title_pattern)
+    windows = Win32WindowBackend()
+    matches = tuple(item for item in windows.discover() if pattern.fullmatch(item.title))
+    if len(matches) != 1:
+        raise ContractViolation(
+            f"fixture qualification requires exactly one window; found {len(matches)}"
+        )
+    target = matches[0]
+    if not _activate(windows, target.identity.hwnd):
+        raise ContractViolation("fixture window could not become foreground")
+
+    registry = _capture_registry(backend_preference, windows)
+    candidates = registry.candidates(target.identity)
+    backend: CaptureBackend = registry.start_best(target.identity)
+    clock = PerfCounterClock()
+    started = clock.now()
+    enabled = AgentEnableState(True)
+    leases = ControlLeaseManager(clock)
+    input_backend = SendInputBackend()
+    guard = FocusGuard(windows, Win32IntegrityProvider(), leases, enabled)
+    executor = InputExecutor(clock, input_backend, guard)
+    scheduler = ActionScheduler(clock, executor)
+    shutdown = SafetyShutdown(clock, leases, scheduler, executor, enabled)
+    emergency = EmergencyStop(shutdown)
+    actions, success_checks = _build_fixture_actions(started, target, duration_seconds)
+    last_expiry = max(action.lifetime.expires_at.value_ns for action in actions)
+    lease = leases.grant(
+        ControlOwner.FAST_POLICY,
+        ControlMode.PLAY_3D,
+        last_expiry - started.value_ns + 5_000_000_000,
+        confidence=1.0,
+        reason="developer-owned fixture qualification",
+    )
+    proposal = ActionProposal(
+        uuid.uuid4().hex,
+        "fixture-qualification",
+        lease.owner,
+        lease.mode,
+        lease.lease_id,
+        lease.generation,
+        ActionLifetime(started, actions[0].lifetime.effective_from, UGATime(last_expiry)),
+        actions,
+        "fixture-observation-0001",
+        1.0,
+    )
+    decision = ActionArbiter(clock, leases).decide(proposal)
+    scheduled = scheduler.schedule(decision, target.identity, lease)
+    if not decision.accepted or scheduled != len(actions):
+        raise ContractViolation("fixture action proposal was not fully scheduled")
+
+    episode_id = f"fixture-{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:8]}"
+    metadata = EpisodeMetadata(
+        episode_id,
+        "uga-fixture-world",
+        "1.1",
+        (round(target.client_screen_rect.width), round(target.client_screen_rect.height)),
+        backend.backend_id,
+        started.value_ns,
+        "Navigate to the green target and interact",
+        EpisodeResult.IN_PROGRESS,
+        "0.1.0",
+        "fixture-script-v1",
+        False,
+    )
+    writer = EpisodeWriter(episode_root, metadata)
+    writer.attach_video(PyAvVideoRecorder(writer.video_path, fps=round(target_fps)))
+    diagnostics = CaptureDiagnosticsAccumulator(backend.backend_id)
+    writer.record_observation(
+        "fixture-observation-0001",
+        started,
+        {"task": metadata.task, "source": "captured-screen"},
+    )
+    for action in actions:
+        writer.record_action(
+            action,
+            _provenance(action, lease.lease_id, "fixture-observation-0001"),
+        )
+    writer.record_event(
+        "capture-selected",
+        clock.now(),
+        {"backend_id": backend.backend_id, "target_hwnd": target.identity.hwnd},
+    )
+
+    interval_ns = round(1_000_000_000 / target_fps)
+    frame_count = 0
+    initial_frame: Frame | None = None
+    final_frame: Frame | None = None
+    success_seen = False
+    pending_checks = list(success_checks)
+    episode_path: Path | None = None
+    capture_ended = started
+    try:
+        while True:
+            loop_before = clock.now()
+            scheduler.tick()
+            capture_before = clock.now()
+            frame = backend.capture()
+            capture_after = clock.now()
+            diagnostics.add(
+                frame,
+                (capture_after.value_ns - capture_before.value_ns) / 1_000_000,
+            )
+            writer.record_frame(frame)
+            frame_count += 1
+            if initial_frame is None:
+                initial_frame = frame
+            final_frame = frame
+            while pending_checks and frame.capture_timestamp.value_ns >= pending_checks[0]:
+                success_seen = success_seen or _success_pixel_count(frame) >= 20
+                pending_checks.pop(0)
+            elapsed_seconds = (capture_after.value_ns - started.value_ns) / 1_000_000_000
+            if elapsed_seconds >= duration_seconds:
+                capture_ended = capture_after
+                success_seen = success_seen or _success_pixel_count(frame) >= 20
+                break
+            remaining_ns = interval_ns - (capture_after.value_ns - loop_before.value_ns)
+            if remaining_ns > 0:
+                time.sleep(remaining_ns / 1_000_000_000)
+
+        if exercise_focus_loss:
+            with _owned_focus_sink(windows) as focus_sink:
+                focus_report = _exercise_focus_loss(
+                    windows,
+                    focus_sink,
+                    target,
+                    executor,
+                    lease,
+                )
+        else:
+            focus_report = {"exercised": False, "reason": "not requested"}
+        if not _activate(windows, target.identity.hwnd):
+            raise ContractViolation("fixture focus could not be restored before emergency test")
+        emergency_report = (
+            _exercise_emergency_hotkey(target, executor, lease, emergency)
+            if exercise_emergency_hotkey
+            else {"registered": False, "tripped": False, "reason": "not requested"}
+        )
+        stats = scheduler.stats()
+        ended = clock.now()
+        diagnostic_report = diagnostics.summarize(
+            elapsed_seconds=(capture_ended.value_ns - started.value_ns) / 1_000_000_000
+        )
+        writer.record_event(
+            "safety-checks-complete",
+            ended,
+            {"focus": focus_report, "emergency": emergency_report},
+        )
+        writer.set_metrics(
+            {
+                "capture_frames": frame_count,
+                "capture_effective_fps": diagnostic_report.effective_fps,
+                "scheduled_actions": scheduled,
+                "executed_actions": stats.executed,
+                "success_visible": int(success_seen),
+            }
+        )
+        episode_result = (
+            EpisodeResult.SUCCESS
+            if success_seen and stats.executed == scheduled
+            else EpisodeResult.FAILURE
+        )
+        episode_path = writer.finalize(episode_result, ended)
+    except BaseException:
+        with contextlib.suppress(Exception):
+            writer.finalize(EpisodeResult.ABORTED, clock.now())
+        raise
+    finally:
+        scheduler.flush()
+        executor.release_all()
+        leases.revoke_all()
+        enabled.set(False)
+        backend.stop()
+
+    assert episode_path is not None
+    assert initial_frame is not None and final_frame is not None
+    initial_visual = analyze_fixture_frame(initial_frame)
+    final_visual = analyze_fixture_frame(final_frame)
+    success_seen = success_seen or final_visual.success_visible
+    replay = ReplayEngine(episode_path).validation()
+    quality = DatasetValidator().validate(episode_path)
+    stats = scheduler.stats()
+    focus_passed = not exercise_focus_loss or bool(focus_report.get("passed"))
+    emergency_passed = not exercise_emergency_hotkey or bool(emergency_report.get("passed"))
+    passed = (
+        success_seen
+        and stats.executed == scheduled
+        and diagnostic_report.timestamp_regressions == 0
+        and replay.action_count == scheduled
+        and quality.status.value == "accepted"
+        and focus_passed
+        and emergency_passed
+    )
+    report = {
+        "schema": "uga.fixture_qualification",
+        "schema_version": "1.1",
+        "passed": passed,
+        "target": {
+            "hwnd": target.identity.hwnd,
+            "pid": target.identity.pid,
+            "title": target.title,
+            "dpi": target.dpi,
+        },
+        "capture_candidates": [
+            {
+                "backend_id": item.backend.backend_id,
+                "available": item.probe.available,
+                "score": item.probe.score,
+                "reason": item.probe.reason,
+            }
+            for item in candidates
+        ],
+        "capture": asdict(diagnostic_report),
+        "control": {
+            "proposal_accepted": decision.accepted,
+            "scheduled": scheduled,
+            "scheduler": asdict(stats),
+            "focus_loss": focus_report,
+            "emergency_hotkey": emergency_report,
+        },
+        "visual": {
+            "initial": None if initial_visual is None else asdict(initial_visual),
+            "final": None if final_visual is None else asdict(final_visual),
+            "success_seen": success_seen,
+        },
+        "recorder": {
+            "episode_path": str(episode_path),
+            "replay": asdict(replay),
+            "quality": {
+                "status": quality.status.value,
+                "quality_score": quality.quality_score,
+                "frame_count": quality.frame_count,
+                "action_count": quality.action_count,
+                "findings": [
+                    {
+                        "code": item.code,
+                        "severity": int(item.severity),
+                        "detail": item.detail,
+                    }
+                    for item in quality.findings
+                ],
+            },
+        },
+    }
+    report_path = report_path.resolve()
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+    if not passed:
+        raise ContractViolation(f"fixture qualification failed; inspect {report_path}")
+    return report_path
