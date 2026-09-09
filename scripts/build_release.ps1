@@ -63,7 +63,7 @@ try {
     Copy-Item -LiteralPath (Join-Path $projectRoot "configs") -Destination $bundleRoot -Recurse
     Copy-Item -LiteralPath (Join-Path $projectRoot "docs") -Destination $bundleRoot -Recurse
     Copy-Item -LiteralPath (Join-Path $projectRoot "third_party") -Destination $bundleRoot -Recurse
-    foreach ($name in @("README.md", "ARCHITECTURE.md", "SECURITY.md", "RELEASE_CHECKLIST.md")) {
+    foreach ($name in @("LICENSE", "README.md", "ARCHITECTURE.md", "SECURITY.md", "RELEASE_CHECKLIST.md")) {
         Copy-Item -LiteralPath (Join-Path $projectRoot $name) -Destination $bundleRoot
     }
     Copy-Item -LiteralPath (Join-Path $projectRoot "scripts\run_bundle.ps1") `

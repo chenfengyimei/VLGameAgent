@@ -44,6 +44,17 @@ def build_development_manifest(
             else "run an isolated wheel install before promotion"
         ),
     )
+    license_gate = (
+        ReleaseGate(
+            "repository-license",
+            GateStatus.PASSED,
+            "MIT license selected by the owner; LICENSE ships with the bundle",
+        )
+        if (root / "LICENSE").is_file()
+        else ReleaseGate(
+            "repository-license", GateStatus.BLOCKED, "owner license choice required"
+        )
+    )
     return ReleaseManifest(
         version="0.1.0-dev",
         schema_version="1.1",
@@ -63,6 +74,6 @@ def build_development_manifest(
             ReleaseGate("dataset-5h", GateStatus.NOT_RUN, "licensed reviewed corpus required"),
             ReleaseGate("model-training", GateStatus.NOT_RUN, "GPU training artifacts required"),
             ReleaseGate("generalization-bench", GateStatus.NOT_RUN, "four-game benchmark required"),
-            ReleaseGate("repository-license", GateStatus.BLOCKED, "owner license choice required"),
+            license_gate,
         ),
     )

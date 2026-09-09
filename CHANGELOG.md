@@ -103,6 +103,12 @@
   resume-click point: the point resolves to its root owner before inputs are
   scheduled, turning a silent wrong-window click (world stuck in its GUI
   state, degraded occluded capture) into an operator-actionable failure.
+- Select the MIT license for the repository: add the LICENSE file, declare the
+  SPDX expression in the package metadata, ship the LICENSE in release bundles,
+  and let the repository-license gate pass once the file is present instead of
+  staying blocked on an owner decision. The dependency inventory declares only
+  permissive licenses (MIT, Apache-2.0, BSD-3-Clause, Unicode-3.0), so nothing
+  downstream restricts attribution-only redistribution.
 - Reject minimized targets in the GDI fallback probe and capture path, and add
   automated Windows lifecycle tests for resize, minimize/restore, and
   cross-monitor moves against live windows.

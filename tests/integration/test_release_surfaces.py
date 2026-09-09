@@ -382,6 +382,29 @@ class ReleaseSurfaceTests(unittest.TestCase):
             with self.assertRaisesRegex(ContractViolation, "digest mismatch"):
                 loaded.verify_artifacts(root)
 
+    def test_development_manifest_license_gate_tracks_license_file(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "native").mkdir()
+            (root / "package.whl").write_bytes(b"wheel")
+            (root / "package.tar.gz").write_bytes(b"source")
+            (root / "native" / "uga_capture.dll").write_bytes(b"native")
+            (root / "third-party-inventory.json").write_text("{}", encoding="utf-8")
+            (root / "run_uga.ps1").write_text("Write-Output uga", encoding="utf-8")
+
+            def license_gate(manifest: ReleaseManifest) -> ReleaseGate:
+                return cast(
+                    ReleaseGate,
+                    next(gate for gate in manifest.gates if gate.gate_id == "repository-license"),
+                )
+
+            blocked = build_development_manifest(root, source_revision="a" * 40)
+            self.assertEqual(license_gate(blocked).status, GateStatus.BLOCKED)
+            (root / "LICENSE").write_text("MIT License", encoding="utf-8")
+            licensed = build_development_manifest(root, source_revision="a" * 40)
+            self.assertEqual(license_gate(licensed).status, GateStatus.PASSED)
+            self.assertIn("LICENSE", dict(licensed.artifacts))
+
     def test_license_gate_requires_license_artifact(self) -> None:
         with self.assertRaisesRegex(ContractViolation, "LICENSE"):
             QualificationRecord(
