@@ -124,7 +124,9 @@ class OpenAICompatibleVisionClient:
                 }
             ],
             "temperature": 0.0,
-            "max_tokens": 200,
+            # Thinking-style models (e.g. GLM-4.xV) spend tokens on reasoning
+            # before the answer; a small budget yields an empty content field.
+            "max_tokens": 4096,
         }
         headers = {"Content-Type": "application/json"}
         if self._api_key:
@@ -143,9 +145,16 @@ class OpenAICompatibleVisionClient:
         except (urllib.error.URLError, TimeoutError, OSError, ValueError) as exc:
             raise BackendUnavailableError(f"vision endpoint unreachable: {exc}") from exc
         try:
-            content = body["choices"][0]["message"]["content"]
+            message = body["choices"][0]["message"]
         except (KeyError, IndexError, TypeError) as exc:
             raise BackendUnavailableError("vision reply is missing message content") from exc
+        if not isinstance(message, dict):
+            raise BackendUnavailableError("vision reply message is malformed")
+        content = message.get("content")
+        if not isinstance(content, str) or not content.strip():
+            # Some providers park everything in reasoning_content when the
+            # answer never fits; use it as a last resort so the loop can retry.
+            content = message.get("reasoning_content")
         if not isinstance(content, str) or not content.strip():
             raise BackendUnavailableError("vision reply content is empty")
         return content
