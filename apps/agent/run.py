@@ -32,6 +32,7 @@ from uga.control.lease_manager import ControlLeaseManager
 from uga.control.scheduler import ActionScheduler
 from uga.control.windows_input import SendInputBackend
 from uga.core.agent_loop import RealtimeAgentLoop
+from uga.core.errors import CaptureTimeoutError
 from uga.core.events import EventBus
 from uga.environment.generic import GenericEnvironment
 from uga.environment.profile import GameProfile, load_game_profile
@@ -49,6 +50,7 @@ from uga.windows.backend import Win32WindowBackend, WindowSnapshot
 from uga.windows.integrity import Win32IntegrityProvider
 
 _TAP_FRACTION_DEFAULT = (0.5, 0.79)
+_CAPTURE_STALL_BUDGET_S = 10.0
 
 
 def _capture_backend(
@@ -88,6 +90,22 @@ async def _run(args: argparse.Namespace) -> int:
 
     registry = _capture_backend(profile, windows)
     backend = registry.start_best(target.identity)
+    # Frame-delivery backends only emit when the target presents content, and
+    # the activation transition just performed can stall composition briefly;
+    # prime the first frame within a bounded budget while no lease is held and
+    # no input is scheduled. A genuine capture outage still fails loudly.
+    primed = False
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline:
+        try:
+            backend.capture()
+            primed = True
+            break
+        except CaptureTimeoutError:
+            continue
+    if not primed:
+        backend.stop()
+        raise SystemExit("target produced no capture frames within 5s of activation")
     clock = PerfCounterClock()
     events = EventBus(clock)
     leases = ControlLeaseManager(clock)
@@ -141,8 +159,19 @@ async def _run(args: argparse.Namespace) -> int:
 
     class CaptureSource:
         async def capture_once(self) -> SequencedFrame:
-            frame = await asyncio.to_thread(backend.capture)
-            return frames.publish(frame)
+            # Present-driven backends only deliver frames while the target
+            # renders; emulator menus, dialogs, and transitions can hold the
+            # surface still for seconds. Wait through those gaps within a
+            # bounded budget before failing closed — no observation means no
+            # new policy output, so waiting cannot act blind.
+            deadline = time.monotonic() + _CAPTURE_STALL_BUDGET_S
+            while True:
+                try:
+                    frame = await asyncio.to_thread(backend.capture)
+                    return frames.publish(frame)
+                except CaptureTimeoutError:
+                    if time.monotonic() >= deadline:
+                        raise
 
     loop = RealtimeAgentLoop(
         clock=clock,
