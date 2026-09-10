@@ -50,19 +50,29 @@ class PyAvVideoRecorder:
         if frame.stride_bytes < row_bytes or source.nbytes < frame.stride_bytes * frame.height:
             raise ContractViolation("video frame buffer is smaller than its declared stride")
         if self._container is None:
+            # yuv420p chroma subsampling requires even dimensions, but windowed
+            # captures (e.g. WGC borders around an emulator client) produce
+            # arbitrary sizes; crop at most one row/column to stay encodable.
+            encode_width = frame.width & ~1
+            encode_height = frame.height & ~1
+            if encode_width < 2 or encode_height < 2:
+                raise ContractViolation("video frame is smaller than the 2x2 encode minimum")
             self._container = self._av.open(str(self._path), mode="w")
             self._stream = self._container.add_stream(self._codec, rate=self._fps)
-            self._stream.width = frame.width
-            self._stream.height = frame.height
+            self._stream.width = encode_width
+            self._stream.height = encode_height
             self._stream.pix_fmt = "yuv420p"
         assert self._stream is not None
-        if frame.width != self._stream.width or frame.height != self._stream.height:
+        encode_width = frame.width & ~1
+        encode_height = frame.height & ~1
+        if encode_width != self._stream.width or encode_height != self._stream.height:
             raise ContractViolation("video resolution changed within one MP4 segment")
         pixel_format = "bgra" if frame.pixel_format == PixelFormat.BGRA8 else "rgba"
-        video_frame = self._av.VideoFrame(frame.width, frame.height, pixel_format)
+        video_frame = self._av.VideoFrame(encode_width, encode_height, pixel_format)
         plane = video_frame.planes[0]
         packed = bytearray(plane.buffer_size)
-        for row in range(frame.height):
+        row_bytes = encode_width * 4
+        for row in range(encode_height):
             source_start = row * frame.stride_bytes
             target_start = row * plane.line_size
             packed[target_start : target_start + row_bytes] = source[

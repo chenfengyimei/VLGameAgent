@@ -1,0 +1,24 @@
+game:
+  id: mumu-xianyu
+  display_name: 仙遇 (MuMu 模拟器)
+process:
+  executable: [MuMuNxDevice.exe, MuMuPlayer.exe]
+window:
+  preferred_capture: windows_graphics_capture
+  title_pattern: '^MuMu安卓设备(-\d+)?$'
+camera:
+  type: absolute_pointer
+controls:
+  interact: {kind: mouse_button, code: "left", confirmed: true}
+  menu: {kind: virtual_key, code: 27, confirmed: true}
+capabilities:
+  realtime_3d: true
+  gui: true
+  combat: false
+  gamepad: false
+safety:
+  environment_class: developer_owned
+  automation_allowed: true
+  multiplayer: false
+  anti_cheat_present: false
+capability_level: 3

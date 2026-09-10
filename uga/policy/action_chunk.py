@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from enum import IntFlag
 from typing import ClassVar
@@ -51,6 +52,8 @@ class ActionChunk(VersionedMixin):
     buttons: tuple[int, ...]
     confidence: float
     policy_version: str
+    pointer_x: float | None = None
+    pointer_y: float | None = None
 
     def __post_init__(self) -> None:
         self.validate()
@@ -82,6 +85,12 @@ class ActionChunk(VersionedMixin):
             not 0 <= mask <= 0xFFFF or mask & ~KNOWN_ACTION_BUTTON_MASK for mask in self.buttons
         ):
             raise ContractViolation("action chunk contains undefined canonical button bits")
+        if (self.pointer_x is None) != (self.pointer_y is None):
+            raise ContractViolation("action chunk pointer coordinates must be set together")
+        if self.pointer_x is not None and (
+            not math.isfinite(self.pointer_x) or self.pointer_x < 0.0
+        ):
+            raise ContractViolation("action chunk pointer coordinates must be non-negative")
 
     @property
     def horizon(self) -> int:

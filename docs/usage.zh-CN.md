@@ -180,6 +180,52 @@ uga-dashboard --serve --host 127.0.0.1 --port 8765           # 本地服务（�
 任何时刻按 **`Ctrl+Shift+F12`**：立即吊销全部控制租约、清空调度队列、
 释放所有按住的键 —— 看门狗在心跳停滞 5 秒时也会自动触发同样的 fail-closed 停机。
 
+### 5.9 实战：MuMu 模拟器（安卓游戏）
+
+安卓模拟器的窗口就是一个普通 Win32 目标：UGA 用捕获后端看它的画面，
+用鼠标点击（经模拟器转成安卓点按）操作其中的游戏。仓库自带「仙遇（MuMu）」的
+档案文件 `configs/games/mumu-xianyu.yaml`，关键字段：
+
+```yaml
+window:
+  preferred_capture: windows_graphics_capture   # 首选 WGC
+  title_pattern: '^MuMu安卓设备(-\d+)?$'         # 只匹配游戏窗口，不匹配管理器
+controls:
+  interact: {kind: mouse_button, code: "left", confirmed: true}  # 点击 = 左键脉冲
+camera:
+  type: absolute_pointer                        # 规范动作携带物理屏幕坐标
+safety:
+  environment_class: developer_owned            # 仅限开发者自有环境
+```
+
+运行端到端智能体循环（发现窗口 → 激活前台 → 捕获 → 观测 → 策略 → 调度注入 → 可选录像）：
+
+```powershell
+$env:UGA_NATIVE_CAPTURE_DLL  = "native\target\release\uga_capture.dll"
+$env:UGA_NATIVE_CAPTURE_SHA256 = (Get-FileHash $env:UGA_NATIVE_CAPTURE_DLL).Hash.ToLower()
+
+uga-agent run --profile configs/games/mumu-xianyu.yaml `
+  --goal "Interact with the target" `
+  --duration-seconds 60 `
+  --record runs/episodes
+```
+
+说明：
+
+- **窗口发现**：标题必须恰好匹配一个窗口（游戏窗 `MuMu安卓设备-1`，
+  而非管理器窗 `MuMu模拟器`），且能成功取得前台，否则直接报错退出。
+- **捕获**：固定原生 DLL 前会自动降级 GDI 兼容回退（MuMu 的 GDI 表面会持续更新，
+  但按档案偏好仍应使用 WGC）。
+- **点击**：`absolute_pointer` 相机 + `mouse_button` 绑定的组合下，规范动作携带
+  物理屏幕坐标，环境层产出「绝对移动 → 按下 → 抬起」三段物理动作；
+  点击点默认为客户区的 50%/79% 处（「开启仙途」按钮），`--tap-delay`（默认 2 秒）
+  指定注入时机。
+- **产出**：结束后打印 `episode: runs/episodes/<episode-id>`，内含 H.264 视频、
+  动作 Parquet、事件日志与校验和，可直接用 `uga-replay` / `uga-dataset` 检查；
+  录制器会自动把 WGC 带边框的奇数尺寸裁剪到偶数再编码。
+- **纪律**：与其他认证运行一致——运行期间请勿操作机器（抢焦点会让点击落点失效）；
+  紧急停止热键 `Ctrl+Shift+F12` 随时可用。
+
 ---
 
 ## 6. 资格认证台账（可选的正式证据链）
@@ -257,6 +303,7 @@ python -m pip install <bundle里的wheel>
 | 命令 | 用途 |
 |---|---|
 | `uga-agent` | 运行时生命周期冒烟 |
+| `uga-agent run --profile <yaml>` | 对真实窗口运行完整智能体循环（如 MuMu 模拟器，见 5.9） |
 | `uga-example-game` | 启动测试世界（4 场景 / `--headless-smoke` / `--focus-sink`） |
 | `uga-capture-probe` | 窗口捕获诊断报告 |
 | `uga-qualify fixture\|corpus\|...` | 资格认证与证据台账 |

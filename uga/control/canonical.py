@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import ClassVar
 
@@ -28,6 +29,8 @@ class CanonicalAction(VersionedMixin):
     confirm: bool = False
     back: bool = False
     custom_slots: tuple[float, ...] = ()
+    pointer_x: float | None = None
+    pointer_y: float | None = None
 
     def __post_init__(self) -> None:
         self.validate()
@@ -39,3 +42,9 @@ class CanonicalAction(VersionedMixin):
         axes = (self.move_x, self.move_y, self.look_x, self.look_y, *self.custom_slots)
         if any(not -1.0 <= axis <= 1.0 for axis in axes):
             raise ContractViolation("canonical axes and custom slots must be in [-1, 1]")
+        if (self.pointer_x is None) != (self.pointer_y is None):
+            raise ContractViolation("canonical pointer coordinates must be set together")
+        if self.pointer_x is not None and (
+            not math.isfinite(self.pointer_x) or self.pointer_x < 0.0
+        ):
+            raise ContractViolation("canonical pointer coordinates must be non-negative")

@@ -4,8 +4,11 @@ from dataclasses import replace
 
 from uga.control.canonical import CanonicalAction
 from uga.control.physical import (
+    AbsolutePointerAction,
     KeyboardAction,
     KeyEncoding,
+    MouseButton,
+    MouseButtonAction,
     PhysicalAction,
     RelativeMouseAction,
 )
@@ -13,6 +16,7 @@ from uga.core.errors import ContractViolation
 from uga.environment.profile import BindingKind, ControlBinding, GameProfile
 from uga.observation.schema import Observation
 from uga.safety.environment_policy import require_safe_environment
+from uga.windows.coordinates import CoordinateSpace
 
 
 class GenericEnvironment:
@@ -58,15 +62,43 @@ class GenericEnvironment:
             "confirm": action.confirm,
             "back": action.back,
         }
+        if action.pointer_x is not None and action.pointer_y is not None:
+            if self._profile.camera_type != "absolute_pointer":
+                raise ContractViolation(
+                    "canonical pointer coordinates require an absolute-pointer camera profile"
+                )
+            result.append(
+                AbsolutePointerAction(
+                    f"{action.action_id}:pointer",
+                    action.lifetime,
+                    round(action.pointer_x),
+                    round(action.pointer_y),
+                    CoordinateSpace.PHYSICAL_SCREEN_PIXEL,
+                )
+            )
         for name, active in pulses.items():
             binding = self._profile.binding(name)
-            if binding is not None and active:
+            if binding is None or not active:
+                continue
+            if binding.kind is BindingKind.MOUSE_BUTTON:
+                if action.pointer_x is None or action.pointer_y is None:
+                    raise ContractViolation(
+                        f"pointer binding {binding.action!r} requires canonical"
+                        " pointer coordinates"
+                    )
                 result.extend(
                     (
-                        self._key_action(action, binding, True, suffix="pulse-down"),
-                        self._key_action(action, binding, False, suffix="pulse-up"),
+                        self._mouse_button_action(action, binding, True),
+                        self._mouse_button_action(action, binding, False),
                     )
                 )
+                continue
+            result.extend(
+                (
+                    self._key_action(action, binding, True, suffix="pulse-down"),
+                    self._key_action(action, binding, False, suffix="pulse-up"),
+                )
+            )
         if action.look_x or action.look_y:
             if self._profile.camera_type != "relative_mouse":
                 raise ContractViolation("generic look axes require a relative-mouse camera profile")
@@ -113,3 +145,22 @@ class GenericEnvironment:
             raise ContractViolation(
                 f"binding {binding.action!r} must be user-confirmed before input adaptation"
             )
+
+    @staticmethod
+    def _mouse_button_action(
+        action: CanonicalAction,
+        binding: ControlBinding,
+        is_down: bool,
+    ) -> MouseButtonAction:
+        GenericEnvironment._require_confirmed(binding)
+        if binding.code != "left":
+            raise ContractViolation(
+                f"pointer binding {binding.action!r} only supports the left button"
+            )
+        event = "down" if is_down else "up"
+        return MouseButtonAction(
+            f"{action.action_id}:{binding.action}:{event}",
+            action.lifetime,
+            MouseButton.LEFT,
+            is_down,
+        )

@@ -57,6 +57,8 @@ def expand_action_chunk(chunk: ActionChunk) -> tuple[CanonicalAction, ...]:
                 menu=bool(buttons & CanonicalButton.MENU),
                 confirm=bool(buttons & CanonicalButton.CONFIRM),
                 back=bool(buttons & CanonicalButton.BACK),
+                pointer_x=chunk.pointer_x,
+                pointer_y=chunk.pointer_y,
             )
         )
     if not actions:

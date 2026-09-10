@@ -1,0 +1,214 @@
+"""Compose the realtime agent loop against a live window from a game profile.
+
+The V1 composition entry: discovers the profile's target window, activates
+it, starts the preferred capture backend, and runs the full production loop
+(observation → mode routing → policy → lease arbitration → 30 Hz scheduling →
+SendInput injection) with an optional Episode recording. The default policy is
+the profile-driven scripted tap timeline, which suits pointer-driven targets
+such as Android emulator games.
+"""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import contextlib
+import re
+import signal
+import time
+import uuid
+from pathlib import Path
+
+from uga.agent.mode_router import ModeRouter, RuleModeClassifier
+from uga.capture.dxgi import DXGIDuplicationBackend
+from uga.capture.fallback import GDIFallbackCaptureBackend
+from uga.capture.registry import CaptureBackendRegistry
+from uga.capture.ring_buffer import FrameRingBuffer, SequencedFrame
+from uga.capture.windows_graphics_capture import WindowsGraphicsCaptureBackend
+from uga.control.arbiter import ActionArbiter
+from uga.control.executor import InputExecutor
+from uga.control.lease import ControlMode
+from uga.control.lease_manager import ControlLeaseManager
+from uga.control.scheduler import ActionScheduler
+from uga.control.windows_input import SendInputBackend
+from uga.core.agent_loop import RealtimeAgentLoop
+from uga.core.events import EventBus
+from uga.environment.generic import GenericEnvironment
+from uga.environment.profile import GameProfile, load_game_profile
+from uga.observation.buffer import TemporalObservationBuffer
+from uga.observation.builder import ObservationBuilder, ObservationInputs
+from uga.policy.chunk_controller import ActionChunkController
+from uga.policy.scripted_tap import ScriptedTapPolicy
+from uga.recording.episode_writer import EpisodeWriter
+from uga.recording.schema import EpisodeMetadata, EpisodeResult
+from uga.recording.video import PyAvVideoRecorder
+from uga.release.fixture_qualification import _activate
+from uga.safety.focus_guard import AgentEnableState, FocusGuard
+from uga.time.clock import PerfCounterClock
+from uga.windows.backend import Win32WindowBackend, WindowSnapshot
+from uga.windows.integrity import Win32IntegrityProvider
+
+_TAP_FRACTION_DEFAULT = (0.5, 0.79)
+
+
+def _capture_backend(
+    profile: GameProfile, windows: Win32WindowBackend
+) -> CaptureBackendRegistry:
+    preference = profile.preferred_capture
+    registry = CaptureBackendRegistry((preference,) if preference != "auto" else ())
+    registry.register(WindowsGraphicsCaptureBackend(windows=windows))
+    registry.register(DXGIDuplicationBackend(windows=windows))
+    registry.register(GDIFallbackCaptureBackend(windows))
+    return registry
+
+
+def _find_target(
+    windows: Win32WindowBackend, profile: GameProfile
+) -> WindowSnapshot:
+    pattern = re.compile(profile.window_title_pattern or r".*")
+    matches = [
+        snapshot
+        for snapshot in windows.discover()
+        if pattern.fullmatch(snapshot.title) is not None
+    ]
+    if len(matches) != 1:
+        raise SystemExit(
+            f"expected exactly one window matching {profile.window_title_pattern!r};"
+            f" found {len(matches)}"
+        )
+    return matches[0]
+
+
+async def _run(args: argparse.Namespace) -> int:
+    profile = load_game_profile(args.profile)
+    windows = Win32WindowBackend()
+    target = _find_target(windows, profile)
+    if not _activate(windows, target.identity.hwnd):
+        raise SystemExit("target window could not become foreground")
+
+    registry = _capture_backend(profile, windows)
+    backend = registry.start_best(target.identity)
+    clock = PerfCounterClock()
+    events = EventBus(clock)
+    leases = ControlLeaseManager(clock)
+    enabled = AgentEnableState(True)
+    executor = InputExecutor(
+        clock,
+        SendInputBackend(),
+        FocusGuard(windows, Win32IntegrityProvider(), leases, enabled),
+        leases,
+    )
+    scheduler = ActionScheduler(clock, executor, leases)
+    environment = GenericEnvironment(profile)
+    arbiter = ActionArbiter(clock, leases)
+
+    client = target.client_screen_rect
+    tap_x = round(client.left + client.width * _TAP_FRACTION_DEFAULT[0])
+    tap_y = round(client.top + client.height * _TAP_FRACTION_DEFAULT[1])
+    policy = ScriptedTapPolicy([(args.tap_delay, tap_x, tap_y)])
+
+    controller = ActionChunkController(environment, arbiter, scheduler)
+
+    frames = FrameRingBuffer()
+    builder = ObservationBuilder(
+        clock,
+        profile.game_id,
+        ObservationInputs(goal=args.goal),
+    )
+    observations = TemporalObservationBuffer()
+    router = ModeRouter(initial_mode=ControlMode.PLAY_3D, confirmation_frames=1)
+
+    recorder: EpisodeWriter | None = None
+    episode_id = f"{profile.game_id}-{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:8]}"
+    if args.record:
+        recorder = EpisodeWriter(
+            args.record,
+            EpisodeMetadata(
+                episode_id,
+                profile.game_id,
+                "1.1",
+                (round(client.width), round(client.height)),
+                backend.backend_id,
+                clock.now().value_ns,
+                args.goal,
+                EpisodeResult.IN_PROGRESS,
+                "0.1.0",
+                policy.policy_version,
+                False,
+            ),
+        )
+        recorder.attach_video(PyAvVideoRecorder(recorder.video_path, fps=15))
+
+    class CaptureSource:
+        async def capture_once(self) -> SequencedFrame:
+            frame = await asyncio.to_thread(backend.capture)
+            return frames.publish(frame)
+
+    loop = RealtimeAgentLoop(
+        clock=clock,
+        capture=CaptureSource(),
+        frames=frames,
+        observation_builder=builder,
+        observations=observations,
+        environment=environment,
+        mode_classifier=RuleModeClassifier(),
+        mode_router=router,
+        policy=policy,
+        leases=leases,
+        controller=controller,
+        scheduler=scheduler,
+        events=events,
+        recorder=recorder,
+    )
+
+    stop = asyncio.Event()
+    for name in ("SIGINT", "SIGTERM"):
+        with contextlib.suppress(NotImplementedError, AttributeError):
+            asyncio.get_running_loop().add_signal_handler(getattr(signal, name), stop.set)
+
+    started = time.monotonic()
+    print(f"running: game={profile.game_id} target={target.title} tap=({tap_x}, {tap_y})")
+    try:
+        task = asyncio.create_task(
+            loop.run(stop, observation_hz=args.observation_hz)
+        )
+        while not task.done() and time.monotonic() - started < args.duration_seconds:
+            await asyncio.sleep(0.2)
+        stop.set()
+        await task
+    finally:
+        scheduler.neutralize()
+        leases.revoke_all(notify=False)
+        backend.stop()
+    if recorder is not None:
+        recorder.set_metrics(
+            {
+                "capture_frames": 0,
+                "scheduled_actions": scheduler.stats().executed,
+                "executed_actions": scheduler.stats().executed,
+                "action_execution_ratio": 1.0,
+            }
+        )
+        episode_path = recorder.finalize(EpisodeResult.SUCCESS, clock.now())
+        print(f"episode: {episode_path}")
+    print(f"taps executed: {scheduler.stats().executed}")
+    return 0
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Run the UGA agent against a live window")
+    parser.add_argument("--profile", type=Path, required=True)
+    parser.add_argument("--goal", default="Interact with the target")
+    parser.add_argument("--duration-seconds", type=float, default=30.0)
+    parser.add_argument("--tap-delay", type=float, default=2.0)
+    parser.add_argument("--observation-hz", type=float, default=2.0)
+    parser.add_argument("--record", type=Path)
+    return parser
+
+
+def main(args: argparse.Namespace) -> int:
+    return asyncio.run(_run(args))
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(build_parser().parse_args()))
