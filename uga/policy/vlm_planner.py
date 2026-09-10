@@ -296,14 +296,16 @@ class FrameHistorySampler:
         return [frame for _, frame in picks[:max_frames]]
 
 
-def parse_planner_reply(reply: str) -> tuple[str, float | None, float | None, str | None]:
+def parse_planner_reply(
+    reply: str,
+) -> tuple[str, float | None, float | None, str | None, str | None]:
     """Parse a single-action reply (compatibility wrapper over the sequence)."""
     return parse_planner_sequence(reply)[0]
 
 
 def parse_planner_sequence(
     reply: str,
-) -> list[tuple[str, float | None, float | None, str | None]]:
+) -> list[tuple[str, float | None, float | None, str | None, str | None]]:
     """Parse a model reply into one or more actions (oldest first).
 
     Accepts a single action object or an ``actions`` array (up to
@@ -350,7 +352,7 @@ def parse_planner_sequence(
 
 def _decode_sequence(
     candidate: str,
-) -> list[tuple[str, float | None, float | None, str | None]]:
+) -> list[tuple[str, float | None, float | None, str | None, str | None]]:
     payload = json.loads(candidate)
     if not isinstance(payload, dict):
         raise PlannerReplyError("vision reply JSON is not an object")
@@ -361,7 +363,7 @@ def _decode_sequence(
         if len(steps) > MAX_ACTION_SEQUENCE:
             # Bounded chunk: keep the first steps, drop the overflow.
             steps = steps[:MAX_ACTION_SEQUENCE]
-        sequence: list[tuple[str, float | None, float | None, str | None]] = []
+        sequence: list[tuple[str, float | None, float | None, str | None, str | None]] = []
         for step in steps:
             if not isinstance(step, dict):
                 raise PlannerReplyError("vision reply action steps must be objects")
@@ -372,12 +374,14 @@ def _decode_sequence(
 
 def _decode_payload(
     payload: dict[str, Any],
-) -> tuple[str, float | None, float | None, str | None]:
+) -> tuple[str, float | None, float | None, str | None, str | None]:
     action = payload.get("action")
+    step_raw = payload.get("step")
+    step = str(step_raw) if isinstance(step_raw, str) and step_raw.strip() else None
     if action == "wait":
         quest = payload.get("quest")
         reported = str(quest) if isinstance(quest, str) and quest.strip() else None
-        return "wait", None, None, reported
+        return "wait", None, None, reported, step
     if action != "tap":
         raise PlannerReplyError(f"vision reply has unknown action: {action!r}")
     try:
@@ -389,7 +393,7 @@ def _decode_payload(
         raise PlannerReplyError("vision tap coordinates must be fractions within [0, 1]")
     quest = payload.get("quest")
     reported = str(quest) if isinstance(quest, str) and quest.strip() else None
-    return "tap", x, y, reported
+    return "tap", x, y, reported, step
 
 
 def build_instruction(
@@ -398,6 +402,7 @@ def build_instruction(
     quest: str | None,
     screen_changed: bool | None,
     stuck_count: int = 0,
+    quest_step: str | None = None,
 ) -> str:
     """Compose the decision prompt; coordinates are always client fractions."""
     history = (
@@ -409,6 +414,11 @@ def build_instruction(
         f"当前主线任务：{quest}（记住这个任务；完成它后退出当前界面，"
         "从左上角任务追踪面板读取新的任务文字并放进 quest 字段）。\n"
         if quest
+        else ""
+    )
+    step_line = (
+        f"当前任务步骤：{quest_step}（完成后更新 step 字段为下一步）。\n"
+        if quest_step
         else ""
     )
     changed_line = (
@@ -427,6 +437,7 @@ def build_instruction(
         "（最后一张是当前画面，其余是之前几秒的历史画面，用于判断画面变化趋势）。\n"
         f"当前任务目标：{goal}。\n"
         f"{quest_line}"
+        f"{step_line}"
         f"{history}"
         f"{changed_line}"
         f"{stuck_line}"
@@ -439,6 +450,7 @@ def build_instruction(
         f'{MAX_ACTION_SEQUENCE} 步，每步之间画面会自动等待变化：\n'
         '{"actions":[{"action":"tap","x":0.5,"y":0.6},{"action":"tap","x":0.5,"y":0.7}]}\n'
         '可选字段 quest：把你在画面上看到的主线任务文字写进该字段（对象或步骤均可带）：\n'
+        '可选字段 step：任务进行到哪一步时写当前步骤（如"打开灵宠界面"）：\n'
         '{"action":"tap","x":0.2,"y":0.3,"quest":"与桃夭对话"}\n'
         '或画面在加载、无合适目标时输出：{"action":"wait"}\n'
         "规则：坐标必须在 0~1 之间；优先点击文字与任务目标相关的按钮；"
@@ -495,6 +507,7 @@ class VlmPlannerPolicy:
         self._last_action: str | None = None
         # --- v2 state: quest memory + anti-stuck --------------------------
         self._quest: str | None = None
+        self._quest_step: str | None = None
         self._last_action_changed: bool | None = None
         self._stuck_taps = 0
         self._last_tap_point: tuple[int, int] | None = None
@@ -503,7 +516,7 @@ class VlmPlannerPolicy:
         self._last_decision_digest: bytes | None = None
         self._stale_discards = 0
         self._pending_actions: deque[
-            tuple[str, float | None, float | None, str | None]
+            tuple[str, float | None, float | None, str | None, str | None]
         ] = deque()
         self._static_holds = 0
 
@@ -617,6 +630,7 @@ class VlmPlannerPolicy:
                 self._quest,
                 self._last_action_changed,
                 self._stuck_taps,
+                self._quest_step,
             )
             reply = self._client.decide(images=images, instruction=instruction)
             sequence = parse_planner_sequence(reply)
@@ -658,18 +672,21 @@ class VlmPlannerPolicy:
         self,
         context: PolicyContext,
         decision_frame: Frame,
-        step: tuple[str, float | None, float | None, str | None],
+        step: tuple[str, float | None, float | None, str | None, str | None],
         *,
         queued_reply: bool = False,
         rect: Rect | None = None,
     ) -> FastPolicyOutput:
         if rect is None:
             rect = self._client_rect()
-        action, x, y, quest = step
+        action, x, y, quest, reported_step = step
         if quest:
             if quest != self._quest:
                 print(f"[vlm] quest updated: {quest}", flush=True)
             self._quest = quest
+        if reported_step and reported_step != self._quest_step:
+            print(f"[vlm] quest step: {reported_step}", flush=True)
+            self._quest_step = reported_step
         if queued_reply:
             # Queued steps replay on later frames; the decision interval was
             # already advanced when the sequence was parsed.

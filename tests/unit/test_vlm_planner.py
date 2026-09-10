@@ -102,21 +102,21 @@ class EncodeFramePngTests(unittest.TestCase):
 
 class ParsePlannerReplyTests(unittest.TestCase):
     def test_tap_reply(self) -> None:
-        action, x, y, quest = parse_planner_reply('{"action":"tap","x":0.59,"y":0.64}')
+        action, x, y, quest, step = parse_planner_reply('{"action":"tap","x":0.59,"y":0.64}')
 
-        self.assertEqual((action, x, y, quest), ("tap", 0.59, 0.64, None))
+        self.assertEqual((action, x, y, quest, step), ("tap", 0.59, 0.64, None, None))
 
     def test_wait_reply(self) -> None:
         self.assertEqual(
-            parse_planner_reply('{"action":"wait"}'), ("wait", None, None, None)
+            parse_planner_reply('{"action":"wait"}'), ("wait", None, None, None, None)
         )
 
     def test_fenced_reply(self) -> None:
-        action, x, y, quest = parse_planner_reply(
+        action, x, y, quest, step = parse_planner_reply(
             '```json\n{"action":"tap","x":0.5,"y":0.5}\n```'
         )
 
-        self.assertEqual((action, x, y, quest), ("tap", 0.5, 0.5, None))
+        self.assertEqual((action, x, y, quest, step), ("tap", 0.5, 0.5, None, None))
 
     def test_garbage_reply_rejected(self) -> None:
         with self.assertRaises(PlannerReplyError):
@@ -141,14 +141,14 @@ class ParsePlannerReplyTests(unittest.TestCase):
             '{"action":"tap","x":0.6,"y":0.7}'
         )
 
-        action, x, y, quest = parse_planner_reply(reply)
+        action, x, y, quest, step = parse_planner_reply(reply)
 
-        self.assertEqual((action, x, y, quest), ("tap", 0.6, 0.7, None))
+        self.assertEqual((action, x, y, quest, step), ("tap", 0.6, 0.7, None, None))
 
     def test_trailing_text_after_json_is_tolerated(self) -> None:
         reply = '画面上有按钮。 {"action":"wait"} 补充说明文字'
 
-        self.assertEqual(parse_planner_reply(reply), ("wait", None, None, None))
+        self.assertEqual(parse_planner_reply(reply), ("wait", None, None, None, None))
 
     def test_reply_with_only_invalid_objects_rejected(self) -> None:
         with self.assertRaises(PlannerReplyError):
@@ -188,11 +188,18 @@ class ParsePlannerReplyTests(unittest.TestCase):
         self.assertEqual(sequence[0][3], "与桃夭对话")
 
     def test_quest_field_is_reported(self) -> None:
-        action, x, y, quest = parse_planner_reply(
+        action, x, y, quest, step = parse_planner_reply(
             '选择捏脸数据。 {"action":"tap","x":0.2,"y":0.3,"quest":"与桃夭对话"}'
         )
 
-        self.assertEqual((action, x, y, quest), ("tap", 0.2, 0.3, "与桃夭对话"))
+        self.assertEqual((action, x, y, quest, step), ("tap", 0.2, 0.3, "与桃夭对话", None))
+
+    def test_step_field_is_reported(self) -> None:
+        action, x, y, quest, step = parse_planner_reply(
+            '灵宠界面。 {"action":"tap","x":0.4,"y":0.5,"step":"打开灵宠界面"}'
+        )
+
+        self.assertEqual((action, x, y, quest, step), ("tap", 0.4, 0.5, None, "打开灵宠界面"))
 
 
 class OpenAICompatibleVisionClientTests(unittest.TestCase):
