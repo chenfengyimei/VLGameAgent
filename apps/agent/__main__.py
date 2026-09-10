@@ -47,9 +47,20 @@ def cli() -> None:
     )
     run_parser.add_argument("--profile", required=True, help="game profile YAML path")
     run_parser.add_argument("--goal", default="Interact with the target")
-    run_parser.add_argument("--duration-seconds", type=float, default=30.0)
+    run_parser.add_argument(
+        "--duration-seconds",
+        type=float,
+        default=30.0,
+        help="0 = run until stopped (Ctrl+C or the Ctrl+Shift+F12 emergency hotkey)",
+    )
     run_parser.add_argument(
         "--tap-delay", type=float, default=2.0, help="seconds before the scripted tap"
+    )
+    run_parser.add_argument(
+        "--tap-interval-seconds",
+        type=float,
+        default=0.0,
+        help="repeat the tap timeline every N seconds (0 = tap once)",
     )
     run_parser.add_argument(
         "--tap-x-fraction",

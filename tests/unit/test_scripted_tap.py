@@ -97,7 +97,6 @@ class ScriptedTapPolicyTests(unittest.TestCase):
         with mock.patch("uga.policy.scripted_tap.time.monotonic", lambda: clock[0]):
             policy = ScriptedTapPolicy([(1.0, 3200, 890)])
             clock[0] = 9.0
-
             output = policy.infer(_context())
 
         self.assertEqual(output.chunk.buttons, (int(ActionButton.INTERACT),))
@@ -114,6 +113,42 @@ class ScriptedTapPolicyTests(unittest.TestCase):
         self.assertEqual(output.chunk.buttons, (0,) * output.chunk.horizon)
         self.assertEqual(output.chunk.pointer_x, 3200.0)
         self.assertEqual(output.chunk.pointer_y, 890.0)
+
+    def test_repeat_interval_rearms_the_timeline(self) -> None:
+        clock = [0.0]
+        with mock.patch("uga.policy.scripted_tap.time.monotonic", lambda: clock[0]):
+            policy = ScriptedTapPolicy([(1.0, 3200, 890)], repeat_interval_s=5.0)
+            clock[0] = 1.2
+            first = policy.infer(_context())
+            self.assertEqual(first.chunk.buttons, (int(ActionButton.INTERACT),))
+
+            clock[0] = 3.0
+            waiting = policy.infer(_context())
+            self.assertEqual(waiting.chunk.buttons, (0,) * waiting.chunk.horizon)
+
+            clock[0] = 6.0  # cycle 2 started at t=5; tap due at 5+1=6
+            second = policy.infer(_context())
+            self.assertEqual(second.chunk.buttons, (int(ActionButton.INTERACT),))
+
+    def test_repeat_skips_fully_missed_cycles_without_bursting(self) -> None:
+        clock = [0.0]
+        with mock.patch("uga.policy.scripted_tap.time.monotonic", lambda: clock[0]):
+            policy = ScriptedTapPolicy([(1.0, 3200, 890)], repeat_interval_s=5.0)
+            clock[0] = 12.0  # cycles at t=5 and t=10 passed unseen
+
+            fired = policy.infer(_context())
+            self.assertEqual(fired.chunk.buttons, (int(ActionButton.INTERACT),))
+
+            settled = policy.infer(_context())
+            self.assertEqual(settled.chunk.buttons, (0,) * settled.chunk.horizon)
+
+    def test_repeat_interval_must_exceed_every_tap_delay(self) -> None:
+        with self.assertRaisesRegex(ValueError, "exceed every tap delay"):
+            ScriptedTapPolicy([(5.0, 3200, 890)], repeat_interval_s=5.0)
+
+    def test_repeat_interval_must_be_positive(self) -> None:
+        with self.assertRaisesRegex(ValueError, "positive"):
+            ScriptedTapPolicy([(1.0, 3200, 890)], repeat_interval_s=-1.0)
 
 
 class AbsolutePointerEnvironmentTests(unittest.TestCase):

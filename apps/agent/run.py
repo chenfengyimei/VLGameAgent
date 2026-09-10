@@ -13,11 +13,13 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
+import os
 import re
 import signal
 import time
 import uuid
 from pathlib import Path
+from types import FrameType
 
 from uga.agent.mode_router import ModeRouter, RuleModeClassifier
 from uga.capture.dxgi import DXGIDuplicationBackend
@@ -44,6 +46,7 @@ from uga.recording.episode_writer import EpisodeWriter
 from uga.recording.schema import EpisodeMetadata, EpisodeResult
 from uga.recording.video import PyAvVideoRecorder
 from uga.release.fixture_qualification import _activate
+from uga.safety.emergency_stop import Win32EmergencyHotkey
 from uga.safety.focus_guard import AgentEnableState, FocusGuard
 from uga.time.clock import PerfCounterClock
 from uga.windows.backend import Win32WindowBackend, WindowSnapshot
@@ -82,6 +85,10 @@ def _find_target(
 
 
 async def _run(args: argparse.Namespace) -> int:
+    if args.duration_seconds < 0:
+        raise SystemExit("--duration-seconds must be >= 0 (0 = run until stopped)")
+    if args.tap_interval_seconds < 0:
+        raise SystemExit("--tap-interval-seconds must be >= 0 (0 = tap once)")
     profile = load_game_profile(args.profile)
     windows = Win32WindowBackend()
     target = _find_target(windows, profile)
@@ -123,7 +130,10 @@ async def _run(args: argparse.Namespace) -> int:
     client = target.client_screen_rect
     tap_x = round(client.left + client.width * args.tap_x_fraction)
     tap_y = round(client.top + client.height * args.tap_y_fraction)
-    policy = ScriptedTapPolicy([(args.tap_delay, tap_x, tap_y)])
+    policy = ScriptedTapPolicy(
+        [(args.tap_delay, tap_x, tap_y)],
+        repeat_interval_s=args.tap_interval_seconds or None,
+    )
 
     controller = ActionChunkController(environment, arbiter, scheduler)
 
@@ -191,24 +201,53 @@ async def _run(args: argparse.Namespace) -> int:
     )
 
     stop = asyncio.Event()
+    loop_ref = asyncio.get_running_loop()
+    stop_state: dict[str, bool] = {"user": False}
+
+    def request_stop() -> None:
+        stop_state["user"] = True
+        print("stop requested (Ctrl+C or Ctrl+Shift+F12) — shutting down", flush=True)
+        with contextlib.suppress(RuntimeError):
+            loop_ref.call_soon_threadsafe(stop.set)
+
     for name in ("SIGINT", "SIGTERM"):
         with contextlib.suppress(NotImplementedError, AttributeError):
-            asyncio.get_running_loop().add_signal_handler(getattr(signal, name), stop.set)
+            loop_ref.add_signal_handler(getattr(signal, name), request_stop)
+
+    def _on_sigint(signum: int, frame: FrameType | None) -> None:
+        del signum, frame
+        request_stop()
+
+    previous_handler = None
+    if os.name == "nt":
+        previous_handler = signal.getsignal(signal.SIGINT)
+        signal.signal(signal.SIGINT, _on_sigint)
+
+    hotkey = Win32EmergencyHotkey(request_stop)
+    hotkey.start()
 
     started = time.monotonic()
     print(f"running: game={profile.game_id} target={target.title} tap=({tap_x}, {tap_y})")
+    task = asyncio.create_task(
+        loop.run(stop, observation_hz=args.observation_hz)
+    )
     try:
-        task = asyncio.create_task(
-            loop.run(stop, observation_hz=args.observation_hz)
-        )
-        while not task.done() and time.monotonic() - started < args.duration_seconds:
+        while not task.done():
+            if 0 < args.duration_seconds <= time.monotonic() - started:
+                break
             await asyncio.sleep(0.2)
-        stop.set()
-        await task
+    except (KeyboardInterrupt, asyncio.CancelledError):
+        stop_state["user"] = True
     finally:
+        stop.set()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
         scheduler.neutralize()
         leases.revoke_all(notify=False)
         backend.stop()
+        hotkey.close()
+        if previous_handler is not None:
+            signal.signal(signal.SIGINT, previous_handler)
     if recorder is not None:
         recorder.set_metrics(
             {
@@ -218,7 +257,8 @@ async def _run(args: argparse.Namespace) -> int:
                 "action_execution_ratio": 1.0,
             }
         )
-        episode_path = recorder.finalize(EpisodeResult.SUCCESS, clock.now())
+        result = EpisodeResult.ABORTED if stop_state["user"] else EpisodeResult.SUCCESS
+        episode_path = recorder.finalize(result, clock.now())
         print(f"episode: {episode_path}")
     print(f"taps executed: {scheduler.stats().executed}")
     return 0
@@ -235,8 +275,19 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run the UGA agent against a live window")
     parser.add_argument("--profile", type=Path, required=True)
     parser.add_argument("--goal", default="Interact with the target")
-    parser.add_argument("--duration-seconds", type=float, default=30.0)
+    parser.add_argument(
+        "--duration-seconds",
+        type=float,
+        default=30.0,
+        help="0 = run until stopped (Ctrl+C or the Ctrl+Shift+F12 emergency hotkey)",
+    )
     parser.add_argument("--tap-delay", type=float, default=2.0)
+    parser.add_argument(
+        "--tap-interval-seconds",
+        type=float,
+        default=0.0,
+        help="repeat the tap timeline every N seconds (0 = tap once)",
+    )
     parser.add_argument(
         "--tap-x-fraction",
         type=_client_fraction,

@@ -221,6 +221,10 @@ uga-agent run --profile configs/games/mumu-xianyu.yaml `
   点击点默认为客户区的 50%/79% 处（「开启仙途」按钮），可用 `--tap-x-fraction`
   / `--tap-y-fraction`（客户区比例坐标，0~1）覆盖到当前界面的任意按钮；
   `--tap-delay`（默认 2 秒）指定注入时机。
+- **持续运行**：`--duration-seconds 0` 表示不限时一直运行，直到按 **`Ctrl+C`** 或
+  全局紧急热键 **`Ctrl+Shift+F12`** 停止；配合 `--tap-interval-seconds N` 让点击
+  时间线每 N 秒循环一次（过期一整个周期的点击会被丢弃以防连发，最新一次过期
+  未满一周期的会补发一次）。用户主动停止的 Episode 会如实以 `aborted` 收尾。
 - **产出**：结束后打印 `episode: runs/episodes/<episode-id>`，内含 H.264 视频、
   动作 Parquet、事件日志与校验和，可直接用 `uga-replay` / `uga-dataset` 检查；
   录制器会自动把 WGC 带边框的奇数尺寸裁剪到偶数再编码。

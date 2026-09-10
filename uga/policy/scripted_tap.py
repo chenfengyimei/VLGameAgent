@@ -25,10 +25,17 @@ class ScriptedTapPolicy:
         taps: list[tuple[float, int, int]],
         *,
         policy_version: str = "scripted-tap-v1",
+        repeat_interval_s: float | None = None,
     ) -> None:
         if not taps:
             raise ValueError("scripted tap policy requires at least one tap")
+        if repeat_interval_s is not None:
+            if repeat_interval_s <= 0.0:
+                raise ValueError("scripted tap repeat interval must be positive")
+            if any(delay >= repeat_interval_s for delay, _, _ in taps):
+                raise ValueError("scripted tap repeat interval must exceed every tap delay")
         self._taps = sorted(taps)
+        self._repeat = repeat_interval_s
         self._policy_version = policy_version
         self._started = time.monotonic()
         self._index = 0
@@ -38,6 +45,13 @@ class ScriptedTapPolicy:
         return self._policy_version
 
     def infer(self, context: PolicyContext) -> FastPolicyOutput:
+        if self._repeat is not None:
+            self._skip_stale_taps()
+            if self._index >= len(self._taps) and time.monotonic() - self._started >= self._repeat:
+                # The previous cycle is exhausted and the next one has begun.
+                self._started += self._repeat
+                self._index = 0
+                self._skip_stale_taps()
         elapsed = time.monotonic() - self._started
         if self._index >= len(self._taps):
             return self._idle_chunk(context, duration=0.5)
@@ -66,6 +80,27 @@ class ScriptedTapPolicy:
             pointer_y=float(tap_y),
         )
         return FastPolicyOutput(chunk, False, None, 30.0, 30.0)
+
+    def _pending_due(self) -> float:
+        """Absolute monotonic time of the next tap that has not fired yet."""
+        assert self._repeat is not None
+        if self._index < len(self._taps):
+            return self._started + self._taps[self._index][0]
+        return self._started + self._repeat + self._taps[0][0]
+
+    def _skip_stale_taps(self) -> None:
+        # A tap overdue by at least one whole interval belongs to a cycle the
+        # agent never saw; dropping it prevents burst-firing stale taps after
+        # a long capture stall. The newest overdue tap still fires once.
+        repeat = self._repeat
+        assert repeat is not None
+        now = time.monotonic()
+        while now - self._pending_due() >= repeat:
+            if self._index < len(self._taps) - 1:
+                self._index += 1
+            else:
+                self._started += repeat
+                self._index = 0
 
     def _idle_chunk(self, context: PolicyContext, duration: float) -> FastPolicyOutput:
         ticks = max(1, int(duration * 30.0))
