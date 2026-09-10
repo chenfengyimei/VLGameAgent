@@ -34,7 +34,7 @@ from uga.control.lease_manager import ControlLeaseManager
 from uga.control.scheduler import ActionScheduler
 from uga.control.windows_input import SendInputBackend
 from uga.core.agent_loop import RealtimeAgentLoop
-from uga.core.errors import CaptureTimeoutError
+from uga.core.errors import BackendUnavailableError, CaptureTimeoutError
 from uga.core.events import EventBus
 from uga.environment.generic import GenericEnvironment
 from uga.environment.profile import GameProfile, load_game_profile
@@ -42,6 +42,7 @@ from uga.observation.buffer import TemporalObservationBuffer
 from uga.observation.builder import ObservationBuilder, ObservationInputs
 from uga.policy.chunk_controller import ActionChunkController
 from uga.policy.scripted_tap import ScriptedTapPolicy
+from uga.policy.vlm_planner import OpenAICompatibleVisionClient, VlmPlannerPolicy
 from uga.recording.episode_writer import EpisodeWriter
 from uga.recording.schema import EpisodeMetadata, EpisodeResult
 from uga.recording.video import PyAvVideoRecorder
@@ -50,6 +51,7 @@ from uga.safety.emergency_stop import Win32EmergencyHotkey
 from uga.safety.focus_guard import AgentEnableState, FocusGuard
 from uga.time.clock import PerfCounterClock
 from uga.windows.backend import Win32WindowBackend, WindowSnapshot
+from uga.windows.coordinates import Rect
 from uga.windows.integrity import Win32IntegrityProvider
 
 _TAP_FRACTION_DEFAULT = (0.5, 0.79)
@@ -89,6 +91,8 @@ async def _run(args: argparse.Namespace) -> int:
         raise SystemExit("--duration-seconds must be >= 0 (0 = run until stopped)")
     if args.tap_interval_seconds < 0:
         raise SystemExit("--tap-interval-seconds must be >= 0 (0 = tap once)")
+    if args.policy == "vlm" and (args.vlm_decision_interval <= 0 or args.vlm_timeout_seconds <= 0):
+        raise SystemExit("vision planner intervals and timeouts must be positive")
     profile = load_game_profile(args.profile)
     windows = Win32WindowBackend()
     target = _find_target(windows, profile)
@@ -130,10 +134,36 @@ async def _run(args: argparse.Namespace) -> int:
     client = target.client_screen_rect
     tap_x = round(client.left + client.width * args.tap_x_fraction)
     tap_y = round(client.top + client.height * args.tap_y_fraction)
-    policy = ScriptedTapPolicy(
-        [(args.tap_delay, tap_x, tap_y)],
-        repeat_interval_s=args.tap_interval_seconds or None,
-    )
+    title_pattern = re.compile(profile.window_title_pattern or r".*")
+
+    def _current_client_rect() -> Rect:
+        matches = [
+            snapshot
+            for snapshot in windows.discover()
+            if title_pattern.fullmatch(snapshot.title) is not None
+        ]
+        if len(matches) != 1:
+            raise BackendUnavailableError("target window is no longer uniquely visible")
+        return matches[0].client_screen_rect
+
+    if args.policy == "vlm":
+        policy: ScriptedTapPolicy | VlmPlannerPolicy = VlmPlannerPolicy(
+            client=OpenAICompatibleVisionClient(
+                base_url=args.vlm_base_url,
+                model=args.vlm_model,
+                api_key=os.environ.get(args.vlm_api_key_env, ""),
+                timeout_s=args.vlm_timeout_seconds,
+            ),
+            frame_source=lambda: frames.snapshot()[-1].frame,
+            client_rect=_current_client_rect,
+            goal=args.goal,
+            decision_interval_s=args.vlm_decision_interval,
+        )
+    else:
+        policy = ScriptedTapPolicy(
+            [(args.tap_delay, tap_x, tap_y)],
+            repeat_interval_s=args.tap_interval_seconds or None,
+        )
 
     controller = ActionChunkController(environment, arbiter, scheduler)
 
@@ -227,7 +257,13 @@ async def _run(args: argparse.Namespace) -> int:
     hotkey.start()
 
     started = time.monotonic()
-    print(f"running: game={profile.game_id} target={target.title} tap=({tap_x}, {tap_y})")
+    if args.policy == "vlm":
+        print(
+            f"running: game={profile.game_id} target={target.title}"
+            f" policy=vlm model={args.vlm_model} goal={args.goal}"
+        )
+    else:
+        print(f"running: game={profile.game_id} target={target.title} tap=({tap_x}, {tap_y})")
     task = asyncio.create_task(
         loop.run(stop, observation_hz=args.observation_hz)
     )
@@ -276,6 +312,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--profile", type=Path, required=True)
     parser.add_argument("--goal", default="Interact with the target")
     parser.add_argument(
+        "--policy",
+        choices=["scripted", "vlm"],
+        default="scripted",
+        help="decision source: a scripted tap timeline or a vision-language planner",
+    )
+    parser.add_argument(
         "--duration-seconds",
         type=float,
         default=30.0,
@@ -302,6 +344,33 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--observation-hz", type=float, default=2.0)
     parser.add_argument("--record", type=Path)
+    parser.add_argument(
+        "--vlm-base-url",
+        default="http://127.0.0.1:1234/v1",
+        help="OpenAI-compatible vision endpoint (LM Studio or any cloud vision API)",
+    )
+    parser.add_argument(
+        "--vlm-model",
+        default="gemma-3-4b-it",
+        help="vision model name exposed at the endpoint",
+    )
+    parser.add_argument(
+        "--vlm-api-key-env",
+        default="UGA_VLM_API_KEY",
+        help="environment variable that holds the vision API key (empty for local servers)",
+    )
+    parser.add_argument(
+        "--vlm-decision-interval",
+        type=float,
+        default=6.0,
+        help="seconds between vision planner decisions",
+    )
+    parser.add_argument(
+        "--vlm-timeout-seconds",
+        type=float,
+        default=30.0,
+        help="vision request timeout",
+    )
     return parser
 
 

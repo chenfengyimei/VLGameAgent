@@ -231,6 +231,38 @@ uga-agent run --profile configs/games/mumu-xianyu.yaml `
 - **纪律**：与其他认证运行一致——运行期间请勿操作机器（抢焦点会让点击落点失效）；
   紧急停止热键 `Ctrl+Shift+F12` 随时可用。
 
+### 5.10 全自动识图模式（VLM 规划器）
+
+以上模式点击坐标来自外部；本模式让项目**自己看画面、自己决定点哪**——闭环：
+截帧 → 缩放编码 → 视觉模型（OpenAI 兼容接口）分析画面与目标 → 严格校验的
+JSON 动作（`{"action":"tap","x":0.59,"y":0.64}`，坐标为客户区百分比）→
+按最新窗口几何换算成物理屏幕坐标 → 注入点击 → 观察结果 → 再决策，循环往复。
+
+```powershell
+# 本地：先启动 LM Studio 加载识图模型（如 gemma-3-4b-it）并开启本地服务
+uga-agent run --profile configs/games/mumu-xianyu.yaml `
+  --policy vlm `
+  --goal "完成创角并进入游戏：观察画面，点击能推进流程的按钮" `
+  --vlm-base-url http://127.0.0.1:1234/v1 `
+  --vlm-model gemma-3-4b-it `
+  --duration-seconds 0 `
+  --record runs/episodes
+```
+
+云端视觉 API（任何 OpenAI 兼容接口）只需换 `--vlm-base-url` / `--vlm-model`，
+并把密钥放进 `--vlm-api-key-env` 指定的环境变量（默认 `UGA_VLM_API_KEY`）。
+
+要点：
+
+- **坐标自决**：模型只输出画面内百分比坐标，运行时按**当次决策时的最新窗口
+  几何**换算——窗口移动也不影响命中，且坐标永远落在游戏窗口内。
+- **失败即保守**：回复无法解析/超时/断连 → 退避重试，连续 5 次失败
+  fail-closed 终止（绝不编造动作）；`{"action":"wait"}` 表示画面在加载或无
+  合适目标。
+- **节流**：`--vlm-decision-interval`（默认 6 秒）控制决策频率；提示词携带
+  上一次动作，画面没变化时模型会自行换目标（自我纠正）。
+- 停止方式与持续运行一致：`Ctrl+Shift+F12` 全局热键或 `Ctrl+C`。
+
 ---
 
 ## 6. 资格认证台账（可选的正式证据链）

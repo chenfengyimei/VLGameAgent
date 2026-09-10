@@ -48,6 +48,12 @@ def cli() -> None:
     run_parser.add_argument("--profile", required=True, help="game profile YAML path")
     run_parser.add_argument("--goal", default="Interact with the target")
     run_parser.add_argument(
+        "--policy",
+        choices=["scripted", "vlm"],
+        default="scripted",
+        help="decision source: a scripted tap timeline or a vision-language planner",
+    )
+    run_parser.add_argument(
         "--duration-seconds",
         type=float,
         default=30.0,
@@ -76,6 +82,33 @@ def cli() -> None:
     )
     run_parser.add_argument("--observation-hz", type=float, default=2.0)
     run_parser.add_argument("--record", help="optional episode recording root directory")
+    run_parser.add_argument(
+        "--vlm-base-url",
+        default="http://127.0.0.1:1234/v1",
+        help="OpenAI-compatible vision endpoint (LM Studio or any cloud vision API)",
+    )
+    run_parser.add_argument(
+        "--vlm-model",
+        default="gemma-3-4b-it",
+        help="vision model name exposed at the endpoint",
+    )
+    run_parser.add_argument(
+        "--vlm-api-key-env",
+        default="UGA_VLM_API_KEY",
+        help="environment variable that holds the vision API key (empty for local servers)",
+    )
+    run_parser.add_argument(
+        "--vlm-decision-interval",
+        type=float,
+        default=6.0,
+        help="seconds between vision planner decisions",
+    )
+    run_parser.add_argument(
+        "--vlm-timeout-seconds",
+        type=float,
+        default=30.0,
+        help="vision request timeout",
+    )
     args = parser.parse_args()
     if args.command is None or args.command == "smoke":
         _smoke()
