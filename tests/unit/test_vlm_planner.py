@@ -219,6 +219,22 @@ class ParsePlannerReplyTests(unittest.TestCase):
         with self.assertRaises(PlannerReplyError):
             policy.infer(PolicyContext("obs-1", UGATime(100), (), None))
 
+    def test_drag_action_decoded_with_endpoints(self) -> None:
+        action, x, y, quest, tail = parse_planner_reply(
+            '摇杆移动。 {"action":"drag","x1":0.14,"y1":0.78,"x2":0.16,"y2":0.30}'
+        )
+
+        self.assertEqual((action, x, y, quest), ("drag", 0.14, 0.78, None))
+        self.assertEqual(tail, "0.1600,0.3000")
+
+    def test_drag_missing_coordinates_rejected(self) -> None:
+        with self.assertRaises(PlannerReplyError):
+            parse_planner_reply('{"action":"drag","x1":0.1,"y1":0.2}')
+
+    def test_drag_out_of_range_rejected(self) -> None:
+        with self.assertRaises(PlannerReplyError):
+            parse_planner_reply('{"action":"drag","x1":1.4,"y1":0.2,"x2":0.3,"y2":0.4}')
+
 
 class OpenAICompatibleVisionClientTests(unittest.TestCase):
     def test_posts_image_and_parses_content(self) -> None:

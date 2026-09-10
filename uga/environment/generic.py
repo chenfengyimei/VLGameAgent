@@ -76,6 +76,16 @@ class GenericEnvironment:
                     CoordinateSpace.PHYSICAL_SCREEN_PIXEL,
                 )
             )
+            if action.pointer_down or action.pointer_up:
+                binding = self._profile.binding("interact")
+                if binding is None or binding.kind is not BindingKind.MOUSE_BUTTON:
+                    raise ContractViolation(
+                        "pointer press/release requires a confirmed mouse_button interact binding"
+                    )
+                if action.pointer_down:
+                    result.append(self._mouse_button_action(action, binding, True))
+                if action.pointer_up:
+                    result.append(self._mouse_button_action(action, binding, False))
         for name, active in pulses.items():
             binding = self._profile.binding(name)
             if binding is None or not active:

@@ -36,6 +36,29 @@ def expand_action_chunk(chunk: ActionChunk) -> tuple[CanonicalAction, ...]:
             break
         expires_ns = min(effective_ns + interval_ns, chunk.expires_at.value_ns)
         buttons = CanonicalButton(chunk.buttons[index])
+        pointer_x = chunk.pointer_x
+        pointer_y = chunk.pointer_y
+        pointer_down = False
+        pointer_up = False
+        if chunk.pointer_drag:
+            # Drag chunks carry a pixel path pressed at the first executable
+            # tick and released at the last: pointer moves in between keep
+            # the touch held (Android swipe / virtual-joystick movement).
+            path = chunk.pointer_drag
+            executable = sum(
+                1
+                for i in range(chunk.horizon)
+                if chunk.effective_from.value_ns + interval_ns * i < chunk.expires_at.value_ns
+            )
+            position = min(index, executable - 1)
+            path_index = min(
+                round(position / max(executable - 1, 1) * (len(path) - 1)),
+                len(path) - 1,
+            )
+            px, py = path[path_index]
+            pointer_x, pointer_y = float(px), float(py)
+            pointer_down = index == 0
+            pointer_up = index == executable - 1
         actions.append(
             CanonicalAction(
                 f"{chunk.chunk_id}:tick:{index}",
@@ -57,8 +80,10 @@ def expand_action_chunk(chunk: ActionChunk) -> tuple[CanonicalAction, ...]:
                 menu=bool(buttons & CanonicalButton.MENU),
                 confirm=bool(buttons & CanonicalButton.CONFIRM),
                 back=bool(buttons & CanonicalButton.BACK),
-                pointer_x=chunk.pointer_x,
-                pointer_y=chunk.pointer_y,
+                pointer_x=pointer_x,
+                pointer_y=pointer_y,
+                pointer_down=pointer_down,
+                pointer_up=pointer_up,
             )
         )
     if not actions:

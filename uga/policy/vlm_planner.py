@@ -385,6 +385,21 @@ def _decode_payload(
         if not isinstance(button, str) or not button.strip():
             raise PlannerReplyError("vision press reply lacks a button name")
         return "press", None, None, reported, button.strip().lower()
+    if action == "drag":
+        # Endpoint B rides in the fifth slot as "x2,y2"; the dispatch layer
+        # rebuilds the drag path from it.
+        try:
+            x1 = float(payload["x1"])
+            y1 = float(payload["y1"])
+            x2 = float(payload["x2"])
+            y2 = float(payload["y2"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise PlannerReplyError(
+                "vision drag reply lacks numeric x1/y1/x2/y2 coordinates"
+            ) from exc
+        if not all(0.0 <= v <= 1.0 for v in (x1, y1, x2, y2)):
+            raise PlannerReplyError("vision drag coordinates must be fractions within [0, 1]")
+        return "drag", x1, y1, reported, f"{x2:.4f},{y2:.4f}"
     if action == "wait":
         return "wait", None, None, reported, step
     if action != "tap":
@@ -456,6 +471,8 @@ def build_instruction(
         '可选字段 step：任务进行到哪一步时写当前步骤（如"打开灵宠界面"）：\n'
         '需要按实体按键时（用于跳过剧情、确认、返回等）：{"action":"press","button":"confirm"}，'
         "可用 button 值：jump、menu、confirm、back（需游戏支持）\n"
+        '需要拖拽时（虚拟摇杆移动、滑动界面）：{"action":"drag","x1":0.14,"y1":0.78,"x2":0.14,"y2":0.30}'
+        "（从摇杆中心向上拖拽即向前移动；拖拽时长约 1 秒）\n"
         '{"action":"tap","x":0.2,"y":0.3,"quest":"与桃夭对话"}\n'
         '或画面在加载、无合适目标时输出：{"action":"wait"}\n'
         "规则：坐标必须在 0~1 之间；优先点击文字与任务目标相关的按钮；"
@@ -709,6 +726,17 @@ class VlmPlannerPolicy:
             self._last_action = f"press({reported_step})"
             print(f"[vlm] press {reported_step} (queued={queued_reply})", flush=True)
             return self._press_chunk(context, reported_step)
+        if action == "drag":
+            # The fifth slot carries "x2,y2" for drag actions.
+            if not isinstance(reported_step, str) or "," not in reported_step:
+                raise PlannerReplyError("vision drag reply lacks end coordinates")
+            assert x is not None and y is not None
+            x2s, y2s = reported_step.split(",", 1)
+            x2 = float(x2s)
+            y2 = float(y2s)
+            self._last_action = f"drag({x:.2f},{y:.2f}->{x2:.2f},{y2:.2f})"
+            print(f"[vlm] drag ({x:.3f},{y:.3f}) -> ({x2:.3f},{y2:.3f})", flush=True)
+            return self._drag_chunk(context, rect, x, y, x2, y2)
         # Freshness guard: the model replied to a screenshot that is now
         # seconds old (inference latency). If the area it decided to tap has
         # changed meanwhile, the tap would land on a stale layout — drop the
@@ -747,7 +775,6 @@ class VlmPlannerPolicy:
         return self._tap_chunk(context, tap_x, tap_y)
 
     def _press_chunk(self, context: PolicyContext, button: str) -> FastPolicyOutput:
-        """Emit a one-tick pulse of a semantic canonical button (jump/menu/...)."""
         try:
             button_flag = ActionButton[button.upper()]
         except KeyError as exc:
@@ -772,6 +799,55 @@ class VlmPlannerPolicy:
             buttons=(int(button_flag),),
             confidence=1.0,
             policy_version=self._policy_version,
+        )
+        return FastPolicyOutput(chunk, False, None, 30.0, 30.0)
+
+    def _drag_chunk(
+        self,
+        context: PolicyContext,
+        rect: Rect,
+        x1: float,
+        y1: float,
+        x2: float,
+        y2: float,
+    ) -> FastPolicyOutput:
+        """Pressed-move-release along a straight client-fraction path.
+
+        The path is interpolated in physical pixels; expand_action_chunk
+        presses at the first tick, keeps the pointer moving through the
+        middle ticks, and releases at the last — the emulator translates
+        that into an Android touch-drag (verified live on MuMu).
+        """
+        start_x = round(rect.left + rect.width * x1)
+        start_y = round(rect.top + rect.height * y1)
+        end_x = round(rect.left + rect.width * x2)
+        end_y = round(rect.top + rect.height * y2)
+        steps = 24
+        path = tuple(
+            (
+                start_x + (end_x - start_x) * i / (steps - 1),
+                start_y + (end_y - start_y) * i / (steps - 1),
+            )
+            for i in range(steps)
+        )
+        now = self._clock.now()
+        # ~1.2s total at 30 Hz gives the emulator time to register the drag.
+        ticks = 36
+        chunk = ActionChunk(
+            chunk_id=f"vlm-drag-{uuid.uuid4().hex[:8]}",
+            observation_id=context.observation_id,
+            generated_at=now,
+            effective_from=now,
+            expires_at=UGATime(now.value_ns + int(ticks / 30.0 * 1_000_000_000)),
+            tick_rate_hz=30.0,
+            move_x=(0.0,) * ticks,
+            move_y=(0.0,) * ticks,
+            look_x=(0.0,) * ticks,
+            look_y=(0.0,) * ticks,
+            buttons=(0,) * ticks,
+            confidence=1.0,
+            policy_version=self._policy_version,
+            pointer_drag=path,
         )
         return FastPolicyOutput(chunk, False, None, 30.0, 30.0)
 

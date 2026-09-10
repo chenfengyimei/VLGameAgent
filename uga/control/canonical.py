@@ -31,6 +31,8 @@ class CanonicalAction(VersionedMixin):
     custom_slots: tuple[float, ...] = ()
     pointer_x: float | None = None
     pointer_y: float | None = None
+    pointer_down: bool = False
+    pointer_up: bool = False
 
     def __post_init__(self) -> None:
         self.validate()
@@ -48,3 +50,9 @@ class CanonicalAction(VersionedMixin):
             not math.isfinite(self.pointer_x) or self.pointer_x < 0.0
         ):
             raise ContractViolation("canonical pointer coordinates must be non-negative")
+        if self.pointer_down and self.pointer_up:
+            raise ContractViolation("canonical pointer cannot press and release together")
+        if (self.pointer_down or self.pointer_up) and self.pointer_x is None:
+            raise ContractViolation(
+                "canonical pointer press/release requires pointer coordinates"
+            )

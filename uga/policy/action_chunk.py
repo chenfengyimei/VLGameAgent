@@ -54,6 +54,7 @@ class ActionChunk(VersionedMixin):
     policy_version: str
     pointer_x: float | None = None
     pointer_y: float | None = None
+    pointer_drag: tuple[tuple[float, float], ...] = ()
 
     def __post_init__(self) -> None:
         self.validate()
@@ -91,6 +92,18 @@ class ActionChunk(VersionedMixin):
             not math.isfinite(self.pointer_x) or self.pointer_x < 0.0
         ):
             raise ContractViolation("action chunk pointer coordinates must be non-negative")
+        if self.pointer_drag:
+            if any(
+                not math.isfinite(px) or not math.isfinite(py) or px < 0.0 or py < 0.0
+                for px, py in self.pointer_drag
+            ):
+                raise ContractViolation(
+                    "action chunk drag path points must be non-negative finite pixels"
+                )
+            if self.pointer_x is not None:
+                raise ContractViolation(
+                    "action chunk drag path excludes a static pointer position"
+                )
 
     @property
     def horizon(self) -> int:
