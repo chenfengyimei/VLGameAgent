@@ -218,8 +218,9 @@ uga-agent run --profile configs/games/mumu-xianyu.yaml `
   但按档案偏好仍应使用 WGC）。
 - **点击**：`absolute_pointer` 相机 + `mouse_button` 绑定的组合下，规范动作携带
   物理屏幕坐标，环境层产出「绝对移动 → 按下 → 抬起」三段物理动作；
-  点击点默认为客户区的 50%/79% 处（「开启仙途」按钮），`--tap-delay`（默认 2 秒）
-  指定注入时机。
+  点击点默认为客户区的 50%/79% 处（「开启仙途」按钮），可用 `--tap-x-fraction`
+  / `--tap-y-fraction`（客户区比例坐标，0~1）覆盖到当前界面的任意按钮；
+  `--tap-delay`（默认 2 秒）指定注入时机。
 - **产出**：结束后打印 `episode: runs/episodes/<episode-id>`，内含 H.264 视频、
   动作 Parquet、事件日志与校验和，可直接用 `uga-replay` / `uga-dataset` 检查；
   录制器会自动把 WGC 带边框的奇数尺寸裁剪到偶数再编码。

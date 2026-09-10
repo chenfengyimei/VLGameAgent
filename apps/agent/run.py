@@ -121,8 +121,8 @@ async def _run(args: argparse.Namespace) -> int:
     arbiter = ActionArbiter(clock, leases)
 
     client = target.client_screen_rect
-    tap_x = round(client.left + client.width * _TAP_FRACTION_DEFAULT[0])
-    tap_y = round(client.top + client.height * _TAP_FRACTION_DEFAULT[1])
+    tap_x = round(client.left + client.width * args.tap_x_fraction)
+    tap_y = round(client.top + client.height * args.tap_y_fraction)
     policy = ScriptedTapPolicy([(args.tap_delay, tap_x, tap_y)])
 
     controller = ActionChunkController(environment, arbiter, scheduler)
@@ -224,12 +224,31 @@ async def _run(args: argparse.Namespace) -> int:
     return 0
 
 
+def _client_fraction(value: str) -> float:
+    fraction = float(value)
+    if not 0.0 <= fraction <= 1.0:
+        raise argparse.ArgumentTypeError("client fraction must be within [0, 1]")
+    return fraction
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run the UGA agent against a live window")
     parser.add_argument("--profile", type=Path, required=True)
     parser.add_argument("--goal", default="Interact with the target")
     parser.add_argument("--duration-seconds", type=float, default=30.0)
     parser.add_argument("--tap-delay", type=float, default=2.0)
+    parser.add_argument(
+        "--tap-x-fraction",
+        type=_client_fraction,
+        default=_TAP_FRACTION_DEFAULT[0],
+        help="tap point as a horizontal fraction of the client area",
+    )
+    parser.add_argument(
+        "--tap-y-fraction",
+        type=_client_fraction,
+        default=_TAP_FRACTION_DEFAULT[1],
+        help="tap point as a vertical fraction of the client area",
+    )
     parser.add_argument("--observation-hz", type=float, default=2.0)
     parser.add_argument("--record", type=Path)
     return parser
