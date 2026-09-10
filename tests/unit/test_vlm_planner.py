@@ -15,6 +15,7 @@ from uga.policy.vlm_planner import (
     MAX_CONSECUTIVE_FAILURES,
     OpenAICompatibleVisionClient,
     PlannerReplyError,
+    VisionRateLimitedError,
     VlmPlannerPolicy,
     build_instruction,
     encode_frame_png,
@@ -273,6 +274,27 @@ class VlmPlannerPolicyTests(unittest.TestCase):
         output = policy.infer(_context())
 
         self.assertEqual(output.chunk.buttons, (0,) * output.chunk.horizon)
+
+    def test_rate_limiting_backs_off_without_counting_failures(self) -> None:
+        class _RateLimitedClient:
+            def decide(self, *, image_png: bytes, instruction: str) -> str:
+                raise VisionRateLimitedError("rate limited")
+
+        clock = [0.0]
+        policy = VlmPlannerPolicy(
+            client=_RateLimitedClient(),  # type: ignore[arg-type]
+            frame_source=_frame,
+            client_rect=lambda: Rect(100, 200, 1100, 1320),
+            goal="完成任务",
+            decision_interval_s=600.0,
+            failure_backoff_s=1.0,
+        )
+
+        with mock.patch("uga.policy.vlm_planner.time.monotonic", lambda: clock[0]):
+            for _ in range(MAX_CONSECUTIVE_FAILURES + 3):
+                output = policy.infer(_context())
+                clock[0] += 1200.0
+                self.assertEqual(output.chunk.buttons, (0,) * output.chunk.horizon)
 
     def test_empty_goal_rejected(self) -> None:
         with self.assertRaises(ContractViolation):

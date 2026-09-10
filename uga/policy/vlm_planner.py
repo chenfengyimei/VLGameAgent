@@ -38,6 +38,10 @@ class PlannerReplyError(ContractViolation):
     """The vision model reply could not be parsed into a valid action."""
 
 
+class VisionRateLimitedError(Exception):
+    """The provider throttled the request; wait longer, do not count a failure."""
+
+
 def encode_frame_png(frame: Frame, *, max_width: int = 960) -> bytes:
     """Encode a captured frame as a PNG no wider than ``max_width`` pixels."""
     if frame.pixel_format not in _SUPPORTED_FORMATS:
@@ -146,6 +150,10 @@ class OpenAICompatibleVisionClient:
             with urllib.request.urlopen(request, timeout=self._timeout_s) as response:
                 body = json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
+            if exc.code == 429:
+                # Rate limiting is not an outage: the caller must back off and
+                # keep running instead of counting the provider as dead.
+                raise VisionRateLimitedError("vision endpoint rate limited") from exc
             raise BackendUnavailableError(f"vision endpoint returned HTTP {exc.code}") from exc
         except (urllib.error.URLError, TimeoutError, OSError, ValueError) as exc:
             raise BackendUnavailableError(f"vision endpoint unreachable: {exc}") from exc
@@ -256,6 +264,7 @@ class VlmPlannerPolicy:
         self._clock = clock if clock is not None else PerfCounterClock()
         self._next_decision_at = 0.0
         self._failures = 0
+        self._rate_limit_backoff_s = 30.0
         self._last_point: tuple[int, int] | None = None
         self._last_action: str | None = None
 
@@ -275,6 +284,17 @@ class VlmPlannerPolicy:
             instruction = build_instruction(self._goal, self._last_action)
             reply = self._client.decide(image_png=image, instruction=instruction)
             action, x, y = parse_planner_reply(reply)
+        except VisionRateLimitedError:
+            # Throttling is transient by definition: grow the wait instead of
+            # counting the provider as dead, and never let it kill the run.
+            self._rate_limit_backoff_s = min(self._rate_limit_backoff_s * 2.0, 600.0)
+            wait_s = max(self._rate_limit_backoff_s, 60.0)
+            print(
+                f"[vlm] rate limited; pausing decisions for {wait_s:.0f}s",
+                flush=True,
+            )
+            self._next_decision_at = time.monotonic() + wait_s
+            return self._hold_chunk(context, duration=wait_s)
         except Exception as exc:
             self._failures += 1
             if self._failures >= MAX_CONSECUTIVE_FAILURES:
@@ -289,6 +309,7 @@ class VlmPlannerPolicy:
             self._next_decision_at = time.monotonic() + self._failure_backoff_s
             return self._hold_chunk(context, duration=self._failure_backoff_s)
         self._failures = 0
+        self._rate_limit_backoff_s = 30.0
         self._next_decision_at = time.monotonic() + self._decision_interval_s
         if action == "wait":
             self._last_action = 'wait（画面无合适目标或加载中）'
