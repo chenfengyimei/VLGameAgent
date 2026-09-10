@@ -22,6 +22,7 @@ from uga.policy.vlm_planner import (
     build_instruction,
     encode_frame_png,
     parse_planner_reply,
+    parse_planner_sequence,
 )
 from uga.time.clock import ManualClock, UGATime
 from uga.windows.coordinates import Rect
@@ -152,6 +153,39 @@ class ParsePlannerReplyTests(unittest.TestCase):
     def test_reply_with_only_invalid_objects_rejected(self) -> None:
         with self.assertRaises(PlannerReplyError):
             parse_planner_reply('描述 {"a":1} 另一段 {"b":2}')
+
+    def test_action_sequence_parsed_oldest_first(self) -> None:
+        reply = (
+            '推进对话。 {"actions":[{"action":"tap","x":0.5,"y":0.6},'
+            '{"action":"tap","x":0.5,"y":0.7},{"action":"wait"}]}'
+        )
+
+        sequence = parse_planner_sequence(reply)
+
+        self.assertEqual(len(sequence), 3)
+        self.assertEqual(sequence[0][0], "tap")
+        self.assertEqual((sequence[0][1], sequence[0][2]), (0.5, 0.6))
+        self.assertEqual((sequence[1][1], sequence[1][2]), (0.5, 0.7))
+        self.assertEqual(sequence[2][0], "wait")
+
+    def test_action_sequence_overflow_is_truncated(self) -> None:
+        steps = ",".join('{"action":"tap","x":0.1,"y":0.1}' for _ in range(9))
+        reply = '{"actions":[' + steps + "]}"
+
+        sequence = parse_planner_sequence(reply)
+
+        self.assertEqual(len(sequence), 4)
+
+    def test_action_sequence_empty_rejected(self) -> None:
+        with self.assertRaises(PlannerReplyError):
+            parse_planner_sequence('{"actions":[]}')
+
+    def test_sequence_quest_field_per_step(self) -> None:
+        reply = '{"actions":[{"action":"tap","x":0.2,"y":0.3,"quest":"与桃夭对话"}]}'
+
+        sequence = parse_planner_sequence(reply)
+
+        self.assertEqual(sequence[0][3], "与桃夭对话")
 
     def test_quest_field_is_reported(self) -> None:
         action, x, y, quest = parse_planner_reply(
@@ -570,6 +604,110 @@ class TapFreshnessGuardTests(unittest.TestCase):
 
         self.assertEqual(policy._stale_discards, 1)
         self.assertLessEqual(policy._next_decision_at - time.monotonic(), 0.1)
+
+
+class HybridThinkingTests(unittest.TestCase):
+    def _varied_frame(self, tag: int) -> Frame:
+        row_bytes = 64 * 4
+        payload = bytes([tag]) * (row_bytes * 32)
+        return Frame(
+            frame_id=f"frame-v{tag}",
+            capture_timestamp=UGATime(tag),
+            present_estimate=None,
+            window_identity=identity(),
+            width=64,
+            height=32,
+            stride_bytes=row_bytes,
+            pixel_format=PixelFormat.BGRA8,
+            physical_rect=Rect(0, 0, 64, 32),
+            client_rect=Rect(0, 0, 64, 32),
+            source_backend="fixture",
+            buffer_handle=BufferHandle(
+                handle_id=f"buf-v{tag}",
+                kind=BufferKind.CPU_BYTES,
+                size_bytes=len(payload),
+                payload=payload,
+            ),
+        )
+
+    def test_unchanged_screen_skips_inference(self) -> None:
+        client = _FakeClient(['{"action":"wait"}'] * 3)
+        policy = _policy(client)
+        policy._decision_interval_s = 60.0
+        policy._next_decision_at = 0.0
+
+        policy.infer(PolicyContext("obs-1", UGATime(100), (), None))
+        calls_after_first = client.calls
+        policy._next_decision_at = 0.0  # cadence elapsed; screen unchanged
+        policy.infer(PolicyContext("obs-2", UGATime(200), (), None))
+
+        self.assertEqual(client.calls, calls_after_first)
+        self.assertEqual(policy._static_holds, 1)
+
+    def test_changed_screen_resumes_inference(self) -> None:
+        client = _FakeClient(['{"action":"wait"}'] * 3)
+        policy = _policy(client)
+        policy._decision_interval_s = 60.0
+        policy._next_decision_at = 0.0
+        frames = iter([self._varied_frame(1), self._varied_frame(2), self._varied_frame(3)])
+        policy._frame_source = lambda: next(frames)
+
+        policy.infer(PolicyContext("obs-1", UGATime(100), (), None))
+        policy._next_decision_at = 0.0
+        policy.infer(PolicyContext("obs-2", UGATime(200), (), None))
+
+        self.assertEqual(client.calls, 2)
+        self.assertEqual(policy._static_holds, 0)
+
+    def test_static_holds_bounded(self) -> None:
+        client = _FakeClient(['{"action":"wait"}'] * 2)
+        policy = _policy(client)
+        policy._decision_interval_s = 0.001
+        policy._next_decision_at = 0.0
+
+        policy.infer(PolicyContext("obs-1", UGATime(100), (), None))
+        for _ in range(30):
+            time.sleep(0.002)
+            policy.infer(PolicyContext("obs-n", UGATime(100), (), None))
+
+        self.assertLessEqual(client.calls, 3)  # initial + bounded re-asks
+
+
+class ActionSequenceQueueTests(unittest.TestCase):
+    def test_sequence_executes_without_extra_inference(self) -> None:
+        client = _FakeClient(
+            ['{"actions":[{"action":"tap","x":0.3,"y":0.4},{"action":"tap","x":0.5,"y":0.6}]}']
+        )
+        policy = _policy(client)
+        policy._decision_interval_s = 0.05
+        policy._next_decision_at = 0.0
+
+        first = policy.infer(PolicyContext("obs-1", UGATime(100), (), None))
+        self.assertEqual(first.chunk.buttons, (int(ActionButton.INTERACT),))
+        self.assertEqual(len(policy._pending_actions), 1)
+
+        time.sleep(0.06)
+        second = policy.infer(PolicyContext("obs-2", UGATime(200), (), None))
+
+        self.assertEqual(client.calls, 1)  # second action: no new inference
+        self.assertEqual(second.chunk.pointer_x, 100.0 + 1000 * 0.5)
+        self.assertEqual(second.chunk.pointer_y, 200.0 + 1120 * 0.6)
+        self.assertFalse(policy._pending_actions)
+
+    def test_stale_guard_clears_pending_queue(self) -> None:
+        client = _FakeClient(
+            ['{"actions":[{"action":"tap","x":0.5,"y":0.5},{"action":"tap","x":0.5,"y":0.5}]}']
+        )
+        frames = [_frame(), _frame(40, 32), _frame(40, 32), _frame(40, 32)]
+        policy = _policy(client)
+        policy._decision_interval_s = 0.05
+        policy._next_decision_at = 0.0
+        policy._frame_source = lambda: frames.pop(0)
+
+        policy.infer(PolicyContext("obs-1", UGATime(100), (), None))
+
+        self.assertEqual(policy._stale_discards, 1)
+        self.assertFalse(policy._pending_actions)
 
 
 if __name__ == "__main__":

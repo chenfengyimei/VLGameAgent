@@ -35,6 +35,8 @@ from uga.time.clock import ClockBackend, PerfCounterClock, UGATime
 from uga.windows.coordinates import Rect
 
 MAX_CONSECUTIVE_FAILURES = 5
+MAX_ACTION_SEQUENCE = 4
+MAX_STATIC_HOLDS = 10
 _SUPPORTED_FORMATS = (PixelFormat.BGRA8, PixelFormat.RGBA8)
 
 
@@ -295,13 +297,22 @@ class FrameHistorySampler:
 
 
 def parse_planner_reply(reply: str) -> tuple[str, float | None, float | None, str | None]:
-    """Parse a model reply into an action plus the optional quest text it reports.
+    """Parse a single-action reply (compatibility wrapper over the sequence)."""
+    return parse_planner_sequence(reply)[0]
 
-    Thinking-style models may emit description text that itself contains
-    braces plus one or more JSON objects. Scan every balanced ``{...}``
-    segment and accept the NEWEST one that validates against the action
-    contract; anything else is a PlannerReplyError so the caller can retry
-    instead of inventing actions.
+
+def parse_planner_sequence(
+    reply: str,
+) -> list[tuple[str, float | None, float | None, str | None]]:
+    """Parse a model reply into one or more actions (oldest first).
+
+    Accepts a single action object or an ``actions`` array (up to
+    ``MAX_ACTION_SEQUENCE`` steps — Lumine-style action chunking at the API
+    level). Thinking-style models may emit description text that itself
+    contains braces plus one or more JSON objects. Scan every balanced
+    ``{...}`` segment and accept the NEWEST one that validates; anything
+    else is a PlannerReplyError so the caller can retry instead of
+    inventing actions.
     """
     text = reply.strip()
     if text.startswith("```"):
@@ -327,7 +338,7 @@ def parse_planner_reply(reply: str) -> tuple[str, float | None, float | None, st
     failure: PlannerReplyError | None = None
     for candidate in reversed(candidates):
         try:
-            return _decode_action(candidate)
+            return _decode_sequence(candidate)
         except (json.JSONDecodeError, PlannerReplyError) as exc:
             failure = (
                 exc if isinstance(exc, PlannerReplyError) else PlannerReplyError(str(exc))
@@ -337,10 +348,31 @@ def parse_planner_reply(reply: str) -> tuple[str, float | None, float | None, st
     raise failure
 
 
-def _decode_action(candidate: str) -> tuple[str, float | None, float | None, str | None]:
+def _decode_sequence(
+    candidate: str,
+) -> list[tuple[str, float | None, float | None, str | None]]:
     payload = json.loads(candidate)
     if not isinstance(payload, dict):
         raise PlannerReplyError("vision reply JSON is not an object")
+    if "actions" in payload:
+        steps = payload["actions"]
+        if not isinstance(steps, list) or not steps:
+            raise PlannerReplyError("vision reply actions must be a non-empty array")
+        if len(steps) > MAX_ACTION_SEQUENCE:
+            # Bounded chunk: keep the first steps, drop the overflow.
+            steps = steps[:MAX_ACTION_SEQUENCE]
+        sequence: list[tuple[str, float | None, float | None, str | None]] = []
+        for step in steps:
+            if not isinstance(step, dict):
+                raise PlannerReplyError("vision reply action steps must be objects")
+            sequence.append(_decode_payload(step))
+        return sequence
+    return [_decode_payload(payload)]
+
+
+def _decode_payload(
+    payload: dict[str, Any],
+) -> tuple[str, float | None, float | None, str | None]:
     action = payload.get("action")
     if action == "wait":
         quest = payload.get("quest")
@@ -401,9 +433,12 @@ def build_instruction(
         "坐标以百分比表示：x 为横向 0.0（最左）~1.0（最右），y 为纵向 0.0（最上）~1.0（最下）。\n"
         "回答格式（严格遵守两行）：\n"
         "第一行：用一句话描述画面状态，读出你看到的按钮上的文字。\n"
-        "第二行：只输出一个 JSON 对象，点击最能推进任务目标的按钮：\n"
+        "第二行：只输出一个 JSON 对象。单个动作的格式：\n"
         '{"action":"tap","x":<按钮中心的横向百分比>,"y":<按钮中心的纵向百分比>}\n'
-        '可选字段 quest：当你在画面上看到主线任务文字时，把它写进这个字段，如：\n'
+        '当需要连续多个操作时（如推进多段对话、关闭多个弹窗），用 actions 数组输出最多 '
+        f'{MAX_ACTION_SEQUENCE} 步，每步之间画面会自动等待变化：\n'
+        '{"actions":[{"action":"tap","x":0.5,"y":0.6},{"action":"tap","x":0.5,"y":0.7}]}\n'
+        '可选字段 quest：把你在画面上看到的主线任务文字写进该字段（对象或步骤均可带）：\n'
         '{"action":"tap","x":0.2,"y":0.3,"quest":"与桃夭对话"}\n'
         '或画面在加载、无合适目标时输出：{"action":"wait"}\n'
         "规则：坐标必须在 0~1 之间；优先点击文字与任务目标相关的按钮；"
@@ -467,6 +502,10 @@ class VlmPlannerPolicy:
         self._sampler = sampler
         self._last_decision_digest: bytes | None = None
         self._stale_discards = 0
+        self._pending_actions: deque[
+            tuple[str, float | None, float | None, str | None]
+        ] = deque()
+        self._static_holds = 0
 
     @property
     def policy_version(self) -> str:
@@ -536,6 +575,28 @@ class VlmPlannerPolicy:
         if now < self._next_decision_at:
             wait_s = max(self._next_decision_at - now, 0.05)
             return self._hold_chunk(context, duration=wait_s)
+        # --- hybrid thinking (Lumine-style): skip inference when the screen
+        # is unchanged AND nothing is queued. A static screen means the last
+        # decision still applies; re-asking the model would waste tokens.
+        current_frame = self._frame_source()
+        digest = self._frame_digest(current_frame)
+        if (
+            not self._pending_actions
+            and self._last_decision_digest is not None
+            and digest == self._last_decision_digest
+            and self._last_action is not None
+            and self._static_holds < MAX_STATIC_HOLDS
+        ):
+            self._static_holds += 1
+            self._next_decision_at = now + self._decision_interval_s
+            return self._hold_chunk(context, duration=self._decision_interval_s)
+        if digest != self._last_decision_digest:
+            self._static_holds = 0
+        # --- queued multi-action sequence (action chunking): replay the
+        # remaining steps without paying for another inference round-trip.
+        if self._pending_actions:
+            queued = self._pending_actions.popleft()
+            return self._execute_action(context, current_frame, queued, queued_reply=True)
         # The bundle must cover the WHOLE gap since the previous decision
         # STARTED — inference itself takes tens of seconds and those frames
         # (what happened while the model was thinking) are exactly the
@@ -545,9 +606,6 @@ class VlmPlannerPolicy:
         reply: str = ""
         images: list[bytes] = []
         try:
-            current_frame = self._frame_source()
-            screen_changed = self._frame_changed_since_decision(current_frame)
-            self._last_action_changed = screen_changed
             rect = self._client_rect()
             images = [
                 encode_frame_png(frame, max_width=self._max_image_width)
@@ -561,7 +619,7 @@ class VlmPlannerPolicy:
                 self._stuck_taps,
             )
             reply = self._client.decide(images=images, instruction=instruction)
-            action, x, y, quest = parse_planner_reply(reply)
+            sequence = parse_planner_sequence(reply)
         except VisionRateLimitedError:
             # Throttling is transient by definition: grow the wait instead of
             # counting the provider as dead, and never let it kill the run.
@@ -590,14 +648,37 @@ class VlmPlannerPolicy:
         self._failures = 0
         self._rate_limit_backoff_s = 30.0
         self._next_decision_at = time.monotonic() + self._decision_interval_s
+        self._last_decision_digest = self._frame_digest(current_frame)
+        head, *tail = sequence
+        for step in reversed(tail):
+            self._pending_actions.append(step)
+        return self._execute_action(context, current_frame, head, rect=rect)
+
+    def _execute_action(
+        self,
+        context: PolicyContext,
+        decision_frame: Frame,
+        step: tuple[str, float | None, float | None, str | None],
+        *,
+        queued_reply: bool = False,
+        rect: Rect | None = None,
+    ) -> FastPolicyOutput:
+        if rect is None:
+            rect = self._client_rect()
+        action, x, y, quest = step
         if quest:
             if quest != self._quest:
                 print(f"[vlm] quest updated: {quest}", flush=True)
             self._quest = quest
-        self._last_decision_digest = self._frame_digest(current_frame)
+        if queued_reply:
+            # Queued steps replay on later frames; the decision interval was
+            # already advanced when the sequence was parsed.
+            pass
+        else:
+            self._next_decision_at = time.monotonic() + self._decision_interval_s
         if action == "wait":
             self._last_action = 'wait（画面无合适目标或加载中）'
-            print(f"[vlm] wait; reply: {reply.strip()[:120]!r}", flush=True)
+            print(f"[vlm] wait (queued={queued_reply})", flush=True)
             return self._hold_chunk(context, duration=self._decision_interval_s)
         assert x is not None and y is not None
         # Freshness guard: the model replied to a screenshot that is now
@@ -607,9 +688,10 @@ class VlmPlannerPolicy:
         # consecutive discards the tap is allowed through anyway: an old tap
         # is better than never acting on a permanently animated screen.
         if self._stale_discards < 3 and self._tap_target_stale(
-            current_frame, self._frame_source(), x, y
+            decision_frame, self._frame_source(), x, y
         ):
             self._stale_discards += 1
+            self._pending_actions.clear()
             print(
                 "[vlm] tap target stale (screen changed during inference);"
                 " re-deciding on the fresh frame",
