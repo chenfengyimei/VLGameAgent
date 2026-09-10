@@ -13,6 +13,7 @@ from uga.policy.action_chunk import ActionButton
 from uga.policy.fast_policy import PolicyContext
 from uga.policy.vlm_planner import (
     MAX_CONSECUTIVE_FAILURES,
+    FrameHistorySampler,
     OpenAICompatibleVisionClient,
     PlannerReplyError,
     VisionRateLimitedError,
@@ -393,6 +394,106 @@ class BuildInstructionTests(unittest.TestCase):
         self.assertIn("tap(0.5,0.5)", instruction)
         self.assertIn("与桃夭对话", instruction)
         self.assertIn("没有变化", instruction)
+
+    def test_instruction_describes_multi_frame_bundle(self) -> None:
+        instruction = build_instruction("推进主线", None, None, None)
+
+        self.assertIn("时间先后", instruction)
+        self.assertIn("最后一张是当前画面", instruction)
+
+
+def _sampler_frame(tag: int) -> Frame:
+    row_bytes = 64 * 4
+    payload = bytes([tag]) * (row_bytes * 32)
+    return Frame(
+        frame_id=f"frame-{tag}",
+        capture_timestamp=UGATime(tag),
+        present_estimate=None,
+        window_identity=identity(),
+        width=64,
+        height=32,
+        stride_bytes=row_bytes,
+        pixel_format=PixelFormat.BGRA8,
+        physical_rect=Rect(0, 0, 64, 32),
+        client_rect=Rect(0, 0, 64, 32),
+        source_backend="fixture",
+        buffer_handle=BufferHandle(
+            handle_id="buf",
+            kind=BufferKind.CPU_BYTES,
+            size_bytes=len(payload),
+            payload=payload,
+        ),
+    )
+
+
+class FrameHistorySamplerTests(unittest.TestCase):
+    def _sampler_with_history(self, stamps: list[int]) -> FrameHistorySampler:
+        sampler = FrameHistorySampler(capture=lambda: _sampler_frame(0))
+        tagged = [(float(t), _sampler_frame(t)) for t in stamps]
+        with sampler._lock:
+            sampler._history.extend(tagged)
+        return sampler
+
+    def test_empty_history_returns_empty_bundle(self) -> None:
+        sampler = FrameHistorySampler(capture=lambda: _sampler_frame(0))
+
+        self.assertEqual(sampler.select_bundle(None), [])
+
+    def test_fewer_than_max_frames_returns_all_in_time_order(self) -> None:
+        sampler = self._sampler_with_history([7, 8, 9, 10])
+
+        bundle = sampler.select_bundle(5.0)
+
+        self.assertEqual(
+            [frame.frame_id for frame in bundle],
+            ["frame-7", "frame-8", "frame-9", "frame-10"],
+        )
+
+    def test_bundle_anchored_at_first_frame_after_boundary(self) -> None:
+        # Decision #1 ran at t=1 and finished by t=10; decision #2 at t=11
+        # must cover the whole gap (frames 2..11), oldest first, newest last.
+        sampler = self._sampler_with_history([2, 3, 4, 5, 6, 7, 8, 9, 10, 11])
+
+        bundle = sampler.select_bundle(1.0)
+
+        self.assertEqual(len(bundle), 5)
+        self.assertEqual(bundle[0].frame_id, "frame-2")
+        self.assertEqual(bundle[-1].frame_id, "frame-11")
+
+    def test_bundle_middle_frames_are_evenly_spaced(self) -> None:
+        sampler = self._sampler_with_history([2, 3, 4, 5, 6, 7, 8, 9, 10, 11])
+
+        bundle = sampler.select_bundle(1.0)
+
+        stamps = [frame.frame_id for frame in bundle]
+        self.assertEqual(
+            stamps, ["frame-2", "frame-3", "frame-5", "frame-8", "frame-11"]
+        )
+
+    def test_frames_at_or_before_boundary_are_excluded(self) -> None:
+        sampler = self._sampler_with_history([1, 2, 8, 9, 10, 11])
+
+        bundle = sampler.select_bundle(1.0)
+
+        self.assertNotIn("frame-1", [frame.frame_id for frame in bundle])
+        self.assertEqual(bundle[0].frame_id, "frame-2")
+
+    def test_no_frames_after_boundary_falls_back_to_newest(self) -> None:
+        sampler = self._sampler_with_history([1, 2, 3])
+
+        bundle = sampler.select_bundle(5.0)
+
+        self.assertEqual([frame.frame_id for frame in bundle], ["frame-1", "frame-2", "frame-3"])
+
+    def test_policy_passes_freshest_frame_last(self) -> None:
+        client = _FakeClient(['{"action":"wait"}'])
+        sampler = self._sampler_with_history([1, 2, 3])
+        policy = _policy(client)
+        policy._sampler = sampler
+
+        policy.infer(PolicyContext("obs-1", UGATime(100), (), None))
+
+        self.assertGreaterEqual(len(client.last_images), 1)
 
 
 if __name__ == "__main__":

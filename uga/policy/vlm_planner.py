@@ -391,7 +391,8 @@ def build_instruction(
         else ""
     )
     return (
-        "你是一个安卓游戏自动操作智能体。请仔细观察这张游戏截图。\n"
+        "你是一个安卓游戏自动操作智能体。请仔细观察这组按时间先后排序的游戏截图"
+        "（最后一张是当前画面，其余是之前几秒的历史画面，用于判断画面变化趋势）。\n"
         f"当前任务目标：{goal}。\n"
         f"{quest_line}"
         f"{history}"
@@ -462,7 +463,7 @@ class VlmPlannerPolicy:
         self._last_action_changed: bool | None = None
         self._stuck_taps = 0
         self._last_tap_point: tuple[int, int] | None = None
-        self._last_infer_mono: float | None = None
+        self._last_decision_started_mono: float | None = None
         self._sampler = sampler
         self._last_decision_digest: bytes | None = None
 
@@ -503,7 +504,12 @@ class VlmPlannerPolicy:
         if now < self._next_decision_at:
             wait_s = max(self._next_decision_at - now, 0.05)
             return self._hold_chunk(context, duration=wait_s)
-        boundary = self._last_infer_mono
+        # The bundle must cover the WHOLE gap since the previous decision
+        # STARTED — inference itself takes tens of seconds and those frames
+        # (what happened while the model was thinking) are exactly the
+        # continuity the model needs; stamping at decision START achieves it.
+        boundary = self._last_decision_started_mono
+        self._last_decision_started_mono = now
         reply: str = ""
         images: list[bytes] = []
         try:
@@ -558,7 +564,6 @@ class VlmPlannerPolicy:
             self._quest = quest
         if action == "wait":
             self._last_action = 'wait（画面无合适目标或加载中）'
-            self._last_infer_mono = time.monotonic()
             print(f"[vlm] wait; reply: {reply.strip()[:120]!r}", flush=True)
             return self._hold_chunk(context, duration=self._decision_interval_s)
         assert x is not None and y is not None
@@ -566,7 +571,6 @@ class VlmPlannerPolicy:
         tap_y = round(rect.top + rect.height * y)
         self._last_point = (tap_x, tap_y)
         self._last_action = f"tap({x:.3f},{y:.3f})"
-        self._last_infer_mono = time.monotonic()
         if (
             self._last_tap_point is not None
             and abs(tap_x - self._last_tap_point[0]) <= rect.width // 100
