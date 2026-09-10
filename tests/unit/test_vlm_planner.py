@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import time
 import unittest
 import urllib.error
 from unittest import mock
@@ -494,6 +495,81 @@ class FrameHistorySamplerTests(unittest.TestCase):
         policy.infer(PolicyContext("obs-1", UGATime(100), (), None))
 
         self.assertGreaterEqual(len(client.last_images), 1)
+        self.assertLessEqual(len(client.last_images), 5)
+
+
+class TapFreshnessGuardTests(unittest.TestCase):
+    def test_stable_target_area_is_not_stale(self) -> None:
+        policy = _policy(_FakeClient([]))
+
+        self.assertFalse(policy._tap_target_stale(_frame(), _frame(), 0.5, 0.5))
+
+    def test_changed_target_area_is_stale(self) -> None:
+        changed = _frame()
+        row_bytes = 64 * 4
+        payload = bytes([90]) * (row_bytes * 32)
+        changed = Frame(
+            frame_id="frame-changed",
+            capture_timestamp=UGATime(101),
+            present_estimate=None,
+            window_identity=identity(),
+            width=64,
+            height=32,
+            stride_bytes=row_bytes,
+            pixel_format=PixelFormat.BGRA8,
+            physical_rect=Rect(0, 0, 64, 32),
+            client_rect=Rect(0, 0, 64, 32),
+            source_backend="fixture",
+            buffer_handle=BufferHandle(
+                handle_id="buf2",
+                kind=BufferKind.CPU_BYTES,
+                size_bytes=len(payload),
+                payload=payload,
+            ),
+        )
+        policy = _policy(_FakeClient([]))
+
+        self.assertTrue(policy._tap_target_stale(_frame(), changed, 0.5, 0.5))
+
+    def test_full_screen_change_elsewhere_does_not_invalidate_tap(self) -> None:
+        # The tap box (±8% around 0.08, 0.9) must stay clean even when the
+        # rest of the screen animates: only the corner pixel rows change.
+        row_bytes = 64 * 4
+        partial = bytearray(bytes([200]) * (row_bytes * 32))
+        for y in range(0, 8):  # top rows only — far from the tap target
+            partial[y * row_bytes : y * row_bytes + row_bytes] = bytes([1]) * row_bytes
+        animated = Frame(
+            frame_id="frame-animated",
+            capture_timestamp=UGATime(101),
+            present_estimate=None,
+            window_identity=identity(),
+            width=64,
+            height=32,
+            stride_bytes=row_bytes,
+            pixel_format=PixelFormat.BGRA8,
+            physical_rect=Rect(0, 0, 64, 32),
+            client_rect=Rect(0, 0, 64, 32),
+            source_backend="fixture",
+            buffer_handle=BufferHandle(
+                handle_id="buf3",
+                kind=BufferKind.CPU_BYTES,
+                size_bytes=len(partial),
+                payload=bytes(partial),
+            ),
+        )
+        policy = _policy(_FakeClient([]))
+
+        self.assertFalse(policy._tap_target_stale(_frame(), animated, 0.5, 0.9))
+
+    def test_discarded_tap_redecides_immediately(self) -> None:
+        frames = [_frame(), _frame(40, 32)]  # second frame: different width
+        policy = _policy(_FakeClient(['{"action":"tap","x":0.5,"y":0.5}'] * 2))
+        policy._frame_source = lambda: frames.pop(0)
+
+        policy.infer(PolicyContext("obs-1", UGATime(100), (), None))
+
+        self.assertEqual(policy._stale_discards, 1)
+        self.assertLessEqual(policy._next_decision_at - time.monotonic(), 0.1)
 
 
 if __name__ == "__main__":

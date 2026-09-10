@@ -466,6 +466,7 @@ class VlmPlannerPolicy:
         self._last_decision_started_mono: float | None = None
         self._sampler = sampler
         self._last_decision_digest: bytes | None = None
+        self._stale_discards = 0
 
     @property
     def policy_version(self) -> str:
@@ -493,10 +494,41 @@ class VlmPlannerPolicy:
         differing = sum(1 for a, b in zip(digest, previous, strict=True) if a != b)
         return differing / len(digest) > self._screen_change_threshold
 
+    def _region_digest(self, frame: Frame, fx: float, fy: float) -> bytes:
+        """Sampled bytes of a ±8% box around the tap target (client fractions)."""
+        view = frame.buffer_handle.readonly_view()
+        payload = bytes(view)
+        width, height, stride = frame.width, frame.height, frame.stride_bytes
+        x0 = max(0, int((fx - 0.08) * width)) * 4
+        x1 = min(width, int((fx + 0.08) * width)) * 4
+        y0 = max(0, int((fy - 0.08) * height))
+        y1 = min(height, int((fy + 0.08) * height))
+        rows = [payload[y * stride + x0 : y * stride + x1] for y in range(y0, y1)]
+        return b"".join(rows)[::16]
+
+    def _tap_target_stale(
+        self, decided: Frame, fresh: Frame, fx: float, fy: float
+    ) -> bool:
+        """True when the tap target area changed between decision and now.
+
+        Only the target box is compared — full-screen animations (water,
+        characters, effects) elsewhere must not invalidate the tap. A
+        different region size (window resize) counts as stale.
+        """
+        decided_region = self._region_digest(decided, fx, fy)
+        fresh_region = self._region_digest(fresh, fx, fy)
+        if not decided_region or len(decided_region) != len(fresh_region):
+            return True
+        differing = sum(
+            1 for a, b in zip(decided_region, fresh_region, strict=True) if a != b
+        )
+        return differing / len(decided_region) > 0.25
+
     def _bundle_frames(self, current: Frame, boundary: float | None) -> list[Frame]:
         if self._sampler is None:
             return [current]
-        bundle = self._sampler.select_bundle(boundary, max_frames=5)
+        # Four history frames + the freshest main-loop frame = max 5 images.
+        bundle = self._sampler.select_bundle(boundary, max_frames=4)
         return [*bundle, current]
 
     def infer(self, context: PolicyContext) -> FastPolicyOutput:
@@ -562,11 +594,30 @@ class VlmPlannerPolicy:
             if quest != self._quest:
                 print(f"[vlm] quest updated: {quest}", flush=True)
             self._quest = quest
+        self._last_decision_digest = self._frame_digest(current_frame)
         if action == "wait":
             self._last_action = 'wait（画面无合适目标或加载中）'
             print(f"[vlm] wait; reply: {reply.strip()[:120]!r}", flush=True)
             return self._hold_chunk(context, duration=self._decision_interval_s)
         assert x is not None and y is not None
+        # Freshness guard: the model replied to a screenshot that is now
+        # seconds old (inference latency). If the area it decided to tap has
+        # changed meanwhile, the tap would land on a stale layout — drop the
+        # decision and immediately re-decide on the live frame. After three
+        # consecutive discards the tap is allowed through anyway: an old tap
+        # is better than never acting on a permanently animated screen.
+        if self._stale_discards < 3 and self._tap_target_stale(
+            current_frame, self._frame_source(), x, y
+        ):
+            self._stale_discards += 1
+            print(
+                "[vlm] tap target stale (screen changed during inference);"
+                " re-deciding on the fresh frame",
+                flush=True,
+            )
+            self._next_decision_at = time.monotonic()
+            return self._hold_chunk(context, duration=0.05)
+        self._stale_discards = 0
         tap_x = round(rect.left + rect.width * x)
         tap_y = round(rect.top + rect.height * y)
         self._last_point = (tap_x, tap_y)
