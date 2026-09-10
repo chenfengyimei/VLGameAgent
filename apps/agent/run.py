@@ -43,7 +43,11 @@ from uga.observation.buffer import TemporalObservationBuffer
 from uga.observation.builder import ObservationBuilder, ObservationInputs
 from uga.policy.chunk_controller import ActionChunkController
 from uga.policy.scripted_tap import ScriptedTapPolicy
-from uga.policy.vlm_planner import OpenAICompatibleVisionClient, VlmPlannerPolicy
+from uga.policy.vlm_planner import (
+    FrameHistorySampler,
+    OpenAICompatibleVisionClient,
+    VlmPlannerPolicy,
+)
 from uga.recording.episode_writer import EpisodeWriter
 from uga.recording.schema import EpisodeMetadata, EpisodeResult
 from uga.recording.video import PyAvVideoRecorder
@@ -154,6 +158,19 @@ async def _run(args: argparse.Namespace) -> int:
             raise SystemExit(f"--vlm-extra-body is not valid JSON: {exc}") from exc
         if extra_body is not None and not isinstance(extra_body, dict):
             raise SystemExit("--vlm-extra-body must be a JSON object")
+        # The vision planner blocks the observe loop for the whole model
+        # round-trip; an independent GDI thread keeps screenshotting during
+        # that gap so the next decision gets a chronological bundle.
+        sampler_backend = GDIFallbackCaptureBackend(windows)
+        try:
+            sampler_backend.start(target.identity)
+        except (BackendUnavailableError, OSError, ValueError) as exc:
+            raise SystemExit(f"frame sampler capture could not start: {exc}") from exc
+        sampler = FrameHistorySampler(
+            capture=sampler_backend.capture,
+            interval_s=1.0,
+        )
+        sampler.start()
         policy: ScriptedTapPolicy | VlmPlannerPolicy = VlmPlannerPolicy(
             client=OpenAICompatibleVisionClient(
                 base_url=args.vlm_base_url,
@@ -167,6 +184,7 @@ async def _run(args: argparse.Namespace) -> int:
             client_rect=_current_client_rect,
             goal=args.goal,
             decision_interval_s=args.vlm_decision_interval,
+            sampler=sampler,
         )
     else:
         policy = ScriptedTapPolicy(
@@ -289,6 +307,9 @@ async def _run(args: argparse.Namespace) -> int:
             await task
         scheduler.neutralize()
         leases.revoke_all(notify=False)
+        if args.policy == "vlm":
+            sampler.stop()
+            sampler_backend.stop()
         backend.stop()
         hotkey.close()
         if previous_handler is not None:
