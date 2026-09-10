@@ -229,7 +229,8 @@ def build_instruction(goal: str, last_action: str | None) -> str:
         '{"action":"tap","x":<按钮中心的横向百分比>,"y":<按钮中心的纵向百分比>}\n'
         '或画面在加载、无合适目标时输出：{"action":"wait"}\n'
         "规则：坐标必须在 0~1 之间；优先点击文字与任务目标相关的按钮；"
-        "不要编造画面中不存在的元素。\n"
+        "不要编造画面中不存在的元素；"
+        "第二行的 JSON 对象在任何情况下都必须出现在回复末尾，绝对不能省略。\n"
     )
 
 
@@ -277,6 +278,7 @@ class VlmPlannerPolicy:
         if now < self._next_decision_at:
             wait_s = max(self._next_decision_at - now, 0.05)
             return self._hold_chunk(context, duration=wait_s)
+        reply: str = ""
         try:
             frame = self._frame_source()
             rect = self._client_rect()
@@ -296,13 +298,14 @@ class VlmPlannerPolicy:
             self._next_decision_at = time.monotonic() + wait_s
             return self._hold_chunk(context, duration=wait_s)
         except Exception as exc:
+            reply_head = f"; reply head: {reply.strip()[:120]!r}" if reply else ""
             self._failures += 1
             if self._failures >= MAX_CONSECUTIVE_FAILURES:
                 raise BackendUnavailableError(
                     f"vision planner failed {self._failures} consecutive decisions: {exc}"
                 ) from exc
             print(
-                f"[vlm] decision failed ({self._failures}): {exc};"
+                f"[vlm] decision failed ({self._failures}): {exc}{reply_head};"
                 f" retrying in {self._failure_backoff_s:.0f}s",
                 flush=True,
             )
