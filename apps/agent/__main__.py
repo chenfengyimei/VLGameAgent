@@ -109,6 +109,11 @@ def cli() -> None:
         default=30.0,
         help="vision request timeout",
     )
+    run_parser.add_argument(
+        "--vlm-no-thinking",
+        action="store_true",
+        help="ask thinking-style models (GLM-4.xV) to answer without a reasoning pass",
+    )
     args = parser.parse_args()
     if args.command is None or args.command == "smoke":
         _smoke()

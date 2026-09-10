@@ -180,6 +180,32 @@ class OpenAICompatibleVisionClientTests(unittest.TestCase):
             client._endpoint, "https://api.example.com/v1/chat/completions"
         )
 
+    def test_disable_thinking_adds_the_switch_to_the_payload(self) -> None:
+        reply_body = json.dumps(
+            {"choices": [{"message": {"content": '{"action":"wait"}'}}]}
+        ).encode("utf-8")
+
+        class _Response:
+            def read(self) -> bytes:
+                return reply_body
+
+            def __enter__(self) -> _Response:
+                return self
+
+            def __exit__(self, *exc: object) -> bool:
+                return False
+
+        client = OpenAICompatibleVisionClient(
+            base_url="https://open.bigmodel.cn/api/paas/v4",
+            model="glm-4.6v-flash",
+            disable_thinking=True,
+        )
+        with mock.patch("urllib.request.urlopen", return_value=_Response()) as urlopen:
+            client.decide(image_png=b"x", instruction="go")
+
+        payload = json.loads(urlopen.call_args.args[0].data.decode("utf-8"))
+        self.assertEqual(payload["thinking"], {"type": "disabled"})
+
     def test_http_error_maps_to_backend_unavailable(self) -> None:
         client = OpenAICompatibleVisionClient(
             base_url="http://127.0.0.1:1234/v1", model="m"

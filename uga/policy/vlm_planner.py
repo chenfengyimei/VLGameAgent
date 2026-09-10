@@ -96,6 +96,7 @@ class OpenAICompatibleVisionClient:
         model: str,
         api_key: str = "",
         timeout_s: float = 30.0,
+        disable_thinking: bool = False,
     ) -> None:
         if not base_url.strip() or not model.strip():
             raise ContractViolation("vision client requires a base URL and a model name")
@@ -108,6 +109,7 @@ class OpenAICompatibleVisionClient:
         self._model = model
         self._api_key = api_key
         self._timeout_s = timeout_s
+        self._disable_thinking = disable_thinking
 
     def decide(self, *, image_png: bytes, instruction: str) -> str:
         """Send one frame plus the instruction; return the model's text reply."""
@@ -128,6 +130,9 @@ class OpenAICompatibleVisionClient:
             # before the answer; a small budget yields an empty content field.
             "max_tokens": 4096,
         }
+        if self._disable_thinking:
+            # Zhipu-style switch: answer directly without a reasoning pass.
+            payload["thinking"] = {"type": "disabled"}
         headers = {"Content-Type": "application/json"}
         if self._api_key:
             headers["Authorization"] = f"Bearer {self._api_key}"

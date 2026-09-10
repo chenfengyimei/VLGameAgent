@@ -153,6 +153,7 @@ async def _run(args: argparse.Namespace) -> int:
                 model=args.vlm_model,
                 api_key=os.environ.get(args.vlm_api_key_env, ""),
                 timeout_s=args.vlm_timeout_seconds,
+                disable_thinking=args.vlm_no_thinking,
             ),
             frame_source=lambda: frames.snapshot()[-1].frame,
             client_rect=_current_client_rect,
@@ -370,6 +371,11 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=30.0,
         help="vision request timeout",
+    )
+    parser.add_argument(
+        "--vlm-no-thinking",
+        action="store_true",
+        help="ask thinking-style models (GLM-4.xV) to answer without a reasoning pass",
     )
     return parser
 
