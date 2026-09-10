@@ -378,9 +378,14 @@ def _decode_payload(
     action = payload.get("action")
     step_raw = payload.get("step")
     step = str(step_raw) if isinstance(step_raw, str) and step_raw.strip() else None
+    quest = payload.get("quest")
+    reported = str(quest) if isinstance(quest, str) and quest.strip() else None
+    if action == "press":
+        button = payload.get("button")
+        if not isinstance(button, str) or not button.strip():
+            raise PlannerReplyError("vision press reply lacks a button name")
+        return "press", None, None, reported, button.strip().lower()
     if action == "wait":
-        quest = payload.get("quest")
-        reported = str(quest) if isinstance(quest, str) and quest.strip() else None
         return "wait", None, None, reported, step
     if action != "tap":
         raise PlannerReplyError(f"vision reply has unknown action: {action!r}")
@@ -391,8 +396,6 @@ def _decode_payload(
         raise PlannerReplyError("vision tap reply lacks numeric x/y coordinates") from exc
     if not 0.0 <= x <= 1.0 or not 0.0 <= y <= 1.0:
         raise PlannerReplyError("vision tap coordinates must be fractions within [0, 1]")
-    quest = payload.get("quest")
-    reported = str(quest) if isinstance(quest, str) and quest.strip() else None
     return "tap", x, y, reported, step
 
 
@@ -451,6 +454,8 @@ def build_instruction(
         '{"actions":[{"action":"tap","x":0.5,"y":0.6},{"action":"tap","x":0.5,"y":0.7}]}\n'
         '可选字段 quest：把你在画面上看到的主线任务文字写进该字段（对象或步骤均可带）：\n'
         '可选字段 step：任务进行到哪一步时写当前步骤（如"打开灵宠界面"）：\n'
+        '需要按实体按键时（用于跳过剧情、确认、返回等）：{"action":"press","button":"confirm"}，'
+        "可用 button 值：jump、menu、confirm、back（需游戏支持）\n"
         '{"action":"tap","x":0.2,"y":0.3,"quest":"与桃夭对话"}\n'
         '或画面在加载、无合适目标时输出：{"action":"wait"}\n'
         "规则：坐标必须在 0~1 之间；优先点击文字与任务目标相关的按钮；"
@@ -697,13 +702,21 @@ class VlmPlannerPolicy:
             self._last_action = 'wait（画面无合适目标或加载中）'
             print(f"[vlm] wait (queued={queued_reply})", flush=True)
             return self._hold_chunk(context, duration=self._decision_interval_s)
-        assert x is not None and y is not None
+        if action == "press":
+            # The fifth slot carries the button name for press actions.
+            if not isinstance(reported_step, str) or not reported_step:
+                raise PlannerReplyError("vision press reply lacks a button name")
+            self._last_action = f"press({reported_step})"
+            print(f"[vlm] press {reported_step} (queued={queued_reply})", flush=True)
+            return self._press_chunk(context, reported_step)
         # Freshness guard: the model replied to a screenshot that is now
         # seconds old (inference latency). If the area it decided to tap has
         # changed meanwhile, the tap would land on a stale layout — drop the
         # decision and immediately re-decide on the live frame. After three
         # consecutive discards the tap is allowed through anyway: an old tap
         # is better than never acting on a permanently animated screen.
+        if x is None or y is None:
+            raise PlannerReplyError(f"vision {action} reply lacks tap coordinates")
         if self._stale_discards < 3 and self._tap_target_stale(
             decision_frame, self._frame_source(), x, y
         ):
@@ -732,6 +745,35 @@ class VlmPlannerPolicy:
         self._last_tap_point = (tap_x, tap_y)
         print(f"[vlm] tap ({x:.3f}, {y:.3f}) -> screen ({tap_x}, {tap_y})", flush=True)
         return self._tap_chunk(context, tap_x, tap_y)
+
+    def _press_chunk(self, context: PolicyContext, button: str) -> FastPolicyOutput:
+        """Emit a one-tick pulse of a semantic canonical button (jump/menu/...)."""
+        try:
+            button_flag = ActionButton[button.upper()]
+        except KeyError as exc:
+            raise PlannerReplyError(
+                f"vision reply press has unknown button: {button!r}"
+            ) from exc
+        # Model inference can take tens of seconds, so chunks are stamped at
+        # decision time — the observation that drove them is still bound via
+        # the observation id, but the actuation window must start now.
+        now = self._clock.now()
+        chunk = ActionChunk(
+            chunk_id=f"vlm-press-{uuid.uuid4().hex[:8]}",
+            observation_id=context.observation_id,
+            generated_at=now,
+            effective_from=now,
+            expires_at=UGATime(now.value_ns + 1_000_000_000),
+            tick_rate_hz=1.0,
+            move_x=(0.0,),
+            move_y=(0.0,),
+            look_x=(0.0,),
+            look_y=(0.0,),
+            buttons=(int(button_flag),),
+            confidence=1.0,
+            policy_version=self._policy_version,
+        )
+        return FastPolicyOutput(chunk, False, None, 30.0, 30.0)
 
     def _tap_chunk(self, context: PolicyContext, tap_x: int, tap_y: int) -> FastPolicyOutput:
         # Model inference can take tens of seconds, so chunks are stamped at

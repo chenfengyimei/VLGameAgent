@@ -201,6 +201,24 @@ class ParsePlannerReplyTests(unittest.TestCase):
 
         self.assertEqual((action, x, y, quest, step), ("tap", 0.4, 0.5, None, "打开灵宠界面"))
 
+    def test_press_action_with_button(self) -> None:
+        action, x, y, quest, step = parse_planner_reply(
+            '剧情对话。 {"action":"press","button":"confirm"}'
+        )
+
+        self.assertEqual((action, x, y, quest, step), ("press", None, None, None, "confirm"))
+
+    def test_press_without_button_rejected(self) -> None:
+        with self.assertRaises(PlannerReplyError):
+            parse_planner_reply('{"action":"press"}')
+
+    def test_press_unknown_button_rejected_at_dispatch(self) -> None:
+        client = _FakeClient(['{"action":"press","button":"does_not_exist"}'])
+        policy = _policy(client)
+
+        with self.assertRaises(PlannerReplyError):
+            policy.infer(PolicyContext("obs-1", UGATime(100), (), None))
+
 
 class OpenAICompatibleVisionClientTests(unittest.TestCase):
     def test_posts_image_and_parses_content(self) -> None:
