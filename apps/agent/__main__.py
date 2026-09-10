@@ -114,6 +114,11 @@ def cli() -> None:
         action="store_true",
         help="ask thinking-style models (GLM-4.xV) to answer without a reasoning pass",
     )
+    run_parser.add_argument(
+        "--vlm-extra-body",
+        help="JSON object merged into the vision request body (e.g. "
+        '\'{"enable_thinking": false}\' for DashScope Qwen3 models)',
+    )
     args = parser.parse_args()
     if args.command is None or args.command == "smoke":
         _smoke()

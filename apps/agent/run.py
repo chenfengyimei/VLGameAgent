@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
+import json
 import os
 import re
 import signal
@@ -147,6 +148,12 @@ async def _run(args: argparse.Namespace) -> int:
         return matches[0].client_screen_rect
 
     if args.policy == "vlm":
+        try:
+            extra_body = json.loads(args.vlm_extra_body) if args.vlm_extra_body else None
+        except json.JSONDecodeError as exc:
+            raise SystemExit(f"--vlm-extra-body is not valid JSON: {exc}") from exc
+        if extra_body is not None and not isinstance(extra_body, dict):
+            raise SystemExit("--vlm-extra-body must be a JSON object")
         policy: ScriptedTapPolicy | VlmPlannerPolicy = VlmPlannerPolicy(
             client=OpenAICompatibleVisionClient(
                 base_url=args.vlm_base_url,
@@ -154,6 +161,7 @@ async def _run(args: argparse.Namespace) -> int:
                 api_key=os.environ.get(args.vlm_api_key_env, ""),
                 timeout_s=args.vlm_timeout_seconds,
                 disable_thinking=args.vlm_no_thinking,
+                extra_body=extra_body,
             ),
             frame_source=lambda: frames.snapshot()[-1].frame,
             client_rect=_current_client_rect,
@@ -376,6 +384,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--vlm-no-thinking",
         action="store_true",
         help="ask thinking-style models (GLM-4.xV) to answer without a reasoning pass",
+    )
+    parser.add_argument(
+        "--vlm-extra-body",
+        help="JSON object merged into the vision request body (e.g. "
+        '\'{"enable_thinking": false}\' for DashScope Qwen3 models)',
     )
     return parser
 

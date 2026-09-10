@@ -101,6 +101,7 @@ class OpenAICompatibleVisionClient:
         api_key: str = "",
         timeout_s: float = 30.0,
         disable_thinking: bool = False,
+        extra_body: dict[str, Any] | None = None,
     ) -> None:
         if not base_url.strip() or not model.strip():
             raise ContractViolation("vision client requires a base URL and a model name")
@@ -114,6 +115,7 @@ class OpenAICompatibleVisionClient:
         self._api_key = api_key
         self._timeout_s = timeout_s
         self._disable_thinking = disable_thinking
+        self._extra_body = dict(extra_body) if extra_body else None
 
     def decide(self, *, image_png: bytes, instruction: str) -> str:
         """Send one frame plus the instruction; return the model's text reply."""
@@ -137,6 +139,10 @@ class OpenAICompatibleVisionClient:
         if self._disable_thinking:
             # Zhipu-style switch: answer directly without a reasoning pass.
             payload["thinking"] = {"type": "disabled"}
+        if self._extra_body:
+            # Provider-specific request fields, e.g. DashScope Qwen3
+            # {"enable_thinking": false} or sampling overrides.
+            payload.update(self._extra_body)
         headers = {"Content-Type": "application/json"}
         if self._api_key:
             headers["Authorization"] = f"Bearer {self._api_key}"

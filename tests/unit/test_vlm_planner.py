@@ -201,6 +201,32 @@ class OpenAICompatibleVisionClientTests(unittest.TestCase):
             client._endpoint, "https://api.example.com/v1/chat/completions"
         )
 
+    def test_extra_body_is_merged_into_the_payload(self) -> None:
+        reply_body = json.dumps(
+            {"choices": [{"message": {"content": '{"action":"wait"}'}}]}
+        ).encode("utf-8")
+
+        class _Response:
+            def read(self) -> bytes:
+                return reply_body
+
+            def __enter__(self) -> _Response:
+                return self
+
+            def __exit__(self, *exc: object) -> bool:
+                return False
+
+        client = OpenAICompatibleVisionClient(
+            base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+            model="qwen3.8-flash",
+            extra_body={"enable_thinking": False},
+        )
+        with mock.patch("urllib.request.urlopen", return_value=_Response()) as urlopen:
+            client.decide(image_png=b"x", instruction="go")
+
+        payload = json.loads(urlopen.call_args.args[0].data.decode("utf-8"))
+        self.assertEqual(payload["enable_thinking"], False)
+
     def test_disable_thinking_adds_the_switch_to_the_payload(self) -> None:
         reply_body = json.dumps(
             {"choices": [{"message": {"content": '{"action":"wait"}'}}]}
