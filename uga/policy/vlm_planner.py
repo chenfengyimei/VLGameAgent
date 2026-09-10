@@ -176,8 +176,11 @@ class OpenAICompatibleVisionClient:
 def parse_planner_reply(reply: str) -> tuple[str, float | None, float | None]:
     """Parse a model reply into ``("tap", x, y)`` or ``("wait", None, None)``.
 
-    Accepts the JSON object with or without markdown fences; anything else is
-    a PlannerReplyError so the caller can retry instead of inventing actions.
+    Thinking-style models may emit description text that itself contains
+    braces plus one or more JSON objects. Scan every balanced ``{...}``
+    segment and accept the NEWEST one that validates against the action
+    contract; anything else is a PlannerReplyError so the caller can retry
+    instead of inventing actions.
     """
     text = reply.strip()
     if text.startswith("```"):
@@ -186,14 +189,35 @@ def parse_planner_reply(reply: str) -> tuple[str, float | None, float | None]:
             text = text[first_newline + 1 :]
         if text.rstrip().endswith("```"):
             text = text.rstrip()[:-3]
-    start = text.find("{")
-    end = text.rfind("}")
-    if start == -1 or end == -1 or end <= start:
+    candidates: list[str] = []
+    depth = 0
+    start = -1
+    for index, char in enumerate(text):
+        if char == "{":
+            if depth == 0:
+                start = index
+            depth += 1
+        elif char == "}" and depth > 0:
+            depth -= 1
+            if depth == 0:
+                candidates.append(text[start : index + 1])
+    if not candidates:
         raise PlannerReplyError("vision reply contains no JSON object")
-    try:
-        payload = json.loads(text[start : end + 1])
-    except json.JSONDecodeError as exc:
-        raise PlannerReplyError(f"vision reply is not valid JSON: {exc}") from exc
+    failure: PlannerReplyError | None = None
+    for candidate in reversed(candidates):
+        try:
+            return _decode_action(candidate)
+        except (json.JSONDecodeError, PlannerReplyError) as exc:
+            failure = (
+                exc if isinstance(exc, PlannerReplyError) else PlannerReplyError(str(exc))
+            )
+    if failure is None:
+        failure = PlannerReplyError("vision reply contains no JSON object")
+    raise failure
+
+
+def _decode_action(candidate: str) -> tuple[str, float | None, float | None]:
+    payload = json.loads(candidate)
     if not isinstance(payload, dict):
         raise PlannerReplyError("vision reply JSON is not an object")
     action = payload.get("action")

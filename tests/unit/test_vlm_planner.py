@@ -129,6 +129,26 @@ class ParsePlannerReplyTests(unittest.TestCase):
         with self.assertRaises(PlannerReplyError):
             parse_planner_reply('{"action":"tap"}')
 
+    def test_newest_json_object_wins_when_reply_has_several(self) -> None:
+        reply = (
+            "画面是灵宠界面 {\"a\":1} 描述里混入了括号 "
+            '{"action":"tap","x":0.1,"y":0.1} 旧的坐标 '
+            '{"action":"tap","x":0.6,"y":0.7}'
+        )
+
+        action, x, y = parse_planner_reply(reply)
+
+        self.assertEqual((action, x, y), ("tap", 0.6, 0.7))
+
+    def test_trailing_text_after_json_is_tolerated(self) -> None:
+        reply = '画面上有按钮。 {"action":"wait"} 补充说明文字'
+
+        self.assertEqual(parse_planner_reply(reply), ("wait", None, None))
+
+    def test_reply_with_only_invalid_objects_rejected(self) -> None:
+        with self.assertRaises(PlannerReplyError):
+            parse_planner_reply('描述 {"a":1} 另一段 {"b":2}')
+
 
 class OpenAICompatibleVisionClientTests(unittest.TestCase):
     def test_posts_image_and_parses_content(self) -> None:
