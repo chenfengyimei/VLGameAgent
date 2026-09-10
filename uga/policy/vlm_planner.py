@@ -17,11 +17,14 @@ import base64
 import contextlib
 import importlib
 import json
+import threading
 import time
 import urllib.error
 import urllib.request
 import uuid
+from collections import deque
 from collections.abc import Callable
+from threading import Event, Lock
 from typing import Any
 
 from uga.capture.frame import BufferKind, Frame, PixelFormat
@@ -118,18 +121,27 @@ class OpenAICompatibleVisionClient:
         self._disable_thinking = disable_thinking
         self._extra_body = dict(extra_body) if extra_body else None
 
-    def decide(self, *, image_png: bytes, instruction: str) -> str:
-        """Send one frame plus the instruction; return the model's text reply."""
-        data_uri = "data:image/png;base64," + base64.b64encode(image_png).decode("ascii")
+    def decide(self, *, images: list[bytes], instruction: str) -> str:
+        """Send one or more frames (oldest first) plus the instruction."""
+        if not images:
+            raise ContractViolation("vision client requires at least one image")
+        content: list[dict[str, Any]] = [
+            {
+                "type": "image_url",
+                "image_url": {
+                    "url": "data:image/png;base64,"
+                    + base64.b64encode(image).decode("ascii")
+                },
+            }
+            for image in images
+        ]
+        content.append({"type": "text", "text": instruction})
         payload: dict[str, Any] = {
             "model": self._model,
             "messages": [
                 {
                     "role": "user",
-                    "content": [
-                        {"type": "image_url", "image_url": {"url": data_uri}},
-                        {"type": "text", "text": instruction},
-                    ],
+                    "content": content,
                 }
             ],
             "temperature": 0.0,
@@ -178,18 +190,112 @@ class OpenAICompatibleVisionClient:
             raise BackendUnavailableError("vision reply is missing message content") from exc
         if not isinstance(message, dict):
             raise BackendUnavailableError("vision reply message is malformed")
-        content = message.get("content")
-        if not isinstance(content, str) or not content.strip():
+        reply_text = message.get("content")
+        if not isinstance(reply_text, str) or not reply_text.strip():
             # Some providers park everything in reasoning_content when the
             # answer never fits; use it as a last resort so the loop can retry.
-            content = message.get("reasoning_content")
-        if not isinstance(content, str) or not content.strip():
+            reply_text = message.get("reasoning_content")
+        if not isinstance(reply_text, str) or not reply_text.strip():
             raise BackendUnavailableError("vision reply content is empty")
-        return content
+        return reply_text
 
 
-def parse_planner_reply(reply: str) -> tuple[str, float | None, float | None]:
-    """Parse a model reply into ``("tap", x, y)`` or ``("wait", None, None)``.
+class FrameHistorySampler:
+    """Continuously captures the target window (~1 Hz) on its own thread.
+
+    Model inference blocks the observe loop for tens of seconds; this sampler
+    keeps collecting frames during that gap so the next decision can see what
+    happened while the model was thinking.
+    """
+
+    def __init__(
+        self,
+        *,
+        capture: Callable[[], Frame],
+        interval_s: float = 1.0,
+        capacity: int = 60,
+    ) -> None:
+        if interval_s <= 0.0:
+            raise ContractViolation("frame sampler interval must be positive")
+        if capacity < 2:
+            raise ContractViolation("frame sampler capacity must hold several frames")
+        self._capture = capture
+        self._interval_s = interval_s
+        self._history: deque[tuple[float, Frame]] = deque(maxlen=capacity)
+        self._lock = Lock()
+        self._stop_event = Event()
+        self._thread = threading.Thread(target=self._run, name="uga-frame-sampler", daemon=True)
+        self._started = False
+
+    def start(self) -> None:
+        if self._started:
+            return
+        self._started = True
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop_event.set()
+        if self._thread.is_alive() and threading.current_thread() is not self._thread:
+            self._thread.join(timeout=2.0)
+
+    def _run(self) -> None:
+        while not self._stop_event.wait(self._interval_s):
+            try:
+                frame = self._capture()
+            except Exception:  # noqa: BLE001 - sampler must never kill the run
+                continue
+            with self._lock:
+                self._history.append((time.monotonic(), frame))
+
+    def latest(self) -> Frame | None:
+        with self._lock:
+            return self._history[-1][1] if self._history else None
+
+    def select_bundle(
+        self, last_inference_at: float | None, max_frames: int = 5
+    ) -> list[Frame]:
+        """Pick up to ``max_frames`` frames covering the last inference gap.
+
+        Bundle order is oldest → newest:
+        1. the first frame captured AFTER the previous inference (continuity
+           anchor from the gap start),
+        2. up to three evenly spaced frames from the remainder,
+        3. the newest frame (the current decision target).
+        """
+        if max_frames < 1:
+            raise ContractViolation("frame bundle size must be positive")
+        with self._lock:
+            history = list(self._history)
+        if not history:
+            return []
+        pool = [
+            item
+            for item in history
+            if last_inference_at is None or item[0] > last_inference_at
+        ]
+        if not pool:
+            # Nothing new since the last inference (long static screen):
+            # fall back to the newest frames we still hold.
+            pool = history[-3:]
+        if len(pool) <= max_frames:
+            return [frame for _, frame in pool]
+        first, *middle, last = pool
+        picks = [first]
+        take = max_frames - 2
+        step = (len(middle) - 1) / take if take and len(middle) > 1 else 0
+        seen: set[int] = set()
+        for i in range(take):
+            index = round(i * step) if step else min(i, len(middle) - 1)
+            index = min(max(index, 0), len(middle) - 1)
+            if index not in seen:
+                seen.add(index)
+                picks.append(middle[index])
+        picks.append(last)
+        return [frame for _, frame in picks[:max_frames]]
+
+
+def parse_planner_reply(reply: str) -> tuple[str, float | None, float | None, str | None]:
+    """Parse a model reply into an action plus the optional quest text it reports.
 
     Thinking-style models may emit description text that itself contains
     braces plus one or more JSON objects. Scan every balanced ``{...}``
@@ -231,13 +337,15 @@ def parse_planner_reply(reply: str) -> tuple[str, float | None, float | None]:
     raise failure
 
 
-def _decode_action(candidate: str) -> tuple[str, float | None, float | None]:
+def _decode_action(candidate: str) -> tuple[str, float | None, float | None, str | None]:
     payload = json.loads(candidate)
     if not isinstance(payload, dict):
         raise PlannerReplyError("vision reply JSON is not an object")
     action = payload.get("action")
     if action == "wait":
-        return "wait", None, None
+        quest = payload.get("quest")
+        reported = str(quest) if isinstance(quest, str) and quest.strip() else None
+        return "wait", None, None, reported
     if action != "tap":
         raise PlannerReplyError(f"vision reply has unknown action: {action!r}")
     try:
@@ -247,25 +355,55 @@ def _decode_action(candidate: str) -> tuple[str, float | None, float | None]:
         raise PlannerReplyError("vision tap reply lacks numeric x/y coordinates") from exc
     if not 0.0 <= x <= 1.0 or not 0.0 <= y <= 1.0:
         raise PlannerReplyError("vision tap coordinates must be fractions within [0, 1]")
-    return "tap", x, y
+    quest = payload.get("quest")
+    reported = str(quest) if isinstance(quest, str) and quest.strip() else None
+    return "tap", x, y, reported
 
 
-def build_instruction(goal: str, last_action: str | None) -> str:
+def build_instruction(
+    goal: str,
+    last_action: str | None,
+    quest: str | None,
+    screen_changed: bool | None,
+    stuck_count: int = 0,
+) -> str:
     """Compose the decision prompt; coordinates are always client fractions."""
     history = (
         ""
         if last_action is None
         else f"上一次动作是 {last_action}。如果画面因此没有变化，请仔细重新观察，尝试别的按钮。\n"
     )
+    quest_line = (
+        f"当前主线任务：{quest}（记住这个任务；完成它后退出当前界面，"
+        "从左上角任务追踪面板读取新的任务文字并放进 quest 字段）。\n"
+        if quest
+        else ""
+    )
+    changed_line = (
+        "上一次点击后画面没有变化——你点的位置无效，必须换不同的目标。\n"
+        if screen_changed is False
+        else ""
+    )
+    stuck_line = (
+        f"警告：你已在同一位置连续点击 {stuck_count} 次画面无任何变化，"
+        "继续重复毫无意义——立即换一个完全不同的目标（如左上角返回按钮、关闭按钮、任务面板）。\n"
+        if stuck_count >= 3
+        else ""
+    )
     return (
         "你是一个安卓游戏自动操作智能体。请仔细观察这张游戏截图。\n"
         f"当前任务目标：{goal}。\n"
+        f"{quest_line}"
         f"{history}"
+        f"{changed_line}"
+        f"{stuck_line}"
         "坐标以百分比表示：x 为横向 0.0（最左）~1.0（最右），y 为纵向 0.0（最上）~1.0（最下）。\n"
         "回答格式（严格遵守两行）：\n"
         "第一行：用一句话描述画面状态，读出你看到的按钮上的文字。\n"
         "第二行：只输出一个 JSON 对象，点击最能推进任务目标的按钮：\n"
         '{"action":"tap","x":<按钮中心的横向百分比>,"y":<按钮中心的纵向百分比>}\n'
+        '可选字段 quest：当你在画面上看到主线任务文字时，把它写进这个字段，如：\n'
+        '{"action":"tap","x":0.2,"y":0.3,"quest":"与桃夭对话"}\n'
         '或画面在加载、无合适目标时输出：{"action":"wait"}\n'
         "规则：坐标必须在 0~1 之间；优先点击文字与任务目标相关的按钮；"
         "不要编造画面中不存在的元素；"
@@ -274,7 +412,16 @@ def build_instruction(goal: str, last_action: str | None) -> str:
 
 
 class VlmPlannerPolicy:
-    """Perception-driven tap policy backed by a vision-language model."""
+    """Perception-driven tap policy backed by a vision-language model.
+
+    v2 additions over the plain single-frame policy:
+    - a frame-history sampler feeds the model up to ``max_bundle_frames``
+      chronologically ordered screenshots covering the last inference gap,
+    - the loop remembers the main-quest text (reported by the model via the
+      optional ``quest`` reply field) and re-injects it into every prompt,
+    - a frame-difference check flags ineffective repeated taps and injects an
+      anti-stuck directive after three no-effect taps on the same point.
+    """
 
     def __init__(
         self,
@@ -285,9 +432,11 @@ class VlmPlannerPolicy:
         goal: str,
         decision_interval_s: float = 6.0,
         failure_backoff_s: float = 10.0,
-        policy_version: str = "vlm-planner-v1",
-        max_image_width: int = 960,
+        policy_version: str = "vlm-planner-v2",
+        max_image_width: int = 720,
         clock: ClockBackend | None = None,
+        screen_change_threshold: float = 0.015,
+        sampler: FrameHistorySampler | None = None,
     ) -> None:
         if decision_interval_s <= 0.0 or failure_backoff_s <= 0.0:
             raise ContractViolation("vision planner cadence must be positive")
@@ -301,30 +450,80 @@ class VlmPlannerPolicy:
         self._failure_backoff_s = failure_backoff_s
         self._policy_version = policy_version
         self._max_image_width = max_image_width
+        self._screen_change_threshold = screen_change_threshold
         self._clock = clock if clock is not None else PerfCounterClock()
         self._next_decision_at = 0.0
         self._failures = 0
         self._rate_limit_backoff_s = 30.0
         self._last_point: tuple[int, int] | None = None
         self._last_action: str | None = None
+        # --- v2 state: quest memory + anti-stuck --------------------------
+        self._quest: str | None = None
+        self._last_action_changed: bool | None = None
+        self._stuck_taps = 0
+        self._last_tap_point: tuple[int, int] | None = None
+        self._last_infer_mono: float | None = None
+        self._sampler = sampler
+        self._last_decision_digest: bytes | None = None
 
     @property
     def policy_version(self) -> str:
         return self._policy_version
+
+    def _frame_digest(self, frame: Frame) -> bytes:
+        """Sampled bytes of the frame payload (every 16th byte) for diffing."""
+        view = frame.buffer_handle.readonly_view()
+        return bytes(view)[::16]
+
+    def _frame_changed_since_decision(self, frame: Frame) -> bool:
+        """True when this frame differs noticeably from the last decision's.
+
+        Compares sampled payload bytes; a different length (window resize)
+        always counts as a change. The reference is the frame at the last
+        successful decision, so the flag answers "did my last action have
+        any visible effect".
+        """
+        digest = self._frame_digest(frame)
+        previous = self._last_decision_digest
+        if previous is None:
+            return True
+        if len(digest) != len(previous):
+            return True
+        differing = sum(1 for a, b in zip(digest, previous, strict=True) if a != b)
+        return differing / len(digest) > self._screen_change_threshold
+
+    def _bundle_frames(self, current: Frame, boundary: float | None) -> list[Frame]:
+        if self._sampler is None:
+            return [current]
+        bundle = self._sampler.select_bundle(boundary, max_frames=5)
+        return [*bundle, current]
 
     def infer(self, context: PolicyContext) -> FastPolicyOutput:
         now = time.monotonic()
         if now < self._next_decision_at:
             wait_s = max(self._next_decision_at - now, 0.05)
             return self._hold_chunk(context, duration=wait_s)
+        boundary = self._last_infer_mono
         reply: str = ""
+        images: list[bytes] = []
         try:
-            frame = self._frame_source()
+            current_frame = self._frame_source()
+            screen_changed = self._frame_changed_since_decision(current_frame)
+            self._last_action_changed = screen_changed
             rect = self._client_rect()
-            image = encode_frame_png(frame, max_width=self._max_image_width)
-            instruction = build_instruction(self._goal, self._last_action)
-            reply = self._client.decide(image_png=image, instruction=instruction)
-            action, x, y = parse_planner_reply(reply)
+            images = [
+                encode_frame_png(frame, max_width=self._max_image_width)
+                for frame in self._bundle_frames(current_frame, boundary)
+            ]
+            instruction = build_instruction(
+                self._goal,
+                self._last_action,
+                self._quest,
+                self._last_action_changed,
+                self._stuck_taps,
+            )
+            reply = self._client.decide(images=images, instruction=instruction)
+            action, x, y, quest = parse_planner_reply(reply)
         except VisionRateLimitedError:
             # Throttling is transient by definition: grow the wait instead of
             # counting the provider as dead, and never let it kill the run.
@@ -353,8 +552,13 @@ class VlmPlannerPolicy:
         self._failures = 0
         self._rate_limit_backoff_s = 30.0
         self._next_decision_at = time.monotonic() + self._decision_interval_s
+        if quest:
+            if quest != self._quest:
+                print(f"[vlm] quest updated: {quest}", flush=True)
+            self._quest = quest
         if action == "wait":
             self._last_action = 'wait（画面无合适目标或加载中）'
+            self._last_infer_mono = time.monotonic()
             print(f"[vlm] wait; reply: {reply.strip()[:120]!r}", flush=True)
             return self._hold_chunk(context, duration=self._decision_interval_s)
         assert x is not None and y is not None
@@ -362,6 +566,16 @@ class VlmPlannerPolicy:
         tap_y = round(rect.top + rect.height * y)
         self._last_point = (tap_x, tap_y)
         self._last_action = f"tap({x:.3f},{y:.3f})"
+        self._last_infer_mono = time.monotonic()
+        if (
+            self._last_tap_point is not None
+            and abs(tap_x - self._last_tap_point[0]) <= rect.width // 100
+            and abs(tap_y - self._last_tap_point[1]) <= rect.height // 100
+        ):
+            self._stuck_taps += 1
+        else:
+            self._stuck_taps = 0
+        self._last_tap_point = (tap_x, tap_y)
         print(f"[vlm] tap ({x:.3f}, {y:.3f}) -> screen ({tap_x}, {tap_y})", flush=True)
         return self._tap_chunk(context, tap_x, tap_y)
 

@@ -58,9 +58,9 @@ class _FakeClient:
         self.replies = list(replies)
         self.calls = 0
 
-    def decide(self, *, image_png: bytes, instruction: str) -> str:
+    def decide(self, *, images: list[bytes], instruction: str) -> str:
         self.calls += 1
-        self.last_image = image_png
+        self.last_images = images
         self.last_instruction = instruction
         if not self.replies:
             raise BackendUnavailableError("fake client exhausted")
@@ -99,19 +99,21 @@ class EncodeFramePngTests(unittest.TestCase):
 
 class ParsePlannerReplyTests(unittest.TestCase):
     def test_tap_reply(self) -> None:
-        action, x, y = parse_planner_reply('{"action":"tap","x":0.59,"y":0.64}')
+        action, x, y, quest = parse_planner_reply('{"action":"tap","x":0.59,"y":0.64}')
 
-        self.assertEqual((action, x, y), ("tap", 0.59, 0.64))
+        self.assertEqual((action, x, y, quest), ("tap", 0.59, 0.64, None))
 
     def test_wait_reply(self) -> None:
-        self.assertEqual(parse_planner_reply('{"action":"wait"}'), ("wait", None, None))
+        self.assertEqual(
+            parse_planner_reply('{"action":"wait"}'), ("wait", None, None, None)
+        )
 
     def test_fenced_reply(self) -> None:
-        action, x, y = parse_planner_reply(
+        action, x, y, quest = parse_planner_reply(
             '```json\n{"action":"tap","x":0.5,"y":0.5}\n```'
         )
 
-        self.assertEqual((action, x, y), ("tap", 0.5, 0.5))
+        self.assertEqual((action, x, y, quest), ("tap", 0.5, 0.5, None))
 
     def test_garbage_reply_rejected(self) -> None:
         with self.assertRaises(PlannerReplyError):
@@ -136,18 +138,25 @@ class ParsePlannerReplyTests(unittest.TestCase):
             '{"action":"tap","x":0.6,"y":0.7}'
         )
 
-        action, x, y = parse_planner_reply(reply)
+        action, x, y, quest = parse_planner_reply(reply)
 
-        self.assertEqual((action, x, y), ("tap", 0.6, 0.7))
+        self.assertEqual((action, x, y, quest), ("tap", 0.6, 0.7, None))
 
     def test_trailing_text_after_json_is_tolerated(self) -> None:
         reply = '画面上有按钮。 {"action":"wait"} 补充说明文字'
 
-        self.assertEqual(parse_planner_reply(reply), ("wait", None, None))
+        self.assertEqual(parse_planner_reply(reply), ("wait", None, None, None))
 
     def test_reply_with_only_invalid_objects_rejected(self) -> None:
         with self.assertRaises(PlannerReplyError):
             parse_planner_reply('描述 {"a":1} 另一段 {"b":2}')
+
+    def test_quest_field_is_reported(self) -> None:
+        action, x, y, quest = parse_planner_reply(
+            '选择捏脸数据。 {"action":"tap","x":0.2,"y":0.3,"quest":"与桃夭对话"}'
+        )
+
+        self.assertEqual((action, x, y, quest), ("tap", 0.2, 0.3, "与桃夭对话"))
 
 
 class OpenAICompatibleVisionClientTests(unittest.TestCase):
@@ -174,7 +183,7 @@ class OpenAICompatibleVisionClientTests(unittest.TestCase):
         with mock.patch(
             "urllib.request.urlopen", return_value=_Response()
         ) as urlopen:
-            reply = client.decide(image_png=b"\x89PNGfake", instruction="决定")
+            reply = client.decide(images=[b"\x89PNGfake"], instruction="决定")
 
         request = urlopen.call_args.args[0]
         self.assertEqual(
@@ -222,7 +231,7 @@ class OpenAICompatibleVisionClientTests(unittest.TestCase):
             extra_body={"enable_thinking": False},
         )
         with mock.patch("urllib.request.urlopen", return_value=_Response()) as urlopen:
-            client.decide(image_png=b"x", instruction="go")
+            client.decide(images=[b"x"], instruction="go")
 
         payload = json.loads(urlopen.call_args.args[0].data.decode("utf-8"))
         self.assertEqual(payload["enable_thinking"], False)
@@ -248,7 +257,7 @@ class OpenAICompatibleVisionClientTests(unittest.TestCase):
             disable_thinking=True,
         )
         with mock.patch("urllib.request.urlopen", return_value=_Response()) as urlopen:
-            client.decide(image_png=b"x", instruction="go")
+            client.decide(images=[b"x"], instruction="go")
 
         payload = json.loads(urlopen.call_args.args[0].data.decode("utf-8"))
         self.assertEqual(payload["thinking"], {"type": "disabled"})
@@ -263,7 +272,7 @@ class OpenAICompatibleVisionClientTests(unittest.TestCase):
                 "url", 500, "boom", None, io.BytesIO(b"")  # type: ignore[arg-type]
             ),
         ), self.assertRaises(BackendUnavailableError):
-            client.decide(image_png=b"x", instruction="go")
+            client.decide(images=[b"x"], instruction="go")
 
 
 class VlmPlannerPolicyTests(unittest.TestCase):
@@ -276,7 +285,7 @@ class VlmPlannerPolicyTests(unittest.TestCase):
         self.assertEqual(output.chunk.buttons, (int(ActionButton.INTERACT),))
         self.assertEqual(output.chunk.pointer_x, 600.0)
         self.assertEqual(output.chunk.pointer_y, 1040.0)
-        self.assertTrue(client.last_image.startswith(b"\x89PNG"))
+        self.assertTrue(client.last_images[-1].startswith(b"\x89PNG"))
         self.assertIn("完成任务", client.last_instruction)
 
     def test_wait_decision_holds_at_client_center(self) -> None:
@@ -323,7 +332,7 @@ class VlmPlannerPolicyTests(unittest.TestCase):
 
     def test_rate_limiting_backs_off_without_counting_failures(self) -> None:
         class _RateLimitedClient:
-            def decide(self, *, image_png: bytes, instruction: str) -> str:
+            def decide(self, *, images: list[bytes], instruction: str) -> str:
                 raise VisionRateLimitedError("rate limited")
 
         clock = [0.0]
@@ -372,11 +381,18 @@ class VlmPlannerPolicyTests(unittest.TestCase):
 
 class BuildInstructionTests(unittest.TestCase):
     def test_instruction_contains_goal_and_json_contract(self) -> None:
-        instruction = build_instruction("进入游戏", last_action="tap(0.5,0.5)")
+        instruction = build_instruction(
+            "进入游戏",
+            last_action="tap(0.5,0.5)",
+            quest="与桃夭对话",
+            screen_changed=True,
+        )
 
         self.assertIn("进入游戏", instruction)
         self.assertIn('"action":"tap"', instruction)
         self.assertIn("tap(0.5,0.5)", instruction)
+        self.assertIn("与桃夭对话", instruction)
+        self.assertIn("没有变化", instruction)
 
 
 if __name__ == "__main__":
