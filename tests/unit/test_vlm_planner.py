@@ -20,7 +20,7 @@ from uga.policy.vlm_planner import (
     encode_frame_png,
     parse_planner_reply,
 )
-from uga.time.clock import UGATime
+from uga.time.clock import ManualClock, UGATime
 from uga.windows.coordinates import Rect
 
 
@@ -256,6 +256,24 @@ class VlmPlannerPolicyTests(unittest.TestCase):
                 client_rect=lambda: Rect(0, 0, 10, 10),
                 goal="  ",
             )
+
+    def test_chunks_are_stamped_at_decision_time_not_observation_time(self) -> None:
+        clock = ManualClock(100_000_000_000)
+        client = _FakeClient(['{"action":"tap","x":0.5,"y":0.5}'])
+        policy = VlmPlannerPolicy(
+            client=client,  # type: ignore[arg-type]
+            frame_source=_frame,
+            client_rect=lambda: Rect(100, 200, 1100, 1320),
+            goal="完成任务",
+            decision_interval_s=600.0,
+            failure_backoff_s=1.0,
+            clock=clock,
+        )
+
+        output = policy.infer(PolicyContext("obs-1", UGATime(100), (), None))
+
+        self.assertEqual(output.chunk.generated_at.value_ns, 100_000_000_000)
+        self.assertGreater(output.chunk.expires_at.value_ns, 100_000_000_000)
 
 
 class BuildInstructionTests(unittest.TestCase):

@@ -27,7 +27,7 @@ from uga.capture.frame import BufferKind, Frame, PixelFormat
 from uga.core.errors import BackendUnavailableError, ContractViolation
 from uga.policy.action_chunk import ActionButton, ActionChunk
 from uga.policy.fast_policy import FastPolicyOutput, PolicyContext
-from uga.time.clock import UGATime
+from uga.time.clock import ClockBackend, PerfCounterClock, UGATime
 from uga.windows.coordinates import Rect
 
 MAX_CONSECUTIVE_FAILURES = 5
@@ -224,6 +224,7 @@ class VlmPlannerPolicy:
         failure_backoff_s: float = 10.0,
         policy_version: str = "vlm-planner-v1",
         max_image_width: int = 960,
+        clock: ClockBackend | None = None,
     ) -> None:
         if decision_interval_s <= 0.0 or failure_backoff_s <= 0.0:
             raise ContractViolation("vision planner cadence must be positive")
@@ -237,6 +238,7 @@ class VlmPlannerPolicy:
         self._failure_backoff_s = failure_backoff_s
         self._policy_version = policy_version
         self._max_image_width = max_image_width
+        self._clock = clock if clock is not None else PerfCounterClock()
         self._next_decision_at = 0.0
         self._failures = 0
         self._last_point: tuple[int, int] | None = None
@@ -286,12 +288,16 @@ class VlmPlannerPolicy:
         return self._tap_chunk(context, tap_x, tap_y)
 
     def _tap_chunk(self, context: PolicyContext, tap_x: int, tap_y: int) -> FastPolicyOutput:
+        # Model inference can take tens of seconds, so chunks are stamped at
+        # decision time — the observation that drove them is still bound via
+        # the observation id, but the actuation window must start now.
+        now = self._clock.now()
         chunk = ActionChunk(
             chunk_id=f"vlm-tap-{uuid.uuid4().hex[:8]}",
             observation_id=context.observation_id,
-            generated_at=context.generated_at,
-            effective_from=context.generated_at,
-            expires_at=UGATime(context.generated_at.value_ns + 1_000_000_000),
+            generated_at=now,
+            effective_from=now,
+            expires_at=UGATime(now.value_ns + 1_000_000_000),
             tick_rate_hz=1.0,
             move_x=(0.0,),
             move_y=(0.0,),
@@ -314,12 +320,13 @@ class VlmPlannerPolicy:
                 round(rect.left + rect.width / 2),
                 round(rect.top + rect.height / 2),
             )
+        now = self._clock.now()
         chunk = ActionChunk(
             chunk_id=f"vlm-hold-{uuid.uuid4().hex[:8]}",
             observation_id=context.observation_id,
-            generated_at=context.generated_at,
-            effective_from=context.generated_at,
-            expires_at=UGATime(context.generated_at.value_ns + int(duration * 1_000_000_000)),
+            generated_at=now,
+            effective_from=now,
+            expires_at=UGATime(now.value_ns + int(duration * 1_000_000_000)),
             tick_rate_hz=30.0,
             move_x=(0.0,) * ticks,
             move_y=(0.0,) * ticks,
