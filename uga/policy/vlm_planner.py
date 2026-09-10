@@ -14,6 +14,7 @@ encoded as PNG through the declared PyAV dependency.
 from __future__ import annotations
 
 import base64
+import contextlib
 import importlib
 import json
 import time
@@ -160,7 +161,15 @@ class OpenAICompatibleVisionClient:
                 # Rate limiting is not an outage: the caller must back off and
                 # keep running instead of counting the provider as dead.
                 raise VisionRateLimitedError("vision endpoint rate limited") from exc
-            raise BackendUnavailableError(f"vision endpoint returned HTTP {exc.code}") from exc
+            # The error body carries the provider's reason (e.g. DashScope
+            # Arrearage when the account runs out of credit) — surface it or
+            # the run log hides the actual cause behind a bare status code.
+            detail = ""
+            with contextlib.suppress(OSError, ValueError):
+                detail = exc.read().decode("utf-8", "replace")[:200]
+            raise BackendUnavailableError(
+                f"vision endpoint returned HTTP {exc.code}: {detail}"
+            ) from exc
         except (urllib.error.URLError, TimeoutError, OSError, ValueError) as exc:
             raise BackendUnavailableError(f"vision endpoint unreachable: {exc}") from exc
         try:
