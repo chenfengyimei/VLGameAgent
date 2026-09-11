@@ -422,6 +422,7 @@ def build_instruction(
     screen_changed: bool | None,
     stuck_count: int = 0,
     quest_step: str | None = None,
+    quest_repeats: int = 0,
 ) -> str:
     """Compose the decision prompt; coordinates are always client fractions."""
     history = (
@@ -429,13 +430,22 @@ def build_instruction(
         if last_action is None
         else f"上一次动作是 {last_action}。如果画面因此没有变化，请仔细重新观察，尝试别的按钮。\n"
     )
-    quest_line = (
-        f"当前主线任务：{quest}\n"
-        "（以上次画面读到的为准；若画面任务追踪显示不同的任务文字，立即在 quest 字段更新；"
-        "任务目标里的具体任务描述若与此处或画面冲突，以此处和画面为准）。\n"
-        if quest
-        else ""
-    )
+    if quest_repeats >= 6:
+        # Anti-echo fallback: the model kept echoing the memorized quest back,
+        # so hide the memory text entirely for one round — the quest field can
+        # only be filled by actually reading the tracker on screen.
+        quest_line = (
+            "记忆任务已多轮未变化，本轮隐藏。quest 字段必须逐字写你此刻从画面左上角"
+            "任务追踪面板最上方读到的任务原文。\n"
+        )
+    elif quest:
+        quest_line = (
+            f"记忆任务（上次画面读取，可能已过期）：{quest}\n"
+            "quest 字段必须逐字写你此刻从画面左上角任务追踪面板最上方读到的任务原文——"
+            "禁止照抄上面的记忆任务；若画面显示的任务与记忆不同，立即写画面上的新值。\n"
+        )
+    else:
+        quest_line = "quest 字段必须逐字写你此刻从画面左上角任务追踪面板最上方读到的任务原文。\n"
     step_line = (
         f"当前任务步骤：{quest_step}（完成后更新 step 字段为下一步）。\n"
         if quest_step
@@ -469,9 +479,8 @@ def build_instruction(
         '当需要连续多个操作时（如推进多段对话、关闭多个弹窗），用 actions 数组输出最多 '
         f'{MAX_ACTION_SEQUENCE} 步，每步之间画面会自动等待变化：\n'
         '{"actions":[{"action":"tap","x":0.5,"y":0.6},{"action":"tap","x":0.5,"y":0.7}]}\n'
-        '必填字段 quest：每次回复都必须把你当前从画面左上角任务追踪面板读到的任务原文'
-        '写进 quest 字段——即使任务没变也要重复写（如"quest":"获取橙装 通关1次兰若妖寺 0/1"）；'
-        "任务文字变化时立即写入新值，这是系统记忆任务的唯一来源。\n"
+        '必填字段 quest：把你此刻从画面左上角任务追踪面板最上方读到的任务原文逐字写进 quest 字段'
+        '（每次都要重新读画面，即使没变也照写；绝不照抄提示中的记忆任务）：\n'
         '可选字段 step：任务进行到哪一步时写当前步骤（如"打开灵宠界面"）：\n'
         '需要按实体按键时（用于跳过剧情、确认、返回等）：{"action":"press","button":"confirm"}，'
         "可用 button 值：jump、menu、confirm、back（需游戏支持）\n"
@@ -535,6 +544,7 @@ class VlmPlannerPolicy:
         # --- v2 state: quest memory + anti-stuck --------------------------
         self._quest: str | None = None
         self._quest_step: str | None = None
+        self._quest_repeats = 0
         self._last_action_changed: bool | None = None
         self._stuck_taps = 0
         self._last_tap_point: tuple[int, int] | None = None
@@ -673,6 +683,7 @@ class VlmPlannerPolicy:
                 self._last_action_changed,
                 self._stuck_taps,
                 self._quest_step,
+                self._quest_repeats,
             )
             reply = self._client.decide(images=images, instruction=instruction)
             sequence = parse_planner_sequence(reply)
@@ -764,7 +775,12 @@ class VlmPlannerPolicy:
         if quest:
             if quest != self._quest:
                 print(f"[vlm] quest updated: {quest}", flush=True)
-            self._quest = quest
+                self._quest = quest
+                self._quest_repeats = 0
+            else:
+                # Same text again: count it so the anti-echo fallback can
+                # eventually hide the memory and force a fresh screen read.
+                self._quest_repeats += 1
         if reported_step and reported_step != self._quest_step:
             print(f"[vlm] quest step: {reported_step}", flush=True)
             self._quest_step = reported_step
