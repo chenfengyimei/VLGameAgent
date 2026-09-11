@@ -4,7 +4,12 @@ import argparse
 import re
 import unittest
 
-from apps.agent.run import _client_fraction, _current_target_client_rect, _find_target
+from apps.agent.run import (
+    _best_effort_cleanup,
+    _client_fraction,
+    _current_target_client_rect,
+    _find_target,
+)
 from tests.helpers import identity
 from uga.core.errors import BackendUnavailableError
 from uga.environment.profile import (
@@ -104,6 +109,21 @@ class LiveAgentCompositionTests(unittest.TestCase):
     def test_client_fraction_rejects_nan(self) -> None:
         with self.assertRaises(argparse.ArgumentTypeError):
             _client_fraction("nan")
+
+    def test_setup_cleanup_continues_after_an_operation_fails(self) -> None:
+        called: list[str] = []
+
+        def broken() -> None:
+            called.append("broken")
+            raise RuntimeError("cleanup failure")
+
+        _best_effort_cleanup(
+            broken,
+            lambda: called.append("second"),
+            lambda: called.append("third"),
+        )
+
+        self.assertEqual(called, ["broken", "second", "third"])
 
 
 if __name__ == "__main__":

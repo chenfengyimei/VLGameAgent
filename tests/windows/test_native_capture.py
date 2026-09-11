@@ -12,7 +12,7 @@ from uga.capture.native_ctypes import (
     NativeCaptureLibrary,
     find_native_library,
 )
-from uga.core.errors import BackendUnavailableError
+from uga.core.errors import BackendUnavailableError, CaptureTimeoutError
 from uga.windows.backend import Win32WindowBackend
 
 
@@ -53,7 +53,13 @@ class NativeCaptureTests(unittest.TestCase):
             )
             try:
                 driver.start(target)
-                frame = driver.capture()
+                for attempt in range(3):
+                    try:
+                        frame = driver.capture()
+                        break
+                    except CaptureTimeoutError:
+                        if attempt == 2:
+                            raise
             except BackendUnavailableError as error:
                 self.skipTest(f"WGC unavailable on this desktop: {error}")
             finally:

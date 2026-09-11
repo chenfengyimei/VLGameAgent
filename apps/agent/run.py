@@ -67,6 +67,12 @@ _TAP_FRACTION_DEFAULT = (0.5, 0.79)
 _CAPTURE_STALL_BUDGET_S = 10.0
 
 
+def _best_effort_cleanup(*operations: Callable[[], object]) -> None:
+    for operation in operations:
+        with contextlib.suppress(BaseException):
+            operation()
+
+
 def _capture_backend(
     profile: GameProfile, windows: Win32WindowBackend
 ) -> CaptureBackendRegistry:
@@ -131,6 +137,26 @@ async def _run(args: argparse.Namespace) -> int:
         or args.vlm_timeout_seconds <= 0
     ):
         raise SystemExit("vision planner intervals and timeouts must be positive")
+    if args.tap_interval_seconds and args.tap_interval_seconds <= args.tap_delay:
+        raise SystemExit("--tap-interval-seconds must exceed --tap-delay")
+    extra_body: dict[str, object] | None = None
+    vision_client: OpenAICompatibleVisionClient | None = None
+    if args.policy == "vlm":
+        try:
+            parsed_extra = json.loads(args.vlm_extra_body) if args.vlm_extra_body else None
+        except json.JSONDecodeError as exc:
+            raise SystemExit(f"--vlm-extra-body is not valid JSON: {exc}") from exc
+        if parsed_extra is not None and not isinstance(parsed_extra, dict):
+            raise SystemExit("--vlm-extra-body must be a JSON object")
+        extra_body = parsed_extra
+        vision_client = OpenAICompatibleVisionClient(
+            base_url=args.vlm_base_url,
+            model=args.vlm_model,
+            api_key=os.environ.get(args.vlm_api_key_env, ""),
+            timeout_s=args.vlm_timeout_seconds,
+            disable_thinking=args.vlm_no_thinking,
+            extra_body=extra_body,
+        )
     profile = load_game_profile(args.profile)
     # Enforce the environment safety manifest before activating, capturing, or
     # otherwise interacting with the target.
@@ -148,13 +174,17 @@ async def _run(args: argparse.Namespace) -> int:
     # no input is scheduled. A genuine capture outage still fails loudly.
     primed = False
     deadline = time.monotonic() + 5.0
-    while time.monotonic() < deadline:
-        try:
-            backend.capture()
-            primed = True
-            break
-        except CaptureTimeoutError:
-            continue
+    try:
+        while time.monotonic() < deadline:
+            try:
+                backend.capture()
+                primed = True
+                break
+            except CaptureTimeoutError:
+                continue
+    except BaseException:
+        _best_effort_cleanup(backend.stop)
+        raise
     if not primed:
         backend.stop()
         raise SystemExit("target produced no capture frames within 5s of activation")
@@ -186,60 +216,59 @@ async def _run(args: argparse.Namespace) -> int:
 
     if args.policy == "vlm":
         try:
-            extra_body = json.loads(args.vlm_extra_body) if args.vlm_extra_body else None
-        except json.JSONDecodeError as exc:
-            raise SystemExit(f"--vlm-extra-body is not valid JSON: {exc}") from exc
-        if extra_body is not None and not isinstance(extra_body, dict):
-            raise SystemExit("--vlm-extra-body must be a JSON object")
-        # The vision planner blocks the observe loop for the whole model
-        # round-trip; an independent GDI thread keeps screenshotting during
-        # that gap so the next decision gets a chronological bundle.
-        sampler_backend = GDIFallbackCaptureBackend(windows)
-        try:
+            # The vision planner blocks the observe loop for the whole model
+            # round-trip; an independent GDI thread keeps screenshotting during
+            # that gap so the next decision gets a chronological bundle.
+            sampler_backend = GDIFallbackCaptureBackend(windows)
             sampler_backend.start(target.identity)
-        except (BackendUnavailableError, OSError, ValueError) as exc:
-            raise SystemExit(f"frame sampler capture could not start: {exc}") from exc
-        sampler = FrameHistorySampler(
-            capture=sampler_backend.capture,
-            interval_s=1.0,
-        )
-        sampler.start()
-        journal = DecisionJournal()
-        if args.dashboard_port > 0:
-            try:
-                dashboard = DecisionDashboard(journal, args.dashboard_port)
-                dashboard.start()
-                print(
-                    f"[dashboard] live at http://127.0.0.1:{args.dashboard_port}",
-                    flush=True,
-                )
-            except OSError as exc:
-                print(f"[dashboard] disabled: {exc}", flush=True)
-        # The model may press semantic buttons; only ones with confirmed
-        # bindings in this profile can actuate — the rest are skipped at the
-        # policy so a press never produces an empty chunk (pipeline contract).
-        available_buttons = frozenset(
-            name
-            for name in ("jump", "menu", "confirm", "back", "primary", "secondary")
-            if (binding := profile.binding(name)) is not None and binding.confirmed
-        )
-        policy: ScriptedTapPolicy | VlmPlannerPolicy = VlmPlannerPolicy(
-            client=OpenAICompatibleVisionClient(
-                base_url=args.vlm_base_url,
-                model=args.vlm_model,
-                api_key=os.environ.get(args.vlm_api_key_env, ""),
-                timeout_s=args.vlm_timeout_seconds,
-                disable_thinking=args.vlm_no_thinking,
-                extra_body=extra_body,
-            ),
-            frame_source=lambda: frames.snapshot()[-1].frame,
-            client_rect=_current_client_rect,
-            goal=args.goal,
-            decision_interval_s=args.vlm_decision_interval,
-            sampler=sampler,
-            journal=journal,
-            available_buttons=available_buttons,
-        )
+            sampler = FrameHistorySampler(
+                capture=sampler_backend.capture,
+                interval_s=1.0,
+            )
+            sampler.start()
+            journal = DecisionJournal()
+            if args.dashboard_port > 0:
+                try:
+                    dashboard = DecisionDashboard(journal, args.dashboard_port)
+                    dashboard.start()
+                    print(
+                        f"[dashboard] live at http://127.0.0.1:{args.dashboard_port}",
+                        flush=True,
+                    )
+                except OSError as exc:
+                    if dashboard is not None:
+                        _best_effort_cleanup(dashboard.stop)
+                        dashboard = None
+                    print(f"[dashboard] disabled: {exc}", flush=True)
+            # The model may press semantic buttons; only ones with confirmed
+            # bindings in this profile can actuate — the rest are skipped at the
+            # policy so a press never produces an empty chunk (pipeline contract).
+            available_buttons = frozenset(
+                name
+                for name in ("jump", "menu", "confirm", "back", "primary", "secondary")
+                if (binding := profile.binding(name)) is not None and binding.confirmed
+            )
+            assert vision_client is not None
+            policy: ScriptedTapPolicy | VlmPlannerPolicy = VlmPlannerPolicy(
+                client=vision_client,
+                frame_source=lambda: frames.snapshot()[-1].frame,
+                client_rect=_current_client_rect,
+                goal=args.goal,
+                decision_interval_s=args.vlm_decision_interval,
+                sampler=sampler,
+                journal=journal,
+                available_buttons=available_buttons,
+            )
+        except BaseException:
+            _best_effort_cleanup(
+                *(
+                    value.stop
+                    for value in (dashboard, sampler, sampler_backend)
+                    if value is not None
+                ),
+                backend.stop,
+            )
+            raise
     else:
         policy = ScriptedTapPolicy(
             [(args.tap_delay, tap_x, tap_y)],
@@ -257,23 +286,36 @@ async def _run(args: argparse.Namespace) -> int:
     recorder: EpisodeWriter | None = None
     episode_id = f"{profile.game_id}-{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:8]}"
     if args.record:
-        recorder = EpisodeWriter(
-            args.record,
-            EpisodeMetadata(
-                episode_id,
-                profile.game_id,
-                "1.1",
-                (round(client.width), round(client.height)),
-                backend.backend_id,
-                clock.now().value_ns,
-                args.goal,
-                EpisodeResult.IN_PROGRESS,
-                "0.1.0",
-                policy.policy_version,
-                False,
-            ),
-        )
-        recorder.attach_video(PyAvVideoRecorder(recorder.video_path, fps=15))
+        try:
+            recorder = EpisodeWriter(
+                args.record,
+                EpisodeMetadata(
+                    episode_id,
+                    profile.game_id,
+                    "1.1",
+                    (round(client.width), round(client.height)),
+                    backend.backend_id,
+                    clock.now().value_ns,
+                    args.goal,
+                    EpisodeResult.IN_PROGRESS,
+                    "0.1.0",
+                    policy.policy_version,
+                    False,
+                ),
+            )
+            recorder.attach_video(PyAvVideoRecorder(recorder.video_path, fps=15))
+        except BaseException:
+            _best_effort_cleanup(
+                scheduler.neutralize,
+                lambda: leases.revoke_all(notify=False),
+                *(
+                    value.stop
+                    for value in (dashboard, sampler, sampler_backend)
+                    if value is not None
+                ),
+                backend.stop,
+            )
+            raise
 
     controller = ActionChunkController(environment, arbiter, scheduler, recorder)
 
@@ -340,7 +382,23 @@ async def _run(args: argparse.Namespace) -> int:
         signal.signal(signal.SIGINT, _on_sigint)
 
     hotkey = Win32EmergencyHotkey(request_stop)
-    hotkey.start()
+    try:
+        hotkey.start()
+    except BaseException:
+        _best_effort_cleanup(
+            scheduler.neutralize,
+            lambda: leases.revoke_all(notify=False),
+            *(
+                value.stop
+                for value in (dashboard, sampler, sampler_backend)
+                if value is not None
+            ),
+            backend.stop,
+            hotkey.close,
+        )
+        if previous_handler is not None:
+            signal.signal(signal.SIGINT, previous_handler)
+        raise
 
     started = time.monotonic()
     if args.policy == "vlm":
