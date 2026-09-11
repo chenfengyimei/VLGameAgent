@@ -457,8 +457,9 @@ def build_instruction(
         else ""
     )
     stuck_line = (
-        f"警告：你已在同一位置连续点击 {stuck_count} 次画面无任何变化，"
-        "继续重复毫无意义——立即换一个完全不同的目标（如左上角返回按钮、关闭按钮、任务面板）。\n"
+        f"警告：你已连续 {stuck_count} 次点击同一位置且画面毫无反应——你的坐标定位很可能错了"
+        "（系统已自动在附近偏移点击尝试）。请重新仔细观察按钮的实际位置（对照它旁边的文字、"
+        "图标重新定位），或改点完全不同的目标（如左上角返回按钮、任务面板）。\n"
         if stuck_count >= 3
         else ""
     )
@@ -548,6 +549,9 @@ class VlmPlannerPolicy:
         self._last_action_changed: bool | None = None
         self._stuck_taps = 0
         self._last_tap_point: tuple[int, int] | None = None
+        self._last_tap_ref: tuple[float, float, bytes] | None = None
+        self._recent_taps: deque[tuple[int, int]] = deque(maxlen=3)
+        self._perturb_rounds = 0
         self._last_decision_started_mono: float | None = None
         self._sampler = sampler
         self._last_decision_digest: bytes | None = None
@@ -621,6 +625,18 @@ class VlmPlannerPolicy:
         bundle = self._sampler.select_bundle(boundary, max_frames=4)
         return [*bundle, current]
 
+    def _region_changed_since(
+        self, reference: bytes, frame: Frame, fx: float, fy: float
+    ) -> bool:
+        """True when the ±8% box at the last tap point visibly changed."""
+        region = self._region_digest(frame, fx, fy)
+        if not reference or len(reference) != len(region):
+            return True
+        differing = sum(
+            1 for a, b in zip(reference, region, strict=True) if a != b
+        )
+        return differing / len(reference) > 0.25
+
     def infer(self, context: PolicyContext) -> FastPolicyOutput:
         now = time.monotonic()
         if now < self._next_decision_at:
@@ -631,11 +647,27 @@ class VlmPlannerPolicy:
         # decision still applies; re-asking the model would waste tokens.
         current_frame = self._frame_source()
         digest = self._frame_digest(current_frame)
+        # Effect check for the previous tap: it worked when the whole screen
+        # changed OR at least the tapped region did (button highlight,
+        # dialog, page flip). Animating backgrounds flip the full-frame
+        # digest constantly, so without the region channel every miss on a
+        # busy screen looked "effective" — and misses were invisible.
+        screen_changed = self._frame_changed_since_decision(current_frame)
+        region_effect = False
+        if self._last_tap_ref is not None:
+            ref_x, ref_y, ref_region = self._last_tap_ref
+            region_effect = self._region_changed_since(ref_region, current_frame, ref_x, ref_y)
+        self._last_action_changed = screen_changed or region_effect
+        self._last_tap_ref = None
         if (
             not self._pending_actions
             and self._last_decision_digest is not None
             and digest == self._last_decision_digest
+            # Static holds extend a WAITING state only. After an ineffective
+            # tap the loop must re-decide (or probe nearby), never nap — a
+            # missed click on a calm screen would otherwise stall silently.
             and self._last_action is not None
+            and self._last_action.startswith("wait")
             and self._static_holds < MAX_STATIC_HOLDS
         ):
             self._static_holds += 1
@@ -870,15 +902,53 @@ class VlmPlannerPolicy:
         tap_y = round(rect.top + rect.height * y)
         self._last_point = (tap_x, tap_y)
         self._last_action = f"tap({x:.3f},{y:.3f})"
-        if (
-            self._last_tap_point is not None
-            and abs(tap_x - self._last_tap_point[0]) <= rect.width // 100
-            and abs(tap_y - self._last_tap_point[1]) <= rect.height // 100
-        ):
-            self._stuck_taps += 1
-        else:
-            self._stuck_taps = 0
+        # Cluster-based ineffective-tap detection: the model can be confident
+        # about a button it keeps MISSING (wrong grounding); a prompt warning
+        # alone does not fix its coordinates. Count taps that land within a
+        # small radius of each other while the screen shows no effect.
+        if not queued_reply:
+            radius_x = rect.width * 0.03
+            radius_y = rect.height * 0.03
+            clustered = len(self._recent_taps) >= 2 and all(
+                abs(px - tap_x) <= radius_x and abs(py - tap_y) <= radius_y
+                for px, py in self._recent_taps
+            )
+            if clustered and self._last_action_changed is False:
+                self._stuck_taps += 1
+            else:
+                self._stuck_taps = 0
+                self._perturb_rounds = 0
+            self._recent_taps.append((tap_x, tap_y))
+            # Auto-probe (the human 'wiggle the mouse' fix): after repeated
+            # ineffective taps on one spot, the system itself taps a ring of
+            # nearby offsets — the model's intent stays, its aim gets a
+            # mechanical second chance. Bounded to two probe rounds per
+            # cluster so a permanently wrong target still escalates to the
+            # 'switch target' prompt warning.
+            if self._stuck_taps >= 3 and self._perturb_rounds < 2:
+                self._perturb_rounds += 1
+                offsets = (
+                    (0.03, 0.0), (-0.03, 0.0), (0.0, 0.03), (0.0, -0.03),
+                    (0.021, 0.021), (-0.021, 0.021), (0.021, -0.021), (-0.021, -0.021),
+                )
+                for dx, dy in offsets:
+                    probe_x = min(max(x + dx, 0.0), 1.0)
+                    probe_y = min(max(y + dy, 0.0), 1.0)
+                    self._pending_actions.append(("tap", probe_x, probe_y, None, None))
+                print(
+                    f"[vlm] tap ineffective x{self._stuck_taps} at ({x:.3f},{y:.3f});"
+                    " auto-probing 8 nearby offsets",
+                    flush=True,
+                )
         self._last_tap_point = (tap_x, tap_y)
+        # Region reference for the next decision's effect check: was the
+        # tapped box visibly different after the tap (highlight/dialog)?
+        if not queued_reply:
+            self._last_tap_ref = (
+                x,
+                y,
+                self._region_digest(decision_frame, x, y),
+            )
         print(f"[vlm] tap ({x:.3f}, {y:.3f}) -> screen ({tap_x}, {tap_y})", flush=True)
         return self._tap_chunk(context, tap_x, tap_y)
 

@@ -715,6 +715,84 @@ class HybridThinkingTests(unittest.TestCase):
 
 
 class ActionSequenceQueueTests(unittest.TestCase):
+    @staticmethod
+    def _varied_frame(tag: int) -> Frame:
+        row_bytes = 64 * 4
+        payload = bytes([tag]) * (row_bytes * 32)
+        return Frame(
+            frame_id=f"frame-v{tag}",
+            capture_timestamp=UGATime(tag),
+            present_estimate=None,
+            window_identity=identity(),
+            width=64,
+            height=32,
+            stride_bytes=row_bytes,
+            pixel_format=PixelFormat.BGRA8,
+            physical_rect=Rect(0, 0, 64, 32),
+            client_rect=Rect(0, 0, 64, 32),
+            source_backend="fixture",
+            buffer_handle=BufferHandle(
+                handle_id=f"buf-v{tag}",
+                kind=BufferKind.CPU_BYTES,
+                size_bytes=len(payload),
+                payload=payload,
+            ),
+        )
+
+    def test_clustered_ineffective_taps_trigger_auto_probe(self) -> None:
+        # The model confidently taps one spot but keeps missing the button:
+        # after three clustered no-effect taps the system probes a ring of
+        # nearby offsets via the pending queue (no extra inference).
+        client = _FakeClient(['{"action":"tap","x":0.50,"y":0.50}'] * 8)
+        policy = _policy(client)
+        policy._decision_interval_s = 60.0
+        policy._frame_source = lambda: _frame()  # identical, static screen
+
+        for index in range(6):
+            policy._next_decision_at = 0.0
+            policy.infer(PolicyContext(f"obs-{index}", UGATime(100), (), None))
+
+        self.assertGreaterEqual(policy._stuck_taps, 3)
+        self.assertGreaterEqual(len(policy._pending_actions), 7)  # probe ring
+        self.assertEqual(policy._perturb_rounds, 1)
+
+    def test_effective_tap_resets_stuck_cluster(self) -> None:
+        client = _FakeClient(['{"action":"tap","x":0.50,"y":0.50}'] * 3)
+        policy = _policy(client)
+        policy._decision_interval_s = 60.0
+        calls = {"n": 0}
+
+        def frame_source() -> Frame:
+            calls["n"] += 1
+            # Two identical frames (decision + freshness probe), then the
+            # world visibly changes — the first tap registered an effect.
+            if calls["n"] <= 2:
+                return _frame()
+            return self._varied_frame(7)
+
+        policy._frame_source = frame_source
+
+        policy._next_decision_at = 0.0
+        policy.infer(PolicyContext("obs-1", UGATime(100), (), None))
+        policy._next_decision_at = 0.0
+        policy.infer(PolicyContext("obs-2", UGATime(200), (), None))
+
+        self.assertEqual(policy._stuck_taps, 0)
+        self.assertFalse(policy._pending_actions)
+
+    def test_probe_rounds_bounded_per_cluster(self) -> None:
+        client = _FakeClient(['{"action":"tap","x":0.50,"y":0.50}'] * 16)
+        policy = _policy(client)
+        policy._decision_interval_s = 60.0
+        policy._frame_source = lambda: _frame()  # static screen throughout
+
+        for index in range(14):
+            policy._next_decision_at = 0.0
+            policy.infer(PolicyContext(f"obs-{index}", UGATime(100), (), None))
+
+        self.assertLessEqual(policy._perturb_rounds, 2)
+
+
     def test_sequence_executes_without_extra_inference(self) -> None:
         client = _FakeClient(
             ['{"actions":[{"action":"tap","x":0.3,"y":0.4},{"action":"tap","x":0.5,"y":0.6}]}']
