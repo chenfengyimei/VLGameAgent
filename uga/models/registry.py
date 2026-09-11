@@ -26,6 +26,8 @@ class ModelSpec:
     enabled: bool
 
     def __post_init__(self) -> None:
+        if type(self.enabled) is not bool:
+            raise ContractViolation("model enabled flag must be a boolean")
         if not self.provider.strip():
             raise ContractViolation("model provider cannot be blank")
         if self.enabled and not (self.model or self.checkpoint):
@@ -71,7 +73,13 @@ def load_model_registry(path: str | Path) -> ModelRegistry:
                 str(value["provider"]),
                 None if value.get("model") is None else str(value["model"]),
                 None if value.get("checkpoint") is None else str(value["checkpoint"]),
-                bool(value.get("enabled", False)),
+                _strict_bool(value.get("enabled", False), f"models.{role_name}.enabled"),
             )
         )
     return ModelRegistry(tuple(specs))
+
+
+def _strict_bool(value: object, field: str) -> bool:
+    if type(value) is not bool:
+        raise ContractViolation(f"{field} must be a boolean")
+    return value

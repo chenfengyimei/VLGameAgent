@@ -47,6 +47,11 @@ class DecisionDashboardTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "within"):
             DecisionDashboard(DecisionJournal(), 65536)
 
+    def test_stop_before_start_does_not_block(self) -> None:
+        dashboard = DecisionDashboard(DecisionJournal(), _available_port())
+
+        dashboard.stop()
+
 
 if __name__ == "__main__":
     unittest.main()

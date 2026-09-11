@@ -99,6 +99,15 @@ class ConfigInputLimitTests(unittest.TestCase):
         registry = load_model_registry(path)
         self.assertIsNotNone(registry.get(ModelRole.PLANNER))
 
+    def test_model_registry_rejects_string_enabled_flag(self) -> None:
+        path = self.root / "models.yaml"
+        path.write_text(
+            VALID_REGISTRY.replace("enabled: true", 'enabled: "false"'),
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(ContractViolation, "must be a boolean"):
+            load_model_registry(path)
+
 
 if __name__ == "__main__":
     unittest.main()

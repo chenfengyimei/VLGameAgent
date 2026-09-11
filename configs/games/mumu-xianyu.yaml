@@ -18,8 +18,8 @@ capabilities:
   combat: false
   gamepad: false
 safety:
-  environment_class: developer_owned
-  automation_allowed: true
-  multiplayer: false
+  environment_class: online
+  automation_allowed: false
+  multiplayer: true
   anti_cheat_present: false
 capability_level: 3

@@ -5,6 +5,7 @@ from pathlib import Path
 
 from uga.environment.fixture_world import FixtureMode, FixtureScenario, FixtureWorld
 from uga.environment.profile import load_game_profile
+from uga.safety.environment_policy import PolicyReason, evaluate_environment
 
 
 class FixtureWorldTests(unittest.TestCase):
@@ -33,6 +34,16 @@ class FixtureWorldTests(unittest.TestCase):
         profile = load_game_profile(root / "configs" / "games" / "uga-fixture-world.yaml")
         self.assertTrue(profile.matches_window_title("UGA Fixture World"))
         self.assertFalse(profile.matches_window_title("unrelated python window"))
+
+    def test_bundled_online_game_profile_is_not_automation_enabled(self) -> None:
+        root = Path(__file__).resolve().parents[2]
+        profile = load_game_profile(root / "configs" / "games" / "mumu-xianyu.yaml")
+
+        decision = evaluate_environment(profile.safety)
+
+        self.assertFalse(decision.allowed)
+        self.assertTrue(profile.safety.multiplayer)
+        self.assertEqual(decision.reason, PolicyReason.AUTOMATION_DISABLED)
 
     def test_each_scenario_has_distinct_identity_and_reachable_goal(self) -> None:
         game_ids: set[str] = set()
