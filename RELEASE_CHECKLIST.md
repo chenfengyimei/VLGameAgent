@@ -6,14 +6,15 @@ when every gate below has recorded evidence.
 ## Development package evidence
 
 - [x] Ruff, strict mypy, pytest, and Rust release compilation pass.
-- [x] Wheel and source distribution build in isolated PEP 517 environments.
-- [x] Wheel installs into a clean virtual environment without dependency
+- [ ] Current audited revision builds wheel and source distribution in isolated
+  PEP 517 environments.
+- [ ] Current audited wheel installs into a clean virtual environment without dependency
   resolution, and the installed agent/dashboard console entries run.
-- [x] Bundled launcher resolves the adjacent native capture DLL and runs the
+- [ ] Current audited bundled launcher resolves the adjacent native capture DLL and runs the
   installed lifecycle smoke entry.
-- [x] Fixture World headless goal reaches `COMPLETE`; installed capture,
+- [ ] Current audited package proves Fixture World headless goal reaches `COMPLETE`; installed capture,
   dataset, benchmark, and qualification commands are present.
-- [x] Build emits a machine-readable inventory of exact Python and Cargo
+- [ ] Current audited build emits a machine-readable inventory of exact Python, npm, and Cargo
   dependency versions and declared licenses.
 
 ## V1 promotion gates

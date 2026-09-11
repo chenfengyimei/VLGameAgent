@@ -1,6 +1,6 @@
 # UGA V1.1 delivery status
 
-Updated: 2026-09-09.
+Updated: 2026-09-11 (post-GLM implementation audit).
 
 All planned issue surfaces UGA-001 through UGA-075 are represented in code,
 configuration, tests, or release tooling. A requirements follow-up has also
@@ -14,15 +14,17 @@ artifacts bind source Episode provenance plus checkpoint/input hashes.
 
 | Range | Milestone | Implementation | External qualification |
 |---|---|---|---|
-| UGA-001–013 | Capture Foundation | Complete and reviewed | 30-minute game/API/device-loss matrix pending |
-| UGA-014–029 | Safe Control | Complete and reviewed | Supervised physical fault matrix pending |
-| UGA-030–034 | Recorder/Replay | Complete and reviewed | 10-minute gameplay Episode pending |
-| UGA-035–053 | Baseline Agent | Complete and reviewed | Selected real-game vertical slice pending |
-| UGA-054–070 | Dataset/Fast Policy | Complete and reviewed | Corpus, GPU training, metrics, and DAgger pending |
-| UGA-071–074 | Generalization/Packaging | Complete and reviewed | Four-game benchmark and clean-machine matrix pending |
-| UGA-075 | V1 release | Gate machinery complete | Blocked by the pending gates and owner license choice |
+| UGA-001–013 | Capture Foundation | Implemented; automated checks pass | Historical Fixture soak exists; current-revision, complete API/device-loss ledger entry pending |
+| UGA-014–029 | Safe Control | Implemented; automated checks pass | Current-revision supervised physical fault matrix pending |
+| UGA-030–034 | Recorder/Replay | Implemented; automated checks pass | Historical Fixture Episode exists; current-revision ledger entry pending |
+| UGA-035–053 | Baseline Agent | Implemented; automated checks pass | Authorized target vertical-slice acceptance pending |
+| UGA-054–070 | Dataset/Fast Policy | Development-smoke paths implemented | Five-hour corpus, GPU training artifact, metrics, and DAgger pending |
+| UGA-071–074 | Generalization/Packaging | Fixture benchmark and development packaging implemented | Current-revision benchmark, clean-machine matrix, and rebuilt bundle pending |
+| UGA-075 | V1 release | Gate machinery implemented; MIT license present | Blocked: no qualification ledger/preflight, incomplete data/model/control gates, stale non-releasable bundle |
 
 The authoritative promotion checklist is `RELEASE_CHECKLIST.md`; every release
 bundle also contains a hashed `release-manifest.json` recording current status.
 Qualification evidence uses `uga-qualify` and the contract in
 `docs/contracts/qualification-evidence.md`.
+The detailed 2026-09-11 audit and continuation plan is
+`docs/reviews/post-glm-implementation-audit.md`.
