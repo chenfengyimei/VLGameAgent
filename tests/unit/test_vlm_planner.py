@@ -727,7 +727,7 @@ class ActionSequenceQueueTests(unittest.TestCase):
         self.assertEqual(first.chunk.buttons, (int(ActionButton.INTERACT),))
         self.assertEqual(len(policy._pending_actions), 1)
 
-        time.sleep(0.06)
+        policy._next_decision_at = 0.0
         second = policy.infer(PolicyContext("obs-2", UGATime(200), (), None))
 
         self.assertEqual(client.calls, 1)  # second action: no new inference
