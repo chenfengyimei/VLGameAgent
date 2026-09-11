@@ -41,6 +41,9 @@ MAX_CONSECUTIVE_FAILURES = 5
 MAX_ACTION_SEQUENCE = 4
 MAX_STATIC_HOLDS = 10
 MAX_WAIT_INTERVAL_S = 15.0
+MAX_VISION_RESPONSE_BYTES = 4 * 1024 * 1024
+MAX_VISION_ERROR_DETAIL_BYTES = 4096
+DEFAULT_FRAME_HISTORY_BYTES = 128 * 1024 * 1024
 # A wait streak on a screen that never advances by itself (a reward popup
 # that only closes on a blank-area tap) is a soft deadlock: escalation only
 # slows the burn. Warn the model first; if it still refuses to act, press
@@ -174,7 +177,7 @@ class OpenAICompatibleVisionClient:
     ) -> None:
         if not base_url.strip() or not model.strip():
             raise ContractViolation("vision client requires a base URL and a model name")
-        if timeout_s <= 0:
+        if not isinstance(timeout_s, (int, float)) or not 0 < timeout_s < float("inf"):
             raise ContractViolation("vision client timeout must be positive")
         root = base_url.rstrip("/")
         if not root.endswith("/chat/completions"):
@@ -232,7 +235,10 @@ class OpenAICompatibleVisionClient:
         )
         try:
             with urllib.request.urlopen(request, timeout=self._timeout_s) as response:
-                body = json.loads(response.read().decode("utf-8"))
+                raw = response.read(MAX_VISION_RESPONSE_BYTES + 1)
+                if len(raw) > MAX_VISION_RESPONSE_BYTES:
+                    raise BackendUnavailableError("vision endpoint response is too large")
+                body = json.loads(raw.decode("utf-8"))
         except urllib.error.HTTPError as exc:
             if exc.code == 429:
                 # Rate limiting is not an outage: the caller must back off and
@@ -243,7 +249,9 @@ class OpenAICompatibleVisionClient:
             # the run log hides the actual cause behind a bare status code.
             detail = ""
             with contextlib.suppress(OSError, ValueError):
-                detail = exc.read().decode("utf-8", "replace")[:200]
+                detail = exc.read(MAX_VISION_ERROR_DETAIL_BYTES).decode(
+                    "utf-8", "replace"
+                )[:200]
             raise BackendUnavailableError(
                 f"vision endpoint returned HTTP {exc.code}: {detail}"
             ) from exc
@@ -279,14 +287,20 @@ class FrameHistorySampler:
         capture: Callable[[], Frame],
         interval_s: float = 1.0,
         capacity: int = 60,
+        max_bytes: int = DEFAULT_FRAME_HISTORY_BYTES,
     ) -> None:
-        if interval_s <= 0.0:
+        if not 0.0 < interval_s < float("inf"):
             raise ContractViolation("frame sampler interval must be positive")
         if capacity < 2:
             raise ContractViolation("frame sampler capacity must hold several frames")
+        if max_bytes < 1:
+            raise ContractViolation("frame sampler byte budget must be positive")
         self._capture = capture
         self._interval_s = interval_s
-        self._history: deque[tuple[float, Frame]] = deque(maxlen=capacity)
+        self._capacity = capacity
+        self._max_bytes = max_bytes
+        self._history_bytes = 0
+        self._history: deque[tuple[float, Frame]] = deque()
         self._lock = Lock()
         self._stop_event = Event()
         self._thread = threading.Thread(target=self._run, name="uga-frame-sampler", daemon=True)
@@ -309,8 +323,21 @@ class FrameHistorySampler:
                 frame = self._capture()
             except Exception:  # noqa: BLE001 - sampler must never kill the run
                 continue
-            with self._lock:
-                self._history.append((time.monotonic(), frame))
+            self._append(time.monotonic(), frame)
+
+    def _append(self, captured_at: float, frame: Frame) -> None:
+        size = frame.buffer_handle.size_bytes
+        if size > self._max_bytes:
+            return
+        with self._lock:
+            self._history.append((captured_at, frame))
+            self._history_bytes += size
+            while (
+                len(self._history) > self._capacity
+                or self._history_bytes > self._max_bytes
+            ):
+                _, evicted = self._history.popleft()
+                self._history_bytes -= evicted.buffer_handle.size_bytes
 
     def latest(self) -> Frame | None:
         with self._lock:

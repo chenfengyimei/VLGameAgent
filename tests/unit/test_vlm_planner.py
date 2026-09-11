@@ -14,6 +14,7 @@ from uga.policy.action_chunk import ActionButton
 from uga.policy.fast_policy import PolicyContext
 from uga.policy.vlm_planner import (
     MAX_CONSECUTIVE_FAILURES,
+    MAX_VISION_RESPONSE_BYTES,
     FrameHistorySampler,
     OpenAICompatibleVisionClient,
     PlannerReplyError,
@@ -307,8 +308,8 @@ class OpenAICompatibleVisionClientTests(unittest.TestCase):
         ).encode("utf-8")
 
         class _Response:
-            def read(self) -> bytes:
-                return reply_body
+            def read(self, size: int = -1) -> bytes:
+                return reply_body[:size]
 
             def __enter__(self) -> _Response:
                 return self
@@ -357,8 +358,8 @@ class OpenAICompatibleVisionClientTests(unittest.TestCase):
         ).encode("utf-8")
 
         class _Response:
-            def read(self) -> bytes:
-                return reply_body
+            def read(self, size: int = -1) -> bytes:
+                return reply_body[:size]
 
             def __enter__(self) -> _Response:
                 return self
@@ -383,8 +384,8 @@ class OpenAICompatibleVisionClientTests(unittest.TestCase):
         ).encode("utf-8")
 
         class _Response:
-            def read(self) -> bytes:
-                return reply_body
+            def read(self, size: int = -1) -> bytes:
+                return reply_body[:size]
 
             def __enter__(self) -> _Response:
                 return self
@@ -413,6 +414,25 @@ class OpenAICompatibleVisionClientTests(unittest.TestCase):
                 "url", 500, "boom", None, io.BytesIO(b"")  # type: ignore[arg-type]
             ),
         ), self.assertRaises(BackendUnavailableError):
+            client.decide(images=[b"x"], instruction="go")
+
+    def test_oversized_response_is_rejected_before_json_parsing(self) -> None:
+        class _Response:
+            def read(self, size: int = -1) -> bytes:
+                return b"x" * min(size, MAX_VISION_RESPONSE_BYTES + 1)
+
+            def __enter__(self) -> _Response:
+                return self
+
+            def __exit__(self, *exc: object) -> bool:
+                return False
+
+        client = OpenAICompatibleVisionClient(
+            base_url="http://127.0.0.1:1234/v1", model="m"
+        )
+        with mock.patch("urllib.request.urlopen", return_value=_Response()), self.assertRaisesRegex(
+            BackendUnavailableError, "response is too large"
+        ):
             client.decide(images=[b"x"], instruction="go")
 
 
@@ -596,6 +616,29 @@ class FrameHistorySamplerTests(unittest.TestCase):
 
     def test_empty_history_returns_empty_bundle(self) -> None:
         sampler = FrameHistorySampler(capture=lambda: _sampler_frame(0))
+
+        self.assertEqual(sampler.select_bundle(None), [])
+
+    def test_history_evicts_old_frames_to_respect_byte_budget(self) -> None:
+        frame_size = _sampler_frame(0).buffer_handle.size_bytes
+        sampler = FrameHistorySampler(
+            capture=lambda: _sampler_frame(0), max_bytes=frame_size * 2
+        )
+
+        for tag in (1, 2, 3):
+            sampler._append(float(tag), _sampler_frame(tag))
+
+        self.assertEqual(
+            [frame.frame_id for frame in sampler.select_bundle(None)],
+            ["frame-2", "frame-3"],
+        )
+        self.assertLessEqual(sampler._history_bytes, frame_size * 2)
+
+    def test_history_drops_a_frame_larger_than_its_budget(self) -> None:
+        frame = _sampler_frame(1)
+        sampler = FrameHistorySampler(capture=lambda: frame, max_bytes=1)
+
+        sampler._append(1.0, frame)
 
         self.assertEqual(sampler.select_bundle(None), [])
 

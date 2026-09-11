@@ -119,12 +119,19 @@ class DecisionDashboard:
     """Background HTTP server over a DecisionJournal; stop() shuts it down."""
 
     def __init__(self, journal: DecisionJournal, port: int) -> None:
-        if port <= 0:
-            raise ValueError("dashboard port must be positive")
+        if not 0 < port <= 65535:
+            raise ValueError("dashboard port must be within [1, 65535]")
         journal_ref = journal
+        allowed_hosts = {f"127.0.0.1:{port}", f"localhost:{port}"}
 
         class Handler(BaseHTTPRequestHandler):
             def do_GET(self) -> None:  # noqa: N802 - stdlib naming
+                if self.headers.get("Host", "").casefold() not in allowed_hosts:
+                    self.send_response(421)
+                    body = b"misdirected request"
+                    self._finish_headers(body)
+                    self.wfile.write(body)
+                    return
                 if self.path == "/api/events":
                     body = json.dumps(journal_ref.snapshot(), ensure_ascii=False).encode("utf-8")
                     self.send_response(200)
@@ -136,14 +143,26 @@ class DecisionDashboard:
                 else:
                     self.send_response(404)
                     body = b"not found"
+                self._finish_headers(body)
+                self.wfile.write(body)
+
+            def _finish_headers(self, body: bytes) -> None:
+                self.send_header("Cache-Control", "no-store")
+                self.send_header(
+                    "Content-Security-Policy",
+                    "default-src 'none'; style-src 'unsafe-inline'",
+                )
+                self.send_header("Cross-Origin-Resource-Policy", "same-origin")
+                self.send_header("X-Content-Type-Options", "nosniff")
+                self.send_header("X-Frame-Options", "DENY")
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
-                self.wfile.write(body)
 
             def log_message(self, format: str, *args: object) -> None:  # noqa: A002
                 pass  # keep the run console clean
 
         self._server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+        self._server.daemon_threads = True
         self._thread = threading.Thread(
             target=self._server.serve_forever, name="uga-dashboard", daemon=True
         )
