@@ -551,6 +551,16 @@ class BuildInstructionTests(unittest.TestCase):
         self.assertIn("50字", instruction)
         self.assertIn("背包中已有的资源", instruction)
 
+    def test_wait_streak_warning_forbids_more_waits(self) -> None:
+        instruction = build_instruction("推进主线", None, None, None, wait_streak=6)
+
+        self.assertIn("禁止再输出 wait", instruction)
+        self.assertIn("连续 6 次选择等待", instruction)
+        self.assertIn('"button":"back"', instruction)
+
+        calm = build_instruction("推进主线", None, None, None, wait_streak=5)
+        self.assertNotIn("禁止再输出 wait", calm)
+
 
 def _sampler_frame(tag: int) -> Frame:
     row_bytes = 64 * 4
@@ -781,6 +791,50 @@ class HybridThinkingTests(unittest.TestCase):
 
         self.assertEqual(policy._wait_streak, 0)
         self.assertLessEqual(policy._next_decision_at - time.monotonic(), 3.5)
+
+    def test_wait_streak_forces_back_press(self) -> None:
+        # A popup that only closes on a blank-area tap never advances by
+        # itself; at the streak cap the system must press back instead of
+        # waiting forever.
+        client = _FakeClient(['{"action":"wait"}'] * 10)
+        policy = _policy(client)
+        policy._available_buttons = frozenset({"back"})
+        policy._decision_interval_s = 3.0
+        policy._next_decision_at = 0.0
+        tags = iter(range(150, 170))
+        policy._frame_source = lambda: self._varied_frame(next(tags))
+
+        for index in range(9):
+            policy._next_decision_at = 0.0
+            policy.infer(PolicyContext(f"obs-{index}", UGATime(100 + index), (), None))
+        self.assertEqual(policy._wait_streak, 9)
+
+        policy._next_decision_at = 0.0
+        output = policy.infer(PolicyContext("obs-final", UGATime(200), (), None))
+
+        self.assertEqual(output.chunk.buttons, (int(ActionButton.BACK),))
+        self.assertEqual(policy._wait_streak, 0)
+        self.assertLessEqual(policy._next_decision_at - time.monotonic(), 3.5)
+
+    def test_wait_streak_without_back_binding_keeps_waiting(self) -> None:
+        client = _FakeClient(['{"action":"wait"}'] * 11)
+        policy = _policy(client)
+        policy._available_buttons = frozenset()
+        policy._decision_interval_s = 3.0
+        policy._next_decision_at = 0.0
+        tags = iter(range(180, 200))
+        policy._frame_source = lambda: self._varied_frame(next(tags))
+
+        for index in range(10):
+            policy._next_decision_at = 0.0
+            policy.infer(PolicyContext(f"obs-{index}", UGATime(100 + index), (), None))
+        self.assertEqual(policy._wait_streak, 10)
+
+        policy._next_decision_at = 0.0
+        output = policy.infer(PolicyContext("obs-final", UGATime(200), (), None))
+
+        self.assertTrue(all(b == 0 for b in output.chunk.buttons))
+        self.assertEqual(policy._wait_streak, 11)
 
     def test_unchanged_screen_skips_inference(self) -> None:
         client = _FakeClient(['{"action":"wait"}'] * 3)

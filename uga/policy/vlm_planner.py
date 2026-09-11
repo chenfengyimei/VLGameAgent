@@ -41,6 +41,12 @@ MAX_CONSECUTIVE_FAILURES = 5
 MAX_ACTION_SEQUENCE = 4
 MAX_STATIC_HOLDS = 10
 MAX_WAIT_INTERVAL_S = 15.0
+# A wait streak on a screen that never advances by itself (a reward popup
+# that only closes on a blank-area tap) is a soft deadlock: escalation only
+# slows the burn. Warn the model first; if it still refuses to act, press
+# the bound back button once mechanically.
+WAIT_WARN_STREAK = 6
+WAIT_FORCE_BACK_STREAK = 10
 _SUPPORTED_FORMATS = (PixelFormat.BGRA8, PixelFormat.RGBA8)
 # Live GLM failure shape: {"action":"tap","x":0.622,0.415,...} — both
 # fractions packed into the x slot with the "y" key dropped. The decode
@@ -506,6 +512,7 @@ def build_instruction(
     stuck_count: int = 0,
     quest_step: str | None = None,
     quest_repeats: int = 0,
+    wait_streak: int = 0,
 ) -> str:
     """Compose the decision prompt; coordinates are always client fractions."""
     history = (
@@ -546,6 +553,13 @@ def build_instruction(
         if stuck_count >= 3
         else ""
     )
+    wait_line = (
+        f"警告：你已连续 {wait_streak} 次选择等待且画面毫无推进——这个画面很可能不会自动变化，"
+        "禁止再输出 wait。必须执行具体动作：按画面提示操作（如“点击空白区域关闭”、确定/关闭"
+        "按钮），或输出 {\"action\":\"press\",\"button\":\"back\"} 返回关闭当前界面。\n"
+        if wait_streak >= WAIT_WARN_STREAK
+        else ""
+    )
     return (
         "你是一个安卓游戏自动操作智能体。请仔细观察这组按时间先后排序的游戏截图"
         "（最后一张是当前画面，其余是之前几秒的历史画面，用于判断画面变化趋势）。\n"
@@ -559,6 +573,7 @@ def build_instruction(
         f"{history}"
         f"{changed_line}"
         f"{stuck_line}"
+        f"{wait_line}"
         "坐标以百分比表示：x 为横向 0.0（最左）~1.0（最右），y 为纵向 0.0（最上）~1.0（最下）。\n"
         "回答格式（严格遵守两行）：\n"
         "第一行：用一句话（不超过50字）描述画面状态，读出你看到的按钮上的文字。\n"
@@ -812,6 +827,7 @@ class VlmPlannerPolicy:
                 self._stuck_taps,
                 self._quest_step,
                 self._quest_repeats,
+                wait_streak=self._wait_streak,
             )
             reply = self._client.decide(images=images, instruction=instruction)
             sequence = parse_planner_sequence(reply)
@@ -951,6 +967,42 @@ class VlmPlannerPolicy:
                 # should not burn a ~9s inference every 3 seconds. Any real
                 # action resets the streak.
                 self._wait_streak += 1
+                if (
+                    self._wait_streak >= WAIT_FORCE_BACK_STREAK
+                    and "back" in self._available_buttons
+                ):
+                    # Mechanical escape: the model has waited many times on
+                    # a screen that will not advance by itself (e.g. a
+                    # reward popup that only closes on a blank-area tap).
+                    # Prompt warnings cannot cure passive waiting — press the
+                    # bound back button once and let the model re-observe.
+                    print(
+                        f"[vlm] wait x{self._wait_streak}; forcing back press "
+                        "to dismiss a stuck overlay",
+                        flush=True,
+                    )
+                    self._journal.record(
+                        DecisionRecord(
+                            timestamp=time.time(),
+                            kind="action",
+                            latency_s=None,
+                            action="press(back) forced by wait streak",
+                            detail=(
+                                f"{self._wait_streak} consecutive waits on an "
+                                "unchanged screen; system pressed back"
+                            ),
+                            quest=self._quest,
+                            quest_step=self._quest_step,
+                            images=None,
+                            reply_head=None,
+                        )
+                    )
+                    self._wait_streak = 0
+                    self._last_action = 'press(back)（连续等待过久，系统强制返回）'
+                    self._next_decision_at = (
+                        time.monotonic() + self._decision_interval_s
+                    )
+                    return self._press_chunk(context, "back")
                 escalated = min(
                     self._decision_interval_s * (2 ** self._wait_streak),
                     MAX_WAIT_INTERVAL_S,
