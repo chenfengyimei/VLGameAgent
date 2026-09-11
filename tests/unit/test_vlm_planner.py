@@ -957,6 +957,50 @@ class ActionSequenceQueueTests(unittest.TestCase):
 
         self.assertLessEqual(policy._perturb_rounds, 2)
 
+    def test_probe_exhaustion_presses_back_to_escape(self) -> None:
+        # Both probe rounds spent and the model still hammers the same dead
+        # spot: the system swaps the useless tap for a bound back press so
+        # the topmost UI closes and the next decision sees a fresh screen.
+        client = _FakeClient(['{"action":"tap","x":0.50,"y":0.50}'] * 30)
+        policy = _policy(client)
+        policy._decision_interval_s = 60.0
+        policy._frame_source = lambda: _frame()  # static screen throughout
+
+        output = None
+        for index in range(24):
+            policy._next_decision_at = 0.0
+            output = policy.infer(
+                PolicyContext(f"obs-{index}", UGATime(100), (), None)
+            )
+
+        assert output is not None
+        self.assertEqual(output.chunk.buttons, (int(ActionButton.BACK),))
+        self.assertEqual(policy._stuck_taps, 0)
+        self.assertEqual(policy._perturb_rounds, 0)
+        self.assertFalse(policy._pending_actions)
+        self.assertIn("press(back)", str(policy._last_action))
+
+    def test_probe_exhaustion_without_back_keeps_tapping(self) -> None:
+        # No bound back button → the escape cannot fire; the model's tap
+        # must still execute (never an empty chunk) and the counters keep
+        # climbing so the prompt warning stays truthful.
+        client = _FakeClient(['{"action":"tap","x":0.50,"y":0.50}'] * 30)
+        policy = _policy(client)
+        policy._decision_interval_s = 60.0
+        policy._frame_source = lambda: _frame()  # static screen throughout
+        policy._available_buttons = frozenset()
+
+        output = None
+        for index in range(24):
+            policy._next_decision_at = 0.0
+            output = policy.infer(
+                PolicyContext(f"obs-{index}", UGATime(100), (), None)
+            )
+
+        assert output is not None
+        self.assertEqual(output.chunk.buttons, (int(ActionButton.INTERACT),))
+        self.assertGreaterEqual(policy._stuck_taps, 6)
+
 
     def test_sequence_executes_without_extra_inference(self) -> None:
         client = _FakeClient(

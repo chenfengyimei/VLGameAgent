@@ -1135,6 +1135,42 @@ class VlmPlannerPolicy:
                     " auto-probing 8 nearby offsets",
                     flush=True,
                 )
+            elif (
+                self._stuck_taps >= 6
+                and self._perturb_rounds >= 2
+                and "back" in self._available_buttons
+            ):
+                # Both probe rounds are spent and the model is STILL tapping
+                # the same dead spot — the human fix at this point is
+                # pressing back to close the topmost UI and re-observe.
+                # Prompt warnings cannot cure confident-but-wrong grounding;
+                # the wait path has the same escape for passive waiting.
+                print(
+                    f"[vlm] tap ineffective x{self._stuck_taps} at "
+                    f"({x:.3f},{y:.3f}); pressing back to dismiss the stuck UI",
+                    flush=True,
+                )
+                self._journal.record(
+                    DecisionRecord(
+                        timestamp=time.time(),
+                        kind="action",
+                        latency_s=None,
+                        action="press(back) forced by ineffective taps",
+                        detail=(
+                            f"{self._stuck_taps} clustered ineffective taps with"
+                            " probe rounds exhausted; system pressed back"
+                        ),
+                        quest=self._quest,
+                        quest_step=self._quest_step,
+                        images=None,
+                        reply_head=None,
+                    )
+                )
+                self._pending_actions.clear()
+                self._stuck_taps = 0
+                self._perturb_rounds = 0
+                self._last_action = "press(back)（连续无效点击，系统强制返回）"
+                return self._press_chunk(context, "back")
         self._last_tap_point = (tap_x, tap_y)
         # Region reference for the next decision's effect check: was the
         # tapped box visibly different after the tap (highlight/dialog)?
