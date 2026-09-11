@@ -119,6 +119,12 @@ def cli() -> None:
         help="JSON object merged into the vision request body (e.g. "
         '\'{"enable_thinking": false}\' for DashScope Qwen3 models)',
     )
+    run_parser.add_argument(
+        "--dashboard-port",
+        type=int,
+        default=8787,
+        help="port for the live decision dashboard at http://127.0.0.1:<port> (0 = disabled)",
+    )
     args = parser.parse_args()
     if args.command is None or args.command == "smoke":
         _smoke()

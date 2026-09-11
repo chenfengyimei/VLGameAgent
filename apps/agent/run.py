@@ -22,6 +22,7 @@ import uuid
 from pathlib import Path
 from types import FrameType
 
+from apps.agent.dashboard import DecisionDashboard
 from uga.agent.mode_router import ModeRouter, RuleModeClassifier
 from uga.capture.dxgi import DXGIDuplicationBackend
 from uga.capture.fallback import GDIFallbackCaptureBackend
@@ -42,6 +43,7 @@ from uga.environment.profile import GameProfile, load_game_profile
 from uga.observation.buffer import TemporalObservationBuffer
 from uga.observation.builder import ObservationBuilder, ObservationInputs
 from uga.policy.chunk_controller import ActionChunkController
+from uga.policy.decision_journal import DecisionJournal
 from uga.policy.scripted_tap import ScriptedTapPolicy
 from uga.policy.vlm_planner import (
     FrameHistorySampler,
@@ -171,6 +173,18 @@ async def _run(args: argparse.Namespace) -> int:
             interval_s=1.0,
         )
         sampler.start()
+        journal = DecisionJournal()
+        dashboard: DecisionDashboard | None = None
+        if args.dashboard_port > 0:
+            try:
+                dashboard = DecisionDashboard(journal, args.dashboard_port)
+                dashboard.start()
+                print(
+                    f"[dashboard] live at http://127.0.0.1:{args.dashboard_port}",
+                    flush=True,
+                )
+            except OSError as exc:
+                print(f"[dashboard] disabled: {exc}", flush=True)
         policy: ScriptedTapPolicy | VlmPlannerPolicy = VlmPlannerPolicy(
             client=OpenAICompatibleVisionClient(
                 base_url=args.vlm_base_url,
@@ -185,6 +199,7 @@ async def _run(args: argparse.Namespace) -> int:
             goal=args.goal,
             decision_interval_s=args.vlm_decision_interval,
             sampler=sampler,
+            journal=journal,
         )
     else:
         policy = ScriptedTapPolicy(
@@ -310,6 +325,8 @@ async def _run(args: argparse.Namespace) -> int:
         if args.policy == "vlm":
             sampler.stop()
             sampler_backend.stop()
+            if dashboard is not None:
+                dashboard.stop()
         backend.stop()
         hotkey.close()
         if previous_handler is not None:

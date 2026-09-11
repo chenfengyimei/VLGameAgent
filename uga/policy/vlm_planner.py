@@ -30,6 +30,7 @@ from typing import Any
 from uga.capture.frame import BufferKind, Frame, PixelFormat
 from uga.core.errors import BackendUnavailableError, ContractViolation
 from uga.policy.action_chunk import ActionButton, ActionChunk
+from uga.policy.decision_journal import DecisionJournal, DecisionRecord, NullJournal
 from uga.policy.fast_policy import FastPolicyOutput, PolicyContext
 from uga.time.clock import ClockBackend, PerfCounterClock, UGATime
 from uga.windows.coordinates import Rect
@@ -507,6 +508,7 @@ class VlmPlannerPolicy:
         clock: ClockBackend | None = None,
         screen_change_threshold: float = 0.015,
         sampler: FrameHistorySampler | None = None,
+        journal: DecisionJournal | None = None,
     ) -> None:
         if decision_interval_s <= 0.0 or failure_backoff_s <= 0.0:
             raise ContractViolation("vision planner cadence must be positive")
@@ -537,6 +539,7 @@ class VlmPlannerPolicy:
         self._sampler = sampler
         self._last_decision_digest: bytes | None = None
         self._stale_discards = 0
+        self._journal = journal if journal is not None else NullJournal()
         self._pending_actions: deque[
             tuple[str, float | None, float | None, str | None, str | None]
         ] = deque()
@@ -624,6 +627,19 @@ class VlmPlannerPolicy:
         ):
             self._static_holds += 1
             self._next_decision_at = now + self._decision_interval_s
+            self._journal.record(
+                DecisionRecord(
+                    timestamp=time.time(),
+                    kind="static_hold",
+                    latency_s=None,
+                    action=self._last_action,
+                    detail=f"screen unchanged; hold {self._static_holds}/{MAX_STATIC_HOLDS}",
+                    quest=self._quest,
+                    quest_step=self._quest_step,
+                    images=None,
+                    reply_head=None,
+                )
+            )
             return self._hold_chunk(context, duration=self._decision_interval_s)
         if digest != self._last_decision_digest:
             self._static_holds = 0
@@ -640,6 +656,7 @@ class VlmPlannerPolicy:
         self._last_decision_started_mono = now
         reply: str = ""
         images: list[bytes] = []
+        inference_started = time.monotonic()
         try:
             rect = self._client_rect()
             images = [
@@ -665,11 +682,37 @@ class VlmPlannerPolicy:
                 f"[vlm] rate limited; pausing decisions for {wait_s:.0f}s",
                 flush=True,
             )
+            self._journal.record(
+                DecisionRecord(
+                    timestamp=time.time(),
+                    kind="rate_limited",
+                    latency_s=time.monotonic() - inference_started,
+                    action=None,
+                    detail=f"backoff {wait_s:.0f}s",
+                    quest=self._quest,
+                    quest_step=self._quest_step,
+                    images=len(images),
+                    reply_head=None,
+                )
+            )
             self._next_decision_at = time.monotonic() + wait_s
             return self._hold_chunk(context, duration=wait_s)
         except Exception as exc:
             reply_head = f"; reply head: {reply.strip()[:120]!r}" if reply else ""
             self._failures += 1
+            self._journal.record(
+                DecisionRecord(
+                    timestamp=time.time(),
+                    kind="failure",
+                    latency_s=time.monotonic() - inference_started,
+                    action=None,
+                    detail=f"{type(exc).__name__}: {exc}"[:160],
+                    quest=self._quest,
+                    quest_step=self._quest_step,
+                    images=len(images),
+                    reply_head=reply.strip()[:120] or None,
+                )
+            )
             if self._failures >= MAX_CONSECUTIVE_FAILURES:
                 raise BackendUnavailableError(
                     f"vision planner failed {self._failures} consecutive decisions: {exc}"
@@ -688,6 +731,19 @@ class VlmPlannerPolicy:
         head, *tail = sequence
         for step in reversed(tail):
             self._pending_actions.append(step)
+        self._journal.record(
+            DecisionRecord(
+                timestamp=time.time(),
+                kind="decision",
+                latency_s=time.monotonic() - inference_started,
+                action=None,
+                detail=f"{len(sequence)} step(s); reply: {reply.strip()[:140]}",
+                quest=self._quest,
+                quest_step=self._quest_step,
+                images=len(images),
+                reply_head=reply.strip()[:160],
+            )
+        )
         return self._execute_action(context, current_frame, head, rect=rect)
 
     def _execute_action(
@@ -709,6 +765,26 @@ class VlmPlannerPolicy:
         if reported_step and reported_step != self._quest_step:
             print(f"[vlm] quest step: {reported_step}", flush=True)
             self._quest_step = reported_step
+        action_label = (
+            "wait" if action == "wait" else
+            f"press({reported_step})" if action == "press" else
+            f"drag({x:.2f},{y:.2f})" if action == "drag" and x is not None and y is not None else
+            f"tap({x:.2f},{y:.2f})" if action == "tap" and x is not None and y is not None else
+            action
+        )
+        self._journal.record(
+            DecisionRecord(
+                timestamp=time.time(),
+                kind="queued" if queued_reply else "action",
+                latency_s=None,
+                action=action_label,
+                detail=None,
+                quest=self._quest,
+                quest_step=self._quest_step,
+                images=None,
+                reply_head=None,
+            )
+        )
         if queued_reply:
             # Queued steps replay on later frames; the decision interval was
             # already advanced when the sequence was parsed.
@@ -754,6 +830,19 @@ class VlmPlannerPolicy:
                 "[vlm] tap target stale (screen changed during inference);"
                 " re-deciding on the fresh frame",
                 flush=True,
+            )
+            self._journal.record(
+                DecisionRecord(
+                    timestamp=time.time(),
+                    kind="stale_discard",
+                    latency_s=None,
+                    action=action_label,
+                    detail=f"discards: {self._stale_discards}/3; queue cleared",
+                    quest=self._quest,
+                    quest_step=self._quest_step,
+                    images=None,
+                    reply_head=None,
+                )
             )
             self._next_decision_at = time.monotonic()
             return self._hold_chunk(context, duration=0.05)
