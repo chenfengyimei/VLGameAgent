@@ -5,7 +5,7 @@ process:
   executable: [MuMuNxDevice.exe, MuMuPlayer.exe]
 window:
   preferred_capture: windows_graphics_capture
-  title_pattern: '^MuMu安卓设备(-\d+)?$'
+  title_pattern: '^MuMu安卓设备-\d+$'
 camera:
   type: absolute_pointer
 controls:
