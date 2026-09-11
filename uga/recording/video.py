@@ -65,8 +65,6 @@ class PyAvVideoRecorder:
         assert self._stream is not None
         encode_width = frame.width & ~1
         encode_height = frame.height & ~1
-        if encode_width != self._stream.width or encode_height != self._stream.height:
-            raise ContractViolation("video resolution changed within one MP4 segment")
         pixel_format = "bgra" if frame.pixel_format == PixelFormat.BGRA8 else "rgba"
         video_frame = self._av.VideoFrame(encode_width, encode_height, pixel_format)
         plane = video_frame.planes[0]
@@ -79,6 +77,16 @@ class PyAvVideoRecorder:
                 source_start : source_start + row_bytes
             ]
         plane.update(packed)
+        if encode_width != self._stream.width or encode_height != self._stream.height:
+            # The window can resize mid-run (emulator sidebars, user layout
+            # changes); an MP4 segment keeps one geometry, so resample the
+            # frame into the registered size instead of killing a long
+            # autonomous session over a cosmetic layout change.
+            video_frame = video_frame.reformat(
+                width=self._stream.width,
+                height=self._stream.height,
+                format=pixel_format,
+            )
         timestamp_ns = frame.capture_timestamp.value_ns
         if self._last_timestamp_ns is not None and timestamp_ns < self._last_timestamp_ns:
             raise ContractViolation("video frame timestamps cannot regress")

@@ -66,6 +66,33 @@ class PyAvVideoRecorderTests(unittest.TestCase):
             with self.assertRaisesRegex(ContractViolation, "2x2 encode minimum"):
                 recorder.append(_frame(1, 1))
 
+    def test_mid_episode_resize_is_resampled_not_fatal(self) -> None:
+        # The emulator window can resize mid-run; the segment must keep its
+        # registered geometry and resample the stragglers instead of crashing.
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "video.mp4"
+            recorder = PyAvVideoRecorder(path, fps=30)
+            try:
+                recorder.append(_frame(64, 32))
+                recorder.append(_frame(96, 48))
+                recorder.append(_frame(64, 32))
+                recorder.close()
+            finally:
+                recorder.close()
+
+            container = av.open(str(path))
+            try:
+                stream = container.streams.video[0]
+                self.assertEqual(
+                    (stream.codec_context.width, stream.codec_context.height), (64, 32)
+                )
+                decoded = 0
+                for _ in container.decode(video=0):
+                    decoded += 1
+                self.assertEqual(decoded, 3)
+            finally:
+                container.close()
+
 
 if __name__ == "__main__":
     unittest.main()
