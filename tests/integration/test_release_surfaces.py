@@ -198,10 +198,15 @@ class ReleaseSurfaceTests(unittest.TestCase):
             runs = root / "runs.jsonl"
             write_benchmark_runs((run,), runs)
             loaded = load_benchmark_runs(runs)
-            report = BenchmarkRunner().summarize(loaded, (task,))
+            report = BenchmarkRunner(source_revision="a" * 40).summarize(loaded, (task,))
             output = write_benchmark_report(report, root / "report.json")
-            self.assertEqual(json.loads(output.read_text(encoding="utf-8"))["runs"], 1)
+            payload = json.loads(output.read_text(encoding="utf-8"))
+            self.assertEqual(payload["runs"], 1)
+            self.assertEqual(payload["source_revision"], "a" * 40)
             self.assertEqual(len(report.task_plan_sha256), 64)
+
+            with self.assertRaisesRegex(ContractViolation, "source revision"):
+                replace(report, source_revision="abbreviated")
 
             payload = json.loads(runs.read_text(encoding="utf-8"))
             payload["success"] = "false"

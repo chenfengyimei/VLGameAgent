@@ -14,6 +14,7 @@ from uga.core.errors import ContractViolation
 from uga.dataset.builder import build_dataset_manifest
 from uga.environment.fixture_world import FixtureScenario, FixtureWorld
 from uga.release.fixture_qualification import run_fixture_qualification
+from uga.release.revision import require_clean_source_revision
 from uga.training.motor_pipeline import export_motor_samples
 from uga.windows.backend import Win32WindowBackend, WindowSnapshot
 
@@ -47,7 +48,7 @@ def run_fixture_corpus(
     root.mkdir(parents=True, exist_ok=True)
     episodes_root.mkdir(exist_ok=True)
     reports_root.mkdir(exist_ok=True)
-    revision = _clean_revision(project_root)
+    revision = require_clean_source_revision(project_root)
     collected: list[tuple[FixtureScenario, str, str]] = []
     for scenario in (*_TRAIN_SCENARIOS, *_TEST_SCENARIOS):
         duration = train_duration_seconds if scenario in _TRAIN_SCENARIOS else test_duration_seconds
@@ -69,6 +70,7 @@ def run_fixture_corpus(
                 fixture_scenario=scenario.value,
                 expected_pid=process.pid,
                 expected_identity=owned_target.identity,
+                source_revision=revision,
             )
             report = parse_json_text(
                 read_text_limited(
@@ -162,31 +164,6 @@ def _inventory(
             for scenario, episode, _ in collected
         ],
     }
-
-
-def _clean_revision(project_root: Path) -> str:
-    root = project_root.resolve()
-    status = subprocess.run(
-        ("git", "status", "--porcelain"),
-        cwd=root,
-        check=True,
-        capture_output=True,
-        text=True,
-        timeout=10,
-    )
-    if status.stdout.strip():
-        raise ContractViolation("fixture corpus requires a clean committed source tree")
-    revision = subprocess.run(
-        ("git", "rev-parse", "HEAD"),
-        cwd=root,
-        check=True,
-        capture_output=True,
-        text=True,
-        timeout=10,
-    ).stdout.strip()
-    if not revision:
-        raise ContractViolation("fixture corpus requires a traceable source revision")
-    return revision
 
 
 def _launch_fixture(project_root: Path, world: FixtureWorld) -> subprocess.Popen[bytes]:

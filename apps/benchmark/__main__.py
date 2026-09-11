@@ -9,6 +9,7 @@ from uga.benchmark.fixture import fixture_environments, verified_fixture_environ
 from uga.benchmark.io import load_benchmark_runs, write_benchmark_report, write_benchmark_runs
 from uga.benchmark.runner import BenchmarkRunner
 from uga.benchmark.schema import load_benchmark_tasks
+from uga.release.revision import require_clean_source_revision
 
 
 def _validate_config(args: argparse.Namespace) -> None:
@@ -26,7 +27,12 @@ def _validate_config(args: argparse.Namespace) -> None:
 
 
 def _summarize(args: argparse.Namespace) -> None:
-    report = BenchmarkRunner().summarize(
+    revision = (
+        require_clean_source_revision(args.project_root)
+        if args.output
+        else "workspace-unversioned"
+    )
+    report = BenchmarkRunner(source_revision=revision).summarize(
         load_benchmark_runs(args.runs), load_benchmark_tasks(args.config)
     )
     if args.output:
@@ -36,6 +42,7 @@ def _summarize(args: argparse.Namespace) -> None:
 
 
 def _fixture(args: argparse.Namespace) -> None:
+    revision = require_clean_source_revision(args.project_root)
     tasks = load_benchmark_tasks(args.config)
     if args.artifact is None:
         environments = fixture_environments()
@@ -48,7 +55,7 @@ def _fixture(args: argparse.Namespace) -> None:
         for repetition in range(task.repeat)
     )
     output = write_benchmark_runs(runs, args.output)
-    report = BenchmarkRunner().summarize(
+    report = BenchmarkRunner(source_revision=revision).summarize(
         runs, tasks, expected_policy_artifact_sha256=artifact_digest
     )
     report_path = write_benchmark_report(report, args.report)
@@ -67,6 +74,7 @@ def main() -> None:
     summarize.add_argument("runs", type=Path)
     summarize.add_argument("--config", type=Path, required=True)
     summarize.add_argument("--output", type=Path)
+    summarize.add_argument("--project-root", type=Path, default=Path("."))
     summarize.set_defaults(handler=_summarize)
 
     fixture = subparsers.add_parser(
@@ -75,6 +83,7 @@ def main() -> None:
     fixture.add_argument("--config", type=Path, required=True)
     fixture.add_argument("--output", type=Path, required=True)
     fixture.add_argument("--report", type=Path, required=True)
+    fixture.add_argument("--project-root", type=Path, default=Path("."))
     policy = fixture.add_mutually_exclusive_group(required=True)
     policy.add_argument("--artifact", type=Path)
     policy.add_argument("--rule-baseline", action="store_true")

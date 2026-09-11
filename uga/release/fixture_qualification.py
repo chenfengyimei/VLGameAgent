@@ -44,6 +44,7 @@ from uga.recording.episode_writer import EpisodeWriter
 from uga.recording.replay import ReplayEngine
 from uga.recording.schema import ActionProvenance, EpisodeMetadata, EpisodeResult
 from uga.recording.video import PyAvVideoRecorder
+from uga.release.revision import validate_source_revision
 from uga.safety.emergency_stop import EmergencyStop, Win32EmergencyHotkey
 from uga.safety.environment_policy import (
     EnvironmentClass,
@@ -580,7 +581,9 @@ def run_fixture_qualification(
     fixture_scenario: str = FixtureScenario.EXPLORATION.value,
     expected_pid: int,
     expected_identity: WindowIdentity | None = None,
+    source_revision: str,
 ) -> Path:
+    validate_source_revision(source_revision)
     if not allow_physical_input:
         raise ContractViolation("fixture qualification requires --allow-physical-input")
     if duration_seconds < 4.5 or not math.isfinite(duration_seconds):
@@ -982,6 +985,7 @@ def run_fixture_qualification(
     report = {
         "schema": "uga.fixture_qualification",
         "schema_version": "1.1",
+        "source_revision": source_revision,
         "passed": passed,
         "target": {
             "hwnd": target.identity.hwnd,

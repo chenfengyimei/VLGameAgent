@@ -3,12 +3,15 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import re
 from collections.abc import Iterable
 from dataclasses import dataclass
 
 from uga.benchmark.schema import BenchmarkEnvironment, BenchmarkRun, BenchmarkTask
 from uga.core.artifact_limits import DEFAULT_ARTIFACT_LIMITS, ArtifactResourceLimits
 from uga.core.errors import ContractViolation
+
+_SOURCE_REVISION = re.compile(r"[0-9a-f]{40}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -41,6 +44,14 @@ class BenchmarkReport:
     end_to_end_latency: LatencyPercentiles
     task_plan_sha256: str
     policy_artifact_sha256: str | None
+    source_revision: str = "workspace-unversioned"
+
+    def __post_init__(self) -> None:
+        if (
+            self.source_revision != "workspace-unversioned"
+            and _SOURCE_REVISION.fullmatch(self.source_revision) is None
+        ):
+            raise ContractViolation("benchmark report source revision is invalid")
 
 
 class BenchmarkRunner:
@@ -48,8 +59,10 @@ class BenchmarkRunner:
         self,
         *,
         limits: ArtifactResourceLimits = DEFAULT_ARTIFACT_LIMITS,
+        source_revision: str = "workspace-unversioned",
     ) -> None:
         self._limits = limits
+        self._source_revision = source_revision
 
     def run(
         self, tasks: tuple[BenchmarkTask, ...], environments: dict[str, BenchmarkEnvironment]
@@ -158,6 +171,7 @@ class BenchmarkRunner:
             self._latency(value for run in runs for value in run.end_to_end_latency_ms),
             self._task_plan_digest(tasks),
             policy_artifact_sha256,
+            self._source_revision,
         )
 
     @staticmethod

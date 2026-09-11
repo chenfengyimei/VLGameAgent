@@ -5,6 +5,7 @@ import json
 import re
 from pathlib import Path
 
+from uga.core.errors import ContractViolation
 from uga.environment.fixture_world import FixtureScenario, FixtureWorld
 from uga.release.fixture_corpus import run_fixture_corpus
 from uga.release.fixture_qualification import run_fixture_qualification
@@ -17,6 +18,7 @@ from uga.release.qualification import (
     build_qualified_release_manifest,
     hash_evidence,
 )
+from uga.release.revision import require_clean_source_revision
 
 _LEDGER_NAME = "qualification.json"
 
@@ -26,6 +28,9 @@ def _ledger_path(root: Path) -> Path:
 
 
 def _init(args: argparse.Namespace) -> None:
+    revision = require_clean_source_revision(args.project_root)
+    if args.source_revision != revision:
+        raise ContractViolation("requested source revision does not match clean Git HEAD")
     root = args.root.resolve()
     root.mkdir(parents=True, exist_ok=True)
     path = _ledger_path(root)
@@ -38,6 +43,9 @@ def _record(args: argparse.Namespace) -> None:
     root = args.root.resolve()
     path = _ledger_path(root)
     ledger = QualificationLedger.load(path)
+    revision = require_clean_source_revision(args.project_root)
+    if revision != ledger.source_revision:
+        raise ContractViolation("qualification ledger source revision does not match Git HEAD")
     artifacts = hash_evidence(root, tuple(args.artifact))
     updated = ledger.with_record(
         QualificationRecord(
@@ -115,6 +123,7 @@ def _fixture(args: argparse.Namespace) -> None:
             exercise_watchdog_timeout=args.exercise_watchdog_timeout,
             fixture_scenario=scenario.value,
             expected_pid=args.expected_pid,
+            source_revision=require_clean_source_revision(args.project_root),
         )
     )
 
@@ -141,6 +150,7 @@ def main() -> None:
     initialize = subparsers.add_parser("init", help="create an empty evidence ledger")
     initialize.add_argument("root", type=Path)
     initialize.add_argument("--source-revision", required=True)
+    initialize.add_argument("--project-root", type=Path, default=Path("."))
     initialize.set_defaults(handler=_init)
 
     record = subparsers.add_parser("record", help="record one gate result")
@@ -149,6 +159,7 @@ def main() -> None:
     record.add_argument("status", choices=tuple(status.value for status in GateStatus))
     record.add_argument("--evidence", required=True)
     record.add_argument("--artifact", action="append", default=[])
+    record.add_argument("--project-root", type=Path, default=Path("."))
     record.set_defaults(handler=_record)
 
     status = subparsers.add_parser("status", help="verify and show current evidence")
@@ -185,6 +196,7 @@ def main() -> None:
         required=True,
         help="trusted PID of the already-running developer-owned fixture",
     )
+    fixture.add_argument("--project-root", type=Path, default=Path("."))
     fixture.add_argument(
         "--scenario",
         choices=tuple(item.value for item in FixtureScenario),
