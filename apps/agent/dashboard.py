@@ -171,5 +171,7 @@ class DecisionDashboard:
         self._thread.start()
 
     def stop(self) -> None:
-        self._server.shutdown()
+        if self._thread.is_alive():
+            self._server.shutdown()
+            self._thread.join(timeout=2.0)
         self._server.server_close()
