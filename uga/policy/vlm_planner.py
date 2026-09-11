@@ -17,6 +17,7 @@ import base64
 import contextlib
 import importlib
 import json
+import re
 import threading
 import time
 import urllib.error
@@ -41,6 +42,10 @@ MAX_ACTION_SEQUENCE = 4
 MAX_STATIC_HOLDS = 10
 MAX_WAIT_INTERVAL_S = 15.0
 _SUPPORTED_FORMATS = (PixelFormat.BGRA8, PixelFormat.RGBA8)
+# Live GLM failure shape: {"action":"tap","x":0.622,0.415,...} — both
+# fractions packed into the x slot with the "y" key dropped. The decode
+# path repairs this only when the candidate has no "y" key at all.
+_MERGED_XY_RE = re.compile(r'("x"\s*:\s*)(\d+(?:\.\d+)?)\s*,\s*(\d+(?:\.\d+)?)')
 
 
 class PlannerReplyError(ContractViolation):
@@ -402,10 +407,34 @@ def parse_planner_sequence(
     raise failure
 
 
+def _repair_merged_xy(candidate: str) -> str | None:
+    """Rewrite the merged tap fractions when the ``y`` key is missing.
+
+    Only fires on a candidate that has no ``y`` key, so valid replies are
+    never rewritten; the caller only invokes it after a hard JSON failure.
+    """
+    if '"y"' in candidate:
+        return None
+    match = _MERGED_XY_RE.search(candidate)
+    if match is None:
+        return None
+    return (
+        candidate[: match.start()]
+        + f'{match.group(1)}{match.group(2)},"y":{match.group(3)}'
+        + candidate[match.end():]
+    )
+
+
 def _decode_sequence(
     candidate: str,
 ) -> list[tuple[str, float | None, float | None, str | None, str | None]]:
-    payload = json.loads(candidate)
+    try:
+        payload = json.loads(candidate)
+    except json.JSONDecodeError:
+        repaired = _repair_merged_xy(candidate)
+        if repaired is None:
+            raise
+        payload = json.loads(repaired)
     if not isinstance(payload, dict):
         raise PlannerReplyError("vision reply JSON is not an object")
     if "actions" in payload:
@@ -532,14 +561,16 @@ def build_instruction(
         f"{stuck_line}"
         "坐标以百分比表示：x 为横向 0.0（最左）~1.0（最右），y 为纵向 0.0（最上）~1.0（最下）。\n"
         "回答格式（严格遵守两行）：\n"
-        "第一行：用一句话描述画面状态，读出你看到的按钮上的文字。\n"
+        "第一行：用一句话（不超过50字）描述画面状态，读出你看到的按钮上的文字。\n"
         "第二行：只输出一个 JSON 对象。单个动作的格式：\n"
         '{"action":"tap","x":<按钮中心的横向百分比>,"y":<按钮中心的纵向百分比>}\n'
         '当需要连续多个操作时（如推进多段对话、关闭多个弹窗），用 actions 数组输出最多 '
         f'{MAX_ACTION_SEQUENCE} 步，每步之间画面会自动等待变化：\n'
         '{"actions":[{"action":"tap","x":0.5,"y":0.6},{"action":"tap","x":0.5,"y":0.7}]}\n'
         '必填字段 quest：把你此刻从画面左上角任务追踪面板最上方读到的任务原文逐字写进 quest 字段'
-        '（每次都要重新读画面，即使没变也照写；绝不照抄提示中的记忆任务）：\n'
+        '（每次都要重新读画面，即使没变也照写；绝不照抄提示中的记忆任务）；'
+        '若追踪面板被界面完全遮挡看不到，quest 字段写 NOT_VISIBLE；'
+        '顶部滚动的全服公告/广播（如“恭喜某某获得某物”）不是任务，绝不能写进 quest 字段：\n'
         '可选字段 step：任务进行到哪一步时写当前步骤（如"打开灵宠界面"）：\n'
         '需要按实体按键时（用于跳过剧情、确认、返回等）：{"action":"press","button":"confirm"}，'
         "可用 button 值：jump、menu、confirm、back（需游戏支持）\n"
@@ -547,6 +578,8 @@ def build_instruction(
         "（从摇杆中心向上拖拽即向前移动；拖拽时长约 1 秒）\n"
         '{"action":"tap","x":0.2,"y":0.3,"quest":"与桃夭对话"}\n'
         '或画面在加载、无合适目标时输出：{"action":"wait"}\n'
+        "识别要点：点购买/使用类按钮前先看资源数量（如金币、令）——数量不足或为 0 时该按钮无效，"
+        "不要点它，优先改用列表/背包中已有的资源完成任务；灰色或暗淡的按钮表示当前不可用，不要点击。\n"
         "规则：坐标必须在 0~1 之间；优先点击文字与任务目标相关的按钮；"
         "不要编造画面中不存在的元素；"
         "第二行的 JSON 对象在任何情况下都必须出现在回复末尾，绝对不能省略。\n"
@@ -868,7 +901,12 @@ class VlmPlannerPolicy:
             rect = self._client_rect()
         action, x, y, quest, reported_step = step
         if quest:
-            if quest != self._quest:
+            if quest.replace(" ", "").replace("_", "").upper().startswith("NOTVISIBLE"):
+                # The tracker is hidden behind a full-screen UI. The sentinel
+                # must never erase the last real quest — that memory is the
+                # context that steers the model back once the UI closes.
+                pass
+            elif quest != self._quest:
                 print(f"[vlm] quest updated: {quest}", flush=True)
                 self._quest = quest
                 self._quest_repeats = 0

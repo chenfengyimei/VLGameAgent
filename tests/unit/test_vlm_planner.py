@@ -161,6 +161,23 @@ class ParsePlannerReplyTests(unittest.TestCase):
         with self.assertRaises(PlannerReplyError):
             parse_planner_reply('{"action":"tap"}')
 
+    def test_merged_xy_fractions_repaired(self) -> None:
+        # Live GLM failure: both fractions packed into the x slot, "y" key
+        # dropped — invalid JSON that used to cost a full retry round.
+        action, x, y, quest, step = parse_planner_reply(
+            '{"action":"tap","x":0.622,0.415,"quest":"门人试论"}'
+        )
+
+        self.assertEqual(
+            (action, x, y, quest, step), ("tap", 0.622, 0.415, "门人试论", None)
+        )
+
+    def test_merged_xy_with_existing_y_key_not_repaired(self) -> None:
+        # Ambiguous garbage (merged x AND a y key) must stay a retry, not a
+        # guess about which number the model meant.
+        with self.assertRaises(PlannerReplyError):
+            parse_planner_reply('{"action":"tap","x":0.622,0.415,"y":0.7}')
+
     def test_newest_json_object_wins_when_reply_has_several(self) -> None:
         reply = (
             "画面是灵宠界面 {\"a\":1} 描述里混入了括号 "
@@ -523,6 +540,16 @@ class BuildInstructionTests(unittest.TestCase):
 
         self.assertIn("时间先后", instruction)
         self.assertIn("最后一张是当前画面", instruction)
+
+    def test_instruction_teaches_recognition_rules(self) -> None:
+        instruction = build_instruction("推进主线", None, None, None)
+
+        self.assertIn("NOT_VISIBLE", instruction)
+        self.assertIn("公告", instruction)
+        self.assertIn("资源数量", instruction)
+        self.assertIn("灰色", instruction)
+        self.assertIn("50字", instruction)
+        self.assertIn("背包中已有的资源", instruction)
 
 
 def _sampler_frame(tag: int) -> Frame:
@@ -911,6 +938,34 @@ class ActionSequenceQueueTests(unittest.TestCase):
 
         self.assertEqual(policy._stale_discards, 1)
         self.assertFalse(policy._pending_actions)
+
+
+class QuestSentinelTests(unittest.TestCase):
+    def test_not_visible_keeps_last_real_quest(self) -> None:
+        client = _FakeClient(
+            [
+                '{"action":"tap","x":0.2,"y":0.3,"quest":"神魂镶嵌 镶嵌1个紫色神魂 0/1"}',
+                '{"action":"wait","quest":"NOT_VISIBLE"}',
+            ]
+        )
+        policy = _policy(client)
+        policy._decision_interval_s = 0.0
+
+        policy.infer(PolicyContext("obs-1", UGATime(100), (), None))
+        policy.infer(PolicyContext("obs-2", UGATime(200), (), None))
+
+        self.assertEqual(policy._quest, "神魂镶嵌 镶嵌1个紫色神魂 0/1")
+        self.assertEqual(policy._quest_repeats, 0)
+
+    def test_not_visible_matches_lenient_spacing_and_case(self) -> None:
+        client = _FakeClient(['{"action":"wait","quest":"not visible"}'])
+        policy = _policy(client)
+        policy._decision_interval_s = 0.0
+        policy._quest = "神魂镶嵌"
+
+        policy.infer(PolicyContext("obs-1", UGATime(100), (), None))
+
+        self.assertEqual(policy._quest, "神魂镶嵌")
 
 
 if __name__ == "__main__":
