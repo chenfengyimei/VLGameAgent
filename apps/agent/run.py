@@ -14,11 +14,13 @@ import argparse
 import asyncio
 import contextlib
 import json
+import math
 import os
 import re
 import signal
 import time
 import uuid
+from collections.abc import Callable
 from pathlib import Path
 from types import FrameType
 
@@ -36,7 +38,7 @@ from uga.control.lease_manager import ControlLeaseManager
 from uga.control.scheduler import ActionScheduler
 from uga.control.windows_input import SendInputBackend
 from uga.core.agent_loop import RealtimeAgentLoop
-from uga.core.errors import BackendUnavailableError, CaptureTimeoutError
+from uga.core.errors import BackendUnavailableError, CaptureTimeoutError, ContractViolation
 from uga.core.events import EventBus
 from uga.environment.generic import GenericEnvironment
 from uga.environment.profile import GameProfile, load_game_profile
@@ -57,7 +59,7 @@ from uga.release.fixture_qualification import _activate
 from uga.safety.emergency_stop import Win32EmergencyHotkey
 from uga.safety.focus_guard import AgentEnableState, FocusGuard
 from uga.time.clock import PerfCounterClock
-from uga.windows.backend import Win32WindowBackend, WindowSnapshot
+from uga.windows.backend import Win32WindowBackend, WindowBackend, WindowSnapshot
 from uga.windows.coordinates import Rect
 from uga.windows.integrity import Win32IntegrityProvider
 
@@ -77,30 +79,62 @@ def _capture_backend(
 
 
 def _find_target(
-    windows: Win32WindowBackend, profile: GameProfile
+    windows: WindowBackend, profile: GameProfile
 ) -> WindowSnapshot:
     pattern = re.compile(profile.window_title_pattern or r".*")
-    matches = [
-        snapshot
-        for snapshot in windows.discover()
-        if pattern.fullmatch(snapshot.title) is not None
-    ]
+    matches_by_hwnd: dict[int, WindowSnapshot] = {}
+    for executable in profile.executables:
+        for snapshot in windows.discover(executable_name=executable):
+            if pattern.fullmatch(snapshot.title) is not None:
+                matches_by_hwnd[snapshot.identity.hwnd] = snapshot
+    matches = list(matches_by_hwnd.values())
     if len(matches) != 1:
         raise SystemExit(
-            f"expected exactly one window matching {profile.window_title_pattern!r};"
+            "expected exactly one trusted executable/window pair matching "
+            f"executables={profile.executables!r} and title={profile.window_title_pattern!r};"
             f" found {len(matches)}"
         )
     return matches[0]
 
 
+def _current_target_client_rect(
+    windows: WindowBackend,
+    target: WindowSnapshot,
+    title_pattern: re.Pattern[str],
+) -> Rect:
+    try:
+        current = windows.snapshot(target.identity.hwnd)
+    except (OSError, ContractViolation) as exc:
+        raise BackendUnavailableError("target window is no longer available") from exc
+    if current.identity != target.identity:
+        raise BackendUnavailableError("target window identity changed")
+    if not current.is_visible or title_pattern.fullmatch(current.title) is None:
+        raise BackendUnavailableError("target window no longer matches its profile")
+    return current.client_screen_rect
+
+
 async def _run(args: argparse.Namespace) -> int:
-    if args.duration_seconds < 0:
+    if not math.isfinite(args.duration_seconds) or args.duration_seconds < 0:
         raise SystemExit("--duration-seconds must be >= 0 (0 = run until stopped)")
-    if args.tap_interval_seconds < 0:
+    if not math.isfinite(args.tap_delay) or args.tap_delay < 0:
+        raise SystemExit("--tap-delay must be >= 0")
+    if not math.isfinite(args.tap_interval_seconds) or args.tap_interval_seconds < 0:
         raise SystemExit("--tap-interval-seconds must be >= 0 (0 = tap once)")
-    if args.policy == "vlm" and (args.vlm_decision_interval <= 0 or args.vlm_timeout_seconds <= 0):
+    if not math.isfinite(args.observation_hz) or args.observation_hz <= 0:
+        raise SystemExit("--observation-hz must be positive")
+    if not 0 <= args.dashboard_port <= 65535:
+        raise SystemExit("--dashboard-port must be within [0, 65535]")
+    if args.policy == "vlm" and (
+        not math.isfinite(args.vlm_decision_interval)
+        or args.vlm_decision_interval <= 0
+        or not math.isfinite(args.vlm_timeout_seconds)
+        or args.vlm_timeout_seconds <= 0
+    ):
         raise SystemExit("vision planner intervals and timeouts must be positive")
     profile = load_game_profile(args.profile)
+    # Enforce the environment safety manifest before activating, capturing, or
+    # otherwise interacting with the target.
+    environment = GenericEnvironment(profile)
     windows = Win32WindowBackend()
     target = _find_target(windows, profile)
     if not _activate(windows, target.identity.hwnd):
@@ -135,7 +169,6 @@ async def _run(args: argparse.Namespace) -> int:
         leases,
     )
     scheduler = ActionScheduler(clock, executor, leases)
-    environment = GenericEnvironment(profile)
     arbiter = ActionArbiter(clock, leases)
 
     client = target.client_screen_rect
@@ -144,14 +177,12 @@ async def _run(args: argparse.Namespace) -> int:
     title_pattern = re.compile(profile.window_title_pattern or r".*")
 
     def _current_client_rect() -> Rect:
-        matches = [
-            snapshot
-            for snapshot in windows.discover()
-            if title_pattern.fullmatch(snapshot.title) is not None
-        ]
-        if len(matches) != 1:
-            raise BackendUnavailableError("target window is no longer uniquely visible")
-        return matches[0].client_screen_rect
+        return _current_target_client_rect(windows, target, title_pattern)
+
+    frames = FrameRingBuffer()
+    sampler: FrameHistorySampler | None = None
+    sampler_backend: GDIFallbackCaptureBackend | None = None
+    dashboard: DecisionDashboard | None = None
 
     if args.policy == "vlm":
         try:
@@ -174,7 +205,6 @@ async def _run(args: argparse.Namespace) -> int:
         )
         sampler.start()
         journal = DecisionJournal()
-        dashboard: DecisionDashboard | None = None
         if args.dashboard_port > 0:
             try:
                 dashboard = DecisionDashboard(journal, args.dashboard_port)
@@ -216,9 +246,6 @@ async def _run(args: argparse.Namespace) -> int:
             repeat_interval_s=args.tap_interval_seconds or None,
         )
 
-    controller = ActionChunkController(environment, arbiter, scheduler)
-
-    frames = FrameRingBuffer()
     builder = ObservationBuilder(
         clock,
         profile.game_id,
@@ -248,7 +275,12 @@ async def _run(args: argparse.Namespace) -> int:
         )
         recorder.attach_video(PyAvVideoRecorder(recorder.video_path, fps=15))
 
+    controller = ActionChunkController(environment, arbiter, scheduler, recorder)
+
     class CaptureSource:
+        def __init__(self) -> None:
+            self.count = 0
+
         async def capture_once(self) -> SequencedFrame:
             # Present-driven backends only deliver frames while the target
             # renders; emulator menus, dialogs, and transitions can hold the
@@ -259,14 +291,17 @@ async def _run(args: argparse.Namespace) -> int:
             while True:
                 try:
                     frame = await asyncio.to_thread(backend.capture)
-                    return frames.publish(frame)
+                    sequenced = frames.publish(frame)
+                    self.count += 1
+                    return sequenced
                 except CaptureTimeoutError:
                     if time.monotonic() >= deadline:
                         raise
 
+    capture_source = CaptureSource()
     loop = RealtimeAgentLoop(
         clock=clock,
-        capture=CaptureSource(),
+        capture=capture_source,
         frames=frames,
         observation_builder=builder,
         observations=observations,
@@ -318,6 +353,7 @@ async def _run(args: argparse.Namespace) -> int:
     task = asyncio.create_task(
         loop.run(stop, observation_hz=args.observation_hz)
     )
+    run_error: BaseException | None = None
     try:
         while not task.done():
             if 0 < args.duration_seconds <= time.monotonic() - started:
@@ -325,40 +361,68 @@ async def _run(args: argparse.Namespace) -> int:
             await asyncio.sleep(0.2)
     except (KeyboardInterrupt, asyncio.CancelledError):
         stop_state["user"] = True
+    except BaseException as exc:
+        run_error = exc
     finally:
         stop.set()
-        with contextlib.suppress(asyncio.CancelledError):
+        try:
             await task
-        scheduler.neutralize()
-        leases.revoke_all(notify=False)
-        if args.policy == "vlm":
-            sampler.stop()
-            sampler_backend.stop()
-            if dashboard is not None:
-                dashboard.stop()
-        backend.stop()
-        hotkey.close()
+        except asyncio.CancelledError:
+            pass
+        except BaseException as exc:
+            if run_error is None:
+                run_error = exc
+
+        def cleanup(operation: Callable[[], object]) -> None:
+            nonlocal run_error
+            try:
+                operation()
+            except BaseException as exc:
+                if run_error is None:
+                    run_error = exc
+
+        cleanup(scheduler.neutralize)
+        cleanup(lambda: leases.revoke_all(notify=False))
+        if sampler is not None:
+            cleanup(sampler.stop)
+        if sampler_backend is not None:
+            cleanup(sampler_backend.stop)
+        if dashboard is not None:
+            cleanup(dashboard.stop)
+        cleanup(backend.stop)
+        cleanup(hotkey.close)
         if previous_handler is not None:
-            signal.signal(signal.SIGINT, previous_handler)
+            cleanup(lambda: signal.signal(signal.SIGINT, previous_handler))
     if recorder is not None:
+        stats = scheduler.stats()
         recorder.set_metrics(
             {
-                "capture_frames": 0,
-                "scheduled_actions": scheduler.stats().executed,
-                "executed_actions": scheduler.stats().executed,
-                "action_execution_ratio": 1.0,
+                "capture_frames": capture_source.count,
+                "scheduled_actions": stats.scheduled,
+                "executed_actions": stats.executed,
+                "action_execution_ratio": (
+                    stats.executed / stats.scheduled if stats.scheduled else 0.0
+                ),
             }
         )
-        result = EpisodeResult.ABORTED if stop_state["user"] else EpisodeResult.SUCCESS
+        result = (
+            EpisodeResult.ABORTED
+            if stop_state["user"]
+            else EpisodeResult.FAILURE
+            if run_error is not None
+            else EpisodeResult.SUCCESS
+        )
         episode_path = recorder.finalize(result, clock.now())
         print(f"episode: {episode_path}")
+    if run_error is not None:
+        raise run_error
     print(f"taps executed: {scheduler.stats().executed}")
     return 0
 
 
 def _client_fraction(value: str) -> float:
     fraction = float(value)
-    if not 0.0 <= fraction <= 1.0:
+    if not math.isfinite(fraction) or not 0.0 <= fraction <= 1.0:
         raise argparse.ArgumentTypeError("client fraction must be within [0, 1]")
     return fraction
 
@@ -399,6 +463,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="tap point as a vertical fraction of the client area",
     )
     parser.add_argument("--observation-hz", type=float, default=2.0)
+    parser.add_argument(
+        "--dashboard-port",
+        type=int,
+        default=0,
+        help="serve the read-only VLM decision dashboard on loopback (0 = disabled)",
+    )
     parser.add_argument("--record", type=Path)
     parser.add_argument(
         "--vlm-base-url",

@@ -33,6 +33,13 @@ class EnvironmentSafetyManifest:
     multiplayer: bool
     anti_cheat_present: bool
 
+    def __post_init__(self) -> None:
+        if any(
+            type(value) is not bool
+            for value in (self.automation_allowed, self.multiplayer, self.anti_cheat_present)
+        ):
+            raise ContractViolation("environment safety flags must be booleans")
+
 
 @dataclass(frozen=True, slots=True)
 class PolicyDecision:

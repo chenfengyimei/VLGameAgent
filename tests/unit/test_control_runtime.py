@@ -164,6 +164,7 @@ class ControlRuntimeTests(unittest.TestCase):
         self.assertEqual(self.scheduler.tick().executed, 1)
         self.clock.set(150)
         stats = self.scheduler.tick()
+        self.assertEqual(stats.scheduled, 2)
         self.assertEqual(stats.executed, 2)
         self.assertEqual([action.action_id for action in self.backend.actions], ["now", "later"])
 

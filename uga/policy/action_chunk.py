@@ -68,7 +68,12 @@ class ActionChunk(VersionedMixin):
             raise ContractViolation("action chunk identifiers cannot be blank")
         if not (self.generated_at <= self.effective_from <= self.expires_at):
             raise ContractViolation("action chunk lifetime is invalid")
-        if self.tick_rate_hz <= 0 or not 0.0 <= self.confidence <= 1.0:
+        if (
+            not math.isfinite(self.tick_rate_hz)
+            or self.tick_rate_hz <= 0
+            or not math.isfinite(self.confidence)
+            or not 0.0 <= self.confidence <= 1.0
+        ):
             raise ContractViolation("action chunk rate/confidence is invalid")
         lengths = {
             len(self.move_x),

@@ -19,6 +19,7 @@ from uga.windows.window_identity import WindowIdentity
 @dataclass(frozen=True, slots=True)
 class SchedulerStats:
     queued: int
+    scheduled: int
     executed: int
     expired: int
     rejected: int
@@ -48,6 +49,7 @@ class ActionScheduler:
         self._heap: list[tuple[int, int, _ScheduledAction]] = []
         self._action_ids: set[str] = set()
         self._sequence = 0
+        self._scheduled = 0
         self._executed = 0
         self._expired = 0
         self._rejected = 0
@@ -88,6 +90,7 @@ class ActionScheduler:
                 )
                 self._action_ids.add(action.action_id)
                 added += 1
+            self._scheduled += added
         return added
 
     def tick(self) -> SchedulerStats:
@@ -150,6 +153,7 @@ class ActionScheduler:
         with self._lock:
             return SchedulerStats(
                 queued=len(self._heap),
+                scheduled=self._scheduled,
                 executed=self._executed,
                 expired=self._expired,
                 rejected=self._rejected,

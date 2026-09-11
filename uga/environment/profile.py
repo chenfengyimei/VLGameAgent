@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import math
 import re
 from dataclasses import dataclass
 from enum import IntEnum, StrEnum
@@ -41,6 +42,8 @@ class ControlBinding:
             raise ContractViolation("control binding action cannot be blank")
         if isinstance(self.code, str) and not self.code.strip():
             raise ContractViolation("control binding code cannot be blank")
+        if type(self.confirmed) is not bool:
+            raise ContractViolation("control binding confirmation must be a boolean")
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,6 +52,13 @@ class GameCapabilities:
     gui: bool
     combat: bool
     gamepad: bool
+
+    def __post_init__(self) -> None:
+        if any(
+            type(value) is not bool
+            for value in (self.realtime_3d, self.gui, self.combat, self.gamepad)
+        ):
+            raise ContractViolation("game capability flags must be booleans")
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,7 +87,7 @@ class GameProfile(VersionedMixin):
             raise ContractViolation("game profile requires executable names")
         if not self.preferred_capture.strip() or not self.camera_type.strip():
             raise ContractViolation("game profile capture and camera type cannot be blank")
-        if self.camera_sensitivity <= 0:
+        if not math.isfinite(self.camera_sensitivity) or self.camera_sensitivity <= 0:
             raise ContractViolation("camera sensitivity must be positive")
         if self.window_title_pattern is not None:
             try:
@@ -134,7 +144,7 @@ def game_profile_from_dict(raw: dict[str, Any]) -> GameProfile:
                 str(action),
                 BindingKind(str(item.get("kind", BindingKind.SCAN_CODE))),
                 code,
-                bool(item.get("confirmed", False)),
+                _strict_bool(item.get("confirmed", False), f"controls.{action}.confirmed"),
             )
         )
     environment_class = EnvironmentClass(str(safety.get("environment_class", "unknown")))
@@ -147,16 +157,16 @@ def game_profile_from_dict(raw: dict[str, Any]) -> GameProfile:
         camera_type=str(camera.get("type", "relative_mouse")),
         camera_sensitivity=float(camera.get("sensitivity", 1.0)),
         capabilities=GameCapabilities(
-            bool(capabilities.get("realtime_3d", False)),
-            bool(capabilities.get("gui", False)),
-            bool(capabilities.get("combat", False)),
-            bool(capabilities.get("gamepad", False)),
+            _strict_bool(capabilities.get("realtime_3d", False), "capabilities.realtime_3d"),
+            _strict_bool(capabilities.get("gui", False), "capabilities.gui"),
+            _strict_bool(capabilities.get("combat", False), "capabilities.combat"),
+            _strict_bool(capabilities.get("gamepad", False), "capabilities.gamepad"),
         ),
         safety=EnvironmentSafetyManifest(
             environment_class,
-            bool(safety.get("automation_allowed", False)),
-            bool(safety.get("multiplayer", False)),
-            bool(safety.get("anti_cheat_present", False)),
+            _strict_bool(safety.get("automation_allowed", False), "safety.automation_allowed"),
+            _strict_bool(safety.get("multiplayer", False), "safety.multiplayer"),
+            _strict_bool(safety.get("anti_cheat_present", False), "safety.anti_cheat_present"),
         ),
         capability_level=EnvironmentCapabilityLevel(int(raw.get("capability_level", 1))),
         window_title_pattern=(
@@ -168,4 +178,10 @@ def game_profile_from_dict(raw: dict[str, Any]) -> GameProfile:
 def _mapping(value: object, name: str) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ContractViolation(f"{name} must be an object")
+    return value
+
+
+def _strict_bool(value: object, name: str) -> bool:
+    if type(value) is not bool:
+        raise ContractViolation(f"{name} must be a boolean")
     return value

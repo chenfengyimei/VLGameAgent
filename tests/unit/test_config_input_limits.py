@@ -66,6 +66,33 @@ class ConfigInputLimitTests(unittest.TestCase):
         profile = load_game_profile(path)
         self.assertEqual(profile.game_id, "probe")
 
+    def test_game_profile_rejects_string_safety_boolean(self) -> None:
+        path = self.root / "profile.yaml"
+        path.write_text(
+            VALID_PROFILE.replace("automation_allowed: true", 'automation_allowed: "false"'),
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(ContractViolation, "must be a boolean"):
+            load_game_profile(path)
+
+    def test_game_profile_rejects_string_binding_confirmation(self) -> None:
+        path = self.root / "profile.yaml"
+        text = VALID_PROFILE.replace(
+            "code: 17}", 'code: 17, confirmed: "false"}'
+        )
+        path.write_text(text, encoding="utf-8")
+        with self.assertRaisesRegex(ContractViolation, "must be a boolean"):
+            load_game_profile(path)
+
+    def test_game_profile_rejects_non_finite_camera_sensitivity(self) -> None:
+        path = self.root / "profile.yaml"
+        path.write_text(
+            VALID_PROFILE.replace("sensitivity: 1.0", "sensitivity: .nan"),
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(ContractViolation, "sensitivity must be positive"):
+            load_game_profile(path)
+
     def test_small_model_registry_still_loads(self) -> None:
         path = self.root / "models.yaml"
         path.write_text(VALID_REGISTRY, encoding="utf-8")
