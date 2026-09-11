@@ -24,10 +24,11 @@ import urllib.request
 import uuid
 from collections import deque
 from collections.abc import Callable
+from dataclasses import replace
 from threading import Event, Lock
 from typing import Any
 
-from uga.capture.frame import BufferKind, Frame, PixelFormat
+from uga.capture.frame import BufferHandle, BufferKind, Frame, PixelFormat
 from uga.core.errors import BackendUnavailableError, ContractViolation
 from uga.policy.action_chunk import ActionButton, ActionChunk
 from uga.policy.decision_journal import DecisionJournal, DecisionRecord, NullJournal
@@ -96,6 +97,55 @@ def encode_frame_png(frame: Frame, *, max_width: int = 960) -> bytes:
     if not encoded.startswith(b"\x89PNG"):
         raise ContractViolation("vision planner produced a malformed PNG frame")
     return bytes(encoded)
+
+
+_GRID_COLOR_BGRA = b"\xff\x00\xff\xff"  # magenta, fully opaque
+
+
+def _paint_grid(payload: bytearray, width: int, height: int, stride: int) -> None:
+    """Draw 2px magenta lines every 10% of width/height in place.
+
+    The grid anchors the model's coordinate estimates: vision models judge
+    vertical positions poorly (live probe showed taps landing 1.5-2% below
+    button text centers), and gridlines give the model a visual ruler for
+    the fraction coordinates it must output.
+    """
+    row_pattern = _GRID_COLOR_BGRA * width
+    for k in range(1, 10):
+        y = round(height * k / 10)
+        for dy in (0, 1):
+            row = y + dy
+            if 0 <= row < height:
+                base = row * stride
+                payload[base : base + width * 4] = row_pattern
+    for k in range(1, 10):
+        x = round(width * k / 10)
+        for dx in (0, 1):
+            col = x + dx
+            if 0 <= col < width:
+                offset = col * 4
+                for row in range(height):
+                    pixel = row * stride + offset
+                    payload[pixel : pixel + 4] = _GRID_COLOR_BGRA
+
+
+def encode_frame_png_with_grid(frame: Frame, *, max_width: int = 960) -> bytes:
+    """Encode a frame with the 10% coordinate grid overlaid (see _paint_grid)."""
+    handle = frame.buffer_handle
+    if handle.kind != BufferKind.CPU_BYTES:
+        raise ContractViolation("vision planner requires a CPU byte frame")
+    payload = bytearray(handle.readonly_view())
+    _paint_grid(payload, frame.width, frame.height, frame.stride_bytes)
+    gridded = replace(
+        frame,
+        buffer_handle=BufferHandle(
+            handle_id=f"{handle.handle_id}:grid",
+            kind=handle.kind,
+            size_bytes=len(payload),
+            payload=bytes(payload),
+        ),
+    )
+    return encode_frame_png(gridded, max_width=max_width)
 
 
 class OpenAICompatibleVisionClient:
@@ -470,6 +520,10 @@ def build_instruction(
     return (
         "你是一个安卓游戏自动操作智能体。请仔细观察这组按时间先后排序的游戏截图"
         "（最后一张是当前画面，其余是之前几秒的历史画面，用于判断画面变化趋势）。\n"
+        "截图上叠加了洋红色网格线（横向与纵向各 9 条，相邻间隔 10% 画面宽高）："
+        "顶部第一条横线在 10% 高度，依次向下为 20%、30%…；左侧第一条竖线在 10% 宽度。"
+        "输出坐标前先用网格线校准：例如目标位于 40% 横线下方一点，y 就应略大于 0.40。\n"
+        "点击按钮时瞄准按钮文字的正中心（不是按钮框的下边缘）。\n"
         f"当前任务目标：{goal}。\n"
         f"{quest_line}"
         f"{step_line}"
@@ -714,7 +768,7 @@ class VlmPlannerPolicy:
         try:
             rect = self._client_rect()
             images = [
-                encode_frame_png(frame, max_width=self._max_image_width)
+                encode_frame_png_with_grid(frame, max_width=self._max_image_width)
                 for frame in self._bundle_frames(current_frame, boundary)
             ]
             instruction = build_instruction(

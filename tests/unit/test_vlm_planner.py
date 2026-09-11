@@ -99,6 +99,33 @@ class EncodeFramePngTests(unittest.TestCase):
         with self.assertRaises(ContractViolation):
             encode_frame_png(frame)
 
+    def test_grid_paints_lines_at_ten_percent_intervals(self) -> None:
+        from uga.policy.vlm_planner import _paint_grid
+
+        width, height = 100, 50
+        stride = width * 4
+        payload = bytearray(b"\x00" * (stride * height))
+        _paint_grid(payload, width, height, stride)
+
+        def pixel(x: int, y: int) -> bytes:
+            return bytes(payload[y * stride + x * 4 : y * stride + x * 4 + 4])
+
+        # 10% horizontal lines (y=5) and vertical lines (x=10) are magenta.
+        self.assertEqual(pixel(37, 5), b"\xff\x00\xff\xff")
+        self.assertEqual(pixel(10, 23), b"\xff\x00\xff\xff")
+        # Between the lines (row 8: past line k=1's two pixels, before k=2)
+        # the original pixels are untouched.
+        self.assertEqual(pixel(5, 8), b"\x00\x00\x00\x00")
+        # Edges (0% and beyond 100%) stay clean.
+        self.assertEqual(pixel(0, 0), b"\x00\x00\x00\x00")
+
+    def test_grid_encoded_png_is_valid(self) -> None:
+        from uga.policy.vlm_planner import encode_frame_png_with_grid
+
+        encoded = encode_frame_png_with_grid(_frame())
+
+        self.assertTrue(encoded.startswith(b"\x89PNG"))
+
 
 class ParsePlannerReplyTests(unittest.TestCase):
     def test_tap_reply(self) -> None:
