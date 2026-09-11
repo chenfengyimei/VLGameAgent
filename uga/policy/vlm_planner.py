@@ -38,6 +38,7 @@ from uga.windows.coordinates import Rect
 MAX_CONSECUTIVE_FAILURES = 5
 MAX_ACTION_SEQUENCE = 4
 MAX_STATIC_HOLDS = 10
+MAX_WAIT_INTERVAL_S = 15.0
 _SUPPORTED_FORMATS = (PixelFormat.BGRA8, PixelFormat.RGBA8)
 
 
@@ -552,6 +553,7 @@ class VlmPlannerPolicy:
         self._last_tap_ref: tuple[float, float, bytes] | None = None
         self._recent_taps: deque[tuple[int, int]] = deque(maxlen=3)
         self._perturb_rounds = 0
+        self._wait_streak = 0
         self._last_decision_started_mono: float | None = None
         self._sampler = sampler
         self._last_decision_digest: bytes | None = None
@@ -843,9 +845,28 @@ class VlmPlannerPolicy:
         else:
             self._next_decision_at = time.monotonic() + self._decision_interval_s
         if action == "wait":
+            if not queued_reply:
+                # Consecutive waits escalate the next interval: on animated
+                # screens the full-frame digest never matches, so the static
+                # hold cannot help — waiting in a cinematic or event banner
+                # should not burn a ~9s inference every 3 seconds. Any real
+                # action resets the streak.
+                self._wait_streak += 1
+                escalated = min(
+                    self._decision_interval_s * (2 ** self._wait_streak),
+                    MAX_WAIT_INTERVAL_S,
+                )
+                self._next_decision_at = time.monotonic() + escalated
+                self._last_action = 'wait（画面无合适目标或加载中）'
+                print(
+                    f"[vlm] wait x{self._wait_streak}; next decision in {escalated:.0f}s",
+                    flush=True,
+                )
+                return self._hold_chunk(context, duration=escalated)
             self._last_action = 'wait（画面无合适目标或加载中）'
             print(f"[vlm] wait (queued={queued_reply})", flush=True)
             return self._hold_chunk(context, duration=self._decision_interval_s)
+        self._wait_streak = 0
         if action == "press":
             # The fifth slot carries the button name for press actions.
             if not isinstance(reported_step, str) or not reported_step:

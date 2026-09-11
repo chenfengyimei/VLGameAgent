@@ -671,6 +671,43 @@ class HybridThinkingTests(unittest.TestCase):
             ),
         )
 
+    def test_consecutive_waits_escalate_the_interval(self) -> None:
+        # Animated screens never match the full-frame digest, so waiting in
+        # a cinematic must escalate the next decision interval instead of
+        # burning an inference every round.
+        client = _FakeClient(['{"action":"wait"}'] * 4)
+        policy = _policy(client)
+        policy._decision_interval_s = 3.0
+        policy._next_decision_at = 0.0
+        tags = iter(range(100, 110))
+        policy._frame_source = lambda: self._varied_frame(next(tags))
+
+        policy.infer(PolicyContext("obs-1", UGATime(100), (), None))
+        first_gap = policy._next_decision_at - time.monotonic()
+        policy._next_decision_at = 0.0
+        policy.infer(PolicyContext("obs-2", UGATime(200), (), None))
+        second_gap = policy._next_decision_at - time.monotonic()
+
+        self.assertEqual(policy._wait_streak, 2)
+        self.assertGreater(second_gap, first_gap)
+        self.assertLessEqual(second_gap, 15.5)  # capped at MAX_WAIT_INTERVAL_S
+
+    def test_tap_resets_the_wait_streak(self) -> None:
+        client = _FakeClient(['{"action":"wait"}', '{"action":"tap","x":0.4,"y":0.4}'])
+        policy = _policy(client)
+        policy._decision_interval_s = 3.0
+        policy._next_decision_at = 0.0
+        tags = iter(range(200, 206))
+        policy._frame_source = lambda: self._varied_frame(next(tags))
+
+        policy.infer(PolicyContext("obs-1", UGATime(100), (), None))
+        self.assertEqual(policy._wait_streak, 1)
+        policy._next_decision_at = 0.0
+        policy.infer(PolicyContext("obs-2", UGATime(200), (), None))
+
+        self.assertEqual(policy._wait_streak, 0)
+        self.assertLessEqual(policy._next_decision_at - time.monotonic(), 3.5)
+
     def test_unchanged_screen_skips_inference(self) -> None:
         client = _FakeClient(['{"action":"wait"}'] * 3)
         policy = _policy(client)
