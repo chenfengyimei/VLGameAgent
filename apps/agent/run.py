@@ -185,6 +185,14 @@ async def _run(args: argparse.Namespace) -> int:
                 )
             except OSError as exc:
                 print(f"[dashboard] disabled: {exc}", flush=True)
+        # The model may press semantic buttons; only ones with confirmed
+        # bindings in this profile can actuate — the rest are skipped at the
+        # policy so a press never produces an empty chunk (pipeline contract).
+        available_buttons = frozenset(
+            name
+            for name in ("jump", "menu", "confirm", "back", "primary", "secondary")
+            if (binding := profile.binding(name)) is not None and binding.confirmed
+        )
         policy: ScriptedTapPolicy | VlmPlannerPolicy = VlmPlannerPolicy(
             client=OpenAICompatibleVisionClient(
                 base_url=args.vlm_base_url,
@@ -200,6 +208,7 @@ async def _run(args: argparse.Namespace) -> int:
             decision_interval_s=args.vlm_decision_interval,
             sampler=sampler,
             journal=journal,
+            available_buttons=available_buttons,
         )
     else:
         policy = ScriptedTapPolicy(

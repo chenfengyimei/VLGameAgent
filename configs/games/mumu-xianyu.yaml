@@ -11,6 +11,7 @@ camera:
 controls:
   interact: {kind: mouse_button, code: "left", confirmed: true}
   menu: {kind: virtual_key, code: 27, confirmed: true}
+  back: {kind: virtual_key, code: 27, confirmed: true}
 capabilities:
   realtime_3d: true
   gui: true

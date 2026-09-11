@@ -212,12 +212,32 @@ class ParsePlannerReplyTests(unittest.TestCase):
         with self.assertRaises(PlannerReplyError):
             parse_planner_reply('{"action":"press"}')
 
-    def test_press_unknown_button_rejected_at_dispatch(self) -> None:
-        client = _FakeClient(['{"action":"press","button":"does_not_exist"}'])
-        policy = _policy(client)
-
+    def test_press_unknown_button_rejected_at_decode(self) -> None:
         with self.assertRaises(PlannerReplyError):
-            policy.infer(PolicyContext("obs-1", UGATime(100), (), None))
+            parse_planner_reply('{"action":"press","button":"does_not_exist"}')
+
+    def test_press_with_unbound_button_skips_and_redecides(self) -> None:
+        # confirm has no confirmed binding in this test policy: the press
+        # must be skipped (never an empty chunk) and re-decided immediately.
+        client = _FakeClient(['{"action":"press","button":"confirm"}'])
+        policy = _policy(client)
+        policy._available_buttons = frozenset({"menu"})
+        policy._decision_interval_s = 60.0
+
+        output = policy.infer(PolicyContext("obs-1", UGATime(100), (), None))
+
+        self.assertTrue(all(b == 0 for b in output.chunk.buttons))
+        self.assertLessEqual(policy._next_decision_at - time.monotonic(), 0.1)
+
+    def test_press_with_bound_button_emits_flag_chunk(self) -> None:
+        client = _FakeClient(['{"action":"press","button":"menu"}'])
+        policy = _policy(client)
+        policy._available_buttons = frozenset({"menu"})
+        policy._decision_interval_s = 60.0
+
+        output = policy.infer(PolicyContext("obs-1", UGATime(100), (), None))
+
+        self.assertEqual(output.chunk.buttons, (int(ActionButton.MENU),))
 
     def test_drag_action_decoded_with_endpoints(self) -> None:
         action, x, y, quest, tail = parse_planner_reply(

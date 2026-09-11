@@ -386,7 +386,10 @@ def _decode_payload(
         button = payload.get("button")
         if not isinstance(button, str) or not button.strip():
             raise PlannerReplyError("vision press reply lacks a button name")
-        return "press", None, None, reported, button.strip().lower()
+        button = button.strip().lower()
+        if button not in ("jump", "menu", "confirm", "back", "primary", "secondary"):
+            raise PlannerReplyError(f"vision press reply has unknown button: {button!r}")
+        return "press", None, None, reported, button
     if action == "drag":
         # Endpoint B rides in the fifth slot as "x2,y2"; the dispatch layer
         # rebuilds the drag path from it.
@@ -523,6 +526,9 @@ class VlmPlannerPolicy:
         screen_change_threshold: float = 0.015,
         sampler: FrameHistorySampler | None = None,
         journal: DecisionJournal | None = None,
+        available_buttons: frozenset[str] = frozenset(
+            {"jump", "menu", "confirm", "back", "primary", "secondary"}
+        ),
     ) -> None:
         if decision_interval_s <= 0.0 or failure_backoff_s <= 0.0:
             raise ContractViolation("vision planner cadence must be positive")
@@ -559,6 +565,7 @@ class VlmPlannerPolicy:
         self._last_decision_digest: bytes | None = None
         self._stale_discards = 0
         self._journal = journal if journal is not None else NullJournal()
+        self._available_buttons = available_buttons
         self._pending_actions: deque[
             tuple[str, float | None, float | None, str | None, str | None]
         ] = deque()
@@ -871,6 +878,29 @@ class VlmPlannerPolicy:
             # The fifth slot carries the button name for press actions.
             if not isinstance(reported_step, str) or not reported_step:
                 raise PlannerReplyError("vision press reply lacks a button name")
+            if reported_step not in self._available_buttons:
+                # No confirmed binding in this profile: a press here would
+                # produce an empty chunk and crash the pipeline — skip it
+                # and re-decide on the unchanged screen immediately.
+                print(
+                    f"[vlm] press {reported_step} skipped (no confirmed binding)",
+                    flush=True,
+                )
+                self._journal.record(
+                    DecisionRecord(
+                        timestamp=time.time(),
+                        kind="action",
+                        latency_s=None,
+                        action=f"press({reported_step}) skipped",
+                        detail="button has no confirmed binding in this profile",
+                        quest=self._quest,
+                        quest_step=None,
+                        images=None,
+                        reply_head=None,
+                    )
+                )
+                self._next_decision_at = time.monotonic()
+                return self._hold_chunk(context, duration=0.05)
             self._last_action = f"press({reported_step})"
             print(f"[vlm] press {reported_step} (queued={queued_reply})", flush=True)
             return self._press_chunk(context, reported_step)
