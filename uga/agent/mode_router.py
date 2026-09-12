@@ -37,9 +37,21 @@ class ModeClassifier(Protocol):
 class RuleModeClassifier:
     """Cheap first-pass rules; a VLM classifier can be composed as fallback."""
 
+    def __init__(self, mode_hints: tuple[tuple[str, str], ...] = ()) -> None:
+        parsed: list[tuple[str, ControlMode]] = []
+        for token, mode in mode_hints:
+            try:
+                parsed.append((token.casefold(), ControlMode(mode)))
+            except ValueError as exc:
+                raise ContractViolation(f"unsupported mode hint target: {mode}") from exc
+        self._mode_hints = tuple(parsed)
+
     def classify(self, observation: Observation) -> ModeEvidence:
         text = " ".join(observation.visible_text).casefold()
-        if any(token in text for token in ("loading", "please wait", "载入", "加载中")):
+        hinted = next((mode for token, mode in self._mode_hints if token in text), None)
+        if hinted is not None:
+            mode, confidence = hinted, 0.96
+        elif any(token in text for token in ("loading", "please wait", "载入", "加载中")):
             mode, confidence = ControlMode.LOADING, 0.95
         elif any(token in text for token in ("resume", "settings", "quit game", "继续游戏")):
             mode, confidence = ControlMode.GUI, 0.9

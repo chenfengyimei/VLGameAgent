@@ -6,7 +6,15 @@ import uuid
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
+from uga.agent.closed_loop import (
+    ClosedLoopSupervisor,
+    DecisionDisposition,
+    KeyResolver,
+    SupervisedDecision,
+    TerminalStatus,
+)
 from uga.agent.mode_router import ModeClassifier, ModeRouter, ModeTransition
+from uga.capture.frame import Frame
 from uga.capture.ring_buffer import FrameRingBuffer, LatestFrameSlot, SequencedFrame
 from uga.control.arbiter import ArbiterDecision
 from uga.control.lease import ControlMode, ControlOwner
@@ -15,13 +23,17 @@ from uga.control.scheduler import ActionScheduler, SchedulerStats
 from uga.core.errors import ContractViolation
 from uga.core.events import Event, EventBus, EventType
 from uga.environment.adapter import EnvironmentAdapter
+from uga.gui.controller import GuiActionController, GuiActionSubmission
 from uga.observation.buffer import TemporalObservationBuffer
 from uga.observation.builder import ObservationBuilder
 from uga.observation.schema import Observation
+from uga.perception.builder import PerceptionBuilder
+from uga.perception.schema import PerceptionSnapshot, PlannerOutcome
 from uga.policy.chunk_controller import ActionChunkController, ActionChunkSubmission
 from uga.policy.fast_policy import FastPolicy, FastPolicyOutput, PolicyContext
 from uga.recording.episode_writer import EpisodeWriter
 from uga.time.clock import ClockBackend
+from uga.windows.coordinates import CoordinateTransform, Rect
 
 
 class CaptureSource(Protocol):
@@ -35,6 +47,20 @@ class ContinuousCaptureSource(CaptureSource, Protocol):
     async def run(self, stop: asyncio.Event) -> None: ...
 
 
+class GroundedPlanner(Protocol):
+    @property
+    def policy_version(self) -> str: ...
+
+    def decide(
+        self,
+        *,
+        snapshot: PerceptionSnapshot,
+        frames: tuple[Frame, ...],
+        goal: str,
+        high_resolution_retry: bool = False,
+    ) -> PlannerOutcome: ...
+
+
 @dataclass(frozen=True, slots=True)
 class AgentLoopStep:
     observation: Observation
@@ -42,6 +68,10 @@ class AgentLoopStep:
     policy_output: FastPolicyOutput | None
     submission: ActionChunkSubmission | None
     scheduler_stats: SchedulerStats
+    perception: PerceptionSnapshot | None = None
+    planner_outcome: PlannerOutcome | None = None
+    gui_submission: GuiActionSubmission | None = None
+    supervision: SupervisedDecision | None = None
 
 
 class RealtimeAgentLoop:
@@ -58,13 +88,34 @@ class RealtimeAgentLoop:
         environment: EnvironmentAdapter,
         mode_classifier: ModeClassifier,
         mode_router: ModeRouter,
-        policy: FastPolicy,
+        policy: FastPolicy | None,
         leases: ControlLeaseManager,
         controller: ActionChunkController,
         scheduler: ActionScheduler,
         events: EventBus,
         recorder: EpisodeWriter | None = None,
+        grounded_planner: GroundedPlanner | None = None,
+        perception_builder: PerceptionBuilder | None = None,
+        closed_loop: ClosedLoopSupervisor | None = None,
+        gui_controller: GuiActionController | None = None,
+        key_resolver: KeyResolver | None = None,
+        grounded_decision_interval_s: float = 0.0,
     ) -> None:
+        grounded_parts = (
+            grounded_planner,
+            perception_builder,
+            closed_loop,
+            gui_controller,
+            key_resolver,
+        )
+        if policy is None and grounded_planner is None:
+            raise ContractViolation("agent loop requires a fast or grounded policy")
+        if grounded_decision_interval_s < 0:
+            raise ContractViolation("grounded decision interval cannot be negative")
+        if any(item is not None for item in grounded_parts) and not all(
+            item is not None for item in grounded_parts
+        ):
+            raise ContractViolation("grounded loop components must be configured together")
         self._clock = clock
         self._capture = capture
         self._frames = frames
@@ -79,6 +130,18 @@ class RealtimeAgentLoop:
         self._scheduler = scheduler
         self._events = events
         self._recorder = recorder
+        self._grounded_planner = grounded_planner
+        self._perception_builder = perception_builder
+        self._closed_loop = closed_loop
+        self._gui_controller = gui_controller
+        self._key_resolver = key_resolver
+        self._grounded_decision_interval_ns = round(
+            grounded_decision_interval_s * 1_000_000_000
+        )
+        self._next_grounded_inference_ns = 0
+        self._task_generation = 1
+        self._geometry_generation = 0
+        self._geometry_key: tuple[object, ...] | None = None
         self._slot = LatestFrameSlot()
         if recorder is not None:
             events.subscribe(self._record_event)
@@ -87,8 +150,27 @@ class RealtimeAgentLoop:
     def dropped_policy_frames(self) -> int:
         return self._slot.replaced
 
+    @property
+    def terminal_status(self) -> TerminalStatus:
+        return (
+            TerminalStatus.RUNNING
+            if self._closed_loop is None
+            else self._closed_loop.status
+        )
+
+    @property
+    def termination_reason(self) -> str | None:
+        return None if self._closed_loop is None else self._closed_loop.termination_reason
+
+    @property
+    def goal_confidence(self) -> float | None:
+        return None if self._closed_loop is None else self._closed_loop.goal_confidence
+
     async def step(self) -> AgentLoopStep:
         item = await self._capture.capture_once()
+        latest_item = self._frames.latest()
+        if latest_item is not None and latest_item.sequence > item.sequence:
+            item = latest_item
         self._slot.offer(item)
         pending = self._slot.take()
         if pending is None:
@@ -99,10 +181,41 @@ class RealtimeAgentLoop:
         if self._recorder is not None and not source_records_frames:
             self._recorder.record_frame(pending.frame)
 
-        history = tuple(value.frame for value in self._frames.snapshot())
+        history_items = tuple(
+            value for value in self._frames.snapshot() if value.sequence <= pending.sequence
+        )
+        history = tuple(value.frame for value in history_items)
         lease = self._leases.current()
+        perception: PerceptionSnapshot | None = None
+        effect_pending = False
+        if self._perception_builder is not None:
+            geometry_generation = self._update_geometry_generation(pending.frame)
+            perception = await asyncio.to_thread(
+                self._perception_builder.build,
+                pending,
+                self._mode_router.current,
+                geometry_generation=geometry_generation,
+                task_generation=self._task_generation,
+            )
+            assert self._closed_loop is not None
+            effect_pending = self._closed_loop.observe(perception, pending.frame).pending
         observation = self._observation_builder.build(
-            pending.frame, history, self._mode_router.current, lease
+            pending.frame,
+            history,
+            self._mode_router.current,
+            lease,
+            visible_text=None if perception is None else perception.text,
+            belief_confidence=None if perception is None else perception.confidence,
+            gui_state=(
+                ()
+                if perception is None
+                else tuple((f"text_{index}", text) for index, text in enumerate(perception.text))
+            ),
+            progress_state=(
+                ()
+                if perception is None
+                else (("state_signature", perception.state_signature),)
+            ),
         )
         observation = self._environment.enrich_observation(observation)
         self._observations.append(observation)
@@ -138,7 +251,131 @@ class RealtimeAgentLoop:
 
         output: FastPolicyOutput | None = None
         submission: ActionChunkSubmission | None = None
-        if self._mode_router.current == ControlMode.PLAY_3D and transition is None:
+        planner_outcome: PlannerOutcome | None = None
+        gui_submission: GuiActionSubmission | None = None
+        supervision: SupervisedDecision | None = None
+        if (
+            self._grounded_planner is not None
+            and perception is not None
+            and not effect_pending
+            and transition is None
+            and self._clock.now().value_ns >= self._next_grounded_inference_ns
+        ):
+            await self._events.publish(
+                EventType.POLICY_INFERENCE_STARTED,
+                "agent.loop",
+                {"observation_id": observation.observation_id, "policy": "grounded_vlm"},
+            )
+            planner_outcome = await asyncio.to_thread(
+                self._grounded_planner.decide,
+                snapshot=perception,
+                frames=history[-3:],
+                goal=observation.user_goal,
+            )
+            self._next_grounded_inference_ns = (
+                self._clock.now().value_ns + self._grounded_decision_interval_ns
+            )
+            latest_after_inference = self._frames.latest() or pending
+            if latest_after_inference.sequence == pending.sequence:
+                fresh_perception = perception
+            else:
+                assert self._perception_builder is not None
+                geometry_generation = self._update_geometry_generation(
+                    latest_after_inference.frame
+                )
+                fresh_perception = await asyncio.to_thread(
+                    self._perception_builder.build,
+                    latest_after_inference,
+                    self._mode_router.current,
+                    geometry_generation=geometry_generation,
+                    task_generation=self._task_generation,
+                )
+            assert self._closed_loop is not None
+            supervision = await asyncio.to_thread(
+                self._closed_loop.assess,
+                planner_outcome,
+                perception,
+                fresh_perception,
+                pending.frame,
+                latest_after_inference.frame,
+                observation.user_goal,
+            )
+            await self._events.publish(
+                EventType.POLICY_INFERENCE_COMPLETED,
+                "agent.loop",
+                {
+                    "observation_id": observation.observation_id,
+                    "decision_id": planner_outcome.decision_id,
+                    "kind": planner_outcome.kind.value,
+                    "confidence": planner_outcome.confidence,
+                    "disposition": supervision.disposition.value,
+                    "reason": supervision.reason,
+                },
+            )
+            if self._recorder is not None:
+                self._recorder.record_planner(
+                    planner_outcome.decision_id,
+                    self._clock.now(),
+                    {
+                        "outcome": planner_outcome.to_envelope(),
+                        "disposition": supervision.disposition.value,
+                        "supervision_reason": supervision.reason,
+                        "source_frame_age_ns": max(
+                            0,
+                            fresh_perception.captured_at.value_ns
+                            - perception.captured_at.value_ns,
+                        ),
+                        "effect_observed": self._closed_loop.last_effect_observed,
+                    },
+                )
+            if supervision.disposition == DecisionDisposition.EXECUTE:
+                assert self._gui_controller is not None
+                assert self._key_resolver is not None
+                gui_action = self._closed_loop.to_gui_action(
+                    planner_outcome, self._key_resolver
+                )
+                now = self._clock.now()
+                gui_lease = self._leases.grant(
+                    ControlOwner.GUI_AGENT,
+                    ControlMode.GUI,
+                    gui_action.lifetime.expires_at.value_ns - now.value_ns,
+                    confidence=gui_action.confidence,
+                    reason=f"grounded GUI decision {planner_outcome.decision_id}",
+                )
+                transform = self._coordinate_transform(latest_after_inference.frame)
+                gui_submission = self._gui_controller.submit(
+                    gui_action,
+                    transform,
+                    latest_after_inference.frame.window_identity,
+                    gui_lease,
+                    observation_id=observation.observation_id,
+                    policy_version=self._grounded_planner.policy_version,
+                )
+                if gui_submission.decision is not None:
+                    await self._publish_decision(gui_submission.decision)
+                    if gui_submission.decision.accepted:
+                        self._closed_loop.start_action(
+                            planner_outcome,
+                            fresh_perception,
+                            latest_after_inference.frame,
+                        )
+            stats = self._scheduler.tick()
+            return AgentLoopStep(
+                observation,
+                transition,
+                None,
+                None,
+                stats,
+                perception,
+                planner_outcome,
+                gui_submission,
+                supervision,
+            )
+        if (
+            self._policy is not None
+            and self._mode_router.current == ControlMode.PLAY_3D
+            and transition is None
+        ):
             await self._events.publish(
                 EventType.POLICY_INFERENCE_STARTED,
                 "agent.loop",
@@ -204,7 +441,17 @@ class RealtimeAgentLoop:
             await self._publish_decision(submission.decision)
 
         stats = self._scheduler.tick()
-        return AgentLoopStep(observation, transition, output, submission, stats)
+        return AgentLoopStep(
+            observation,
+            transition,
+            output,
+            submission,
+            stats,
+            perception,
+            planner_outcome,
+            gui_submission,
+            supervision,
+        )
 
     async def run(
         self,
@@ -221,6 +468,9 @@ class RealtimeAgentLoop:
             period_s = 1.0 / observation_hz
             while not stop.is_set():
                 await self.step()
+                if self._closed_loop is not None and self._closed_loop.is_terminal:
+                    stop.set()
+                    break
                 with contextlib.suppress(TimeoutError):
                     await asyncio.wait_for(stop.wait(), timeout=period_s)
 
@@ -232,6 +482,30 @@ class RealtimeAgentLoop:
                 tasks.create_task(observe())
         finally:
             self._leases.revoke_all(notify=False)
+
+    def _update_geometry_generation(self, frame: Frame) -> int:
+        key = (
+            frame.window_identity,
+            frame.width,
+            frame.height,
+            frame.client_rect,
+            frame.physical_rect,
+        )
+        if key != self._geometry_key:
+            self._geometry_key = key
+            self._geometry_generation += 1
+        return self._geometry_generation
+
+    @staticmethod
+    def _coordinate_transform(frame: Frame) -> CoordinateTransform:
+        image = Rect(0, 0, frame.width, frame.height)
+        return CoordinateTransform(
+            image_rect=image,
+            image_content_rect=frame.client_rect,
+            client_screen_rect=frame.physical_rect,
+            window_screen_rect=frame.physical_rect,
+            dpi_scale=1.0,
+        )
 
     async def _publish_decision(self, decision: ArbiterDecision) -> None:
         await self._events.publish(

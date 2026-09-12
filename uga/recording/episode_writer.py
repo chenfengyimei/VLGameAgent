@@ -141,6 +141,21 @@ class EpisodeWriter:
                 raise ContractViolation("episode already has a video sink")
             self._video = video
 
+    def set_terminal_context(
+        self, termination_reason: str, goal_confidence: float | None = None
+    ) -> None:
+        if not termination_reason.strip():
+            raise ContractViolation("episode termination reason cannot be blank")
+        if goal_confidence is not None and not 0.0 <= goal_confidence <= 1.0:
+            raise ContractViolation("episode goal confidence must be in [0, 1]")
+        with self._lock:
+            self._ensure_open()
+            self._metadata = replace(
+                self._metadata,
+                termination_reason=termination_reason,
+                goal_confidence=goal_confidence,
+            )
+
     def record_frame(self, frame: Frame) -> None:
         with self._lock:
             self._ensure_open()
@@ -480,6 +495,8 @@ class EpisodeWriter:
                 "result": metadata.result.value,
                 "agent_version": metadata.agent_version,
                 "policy_version": metadata.policy_version,
+                "termination_reason": metadata.termination_reason,
+                "goal_confidence": metadata.goal_confidence,
             },
         )
         self._write_jsonl(self._staging_path / "events.jsonl", self._events)

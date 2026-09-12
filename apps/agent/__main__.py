@@ -99,7 +99,7 @@ def cli() -> None:
     )
     run_parser.add_argument(
         "--vlm-model",
-        default="gemma-3-4b-it",
+        default="qwen3-vl-4b-instruct",
         help="vision model name exposed at the endpoint",
     )
     run_parser.add_argument(
@@ -135,6 +135,14 @@ def cli() -> None:
         default=8787,
         help="port for the live decision dashboard at http://127.0.0.1:<port> (0 = disabled)",
     )
+    run_parser.add_argument(
+        "--vision-mode", choices=["auto", "local", "hybrid"], default="auto"
+    )
+    run_parser.add_argument("--ocr", choices=["auto", "off"], default="auto")
+    run_parser.add_argument("--max-recoveries", type=int, default=2)
+    run_parser.add_argument("--verifier-base-url")
+    run_parser.add_argument("--verifier-model")
+    run_parser.add_argument("--verifier-api-key-env", default="UGA_VERIFIER_API_KEY")
     args = parser.parse_args()
     if args.command is None or args.command == "smoke":
         _smoke()

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 import uuid
 from collections.abc import Sequence
 from typing import Any, Protocol
@@ -19,6 +20,7 @@ from uga.perception.schema import (
     PlannerOutcome,
     WaitReason,
 )
+from uga.policy.decision_journal import DecisionJournal, DecisionRecord, NullJournal
 from uga.policy.vlm_planner import PlannerReplyError, encode_frame_png
 
 GROUNDING_RESPONSE_FORMAT: dict[str, Any] = {
@@ -179,15 +181,21 @@ class GroundedVlmPlanner:
         *,
         structured_output: bool = True,
         max_image_width: int = 1280,
+        journal: DecisionJournal | None = None,
     ) -> None:
         if max_image_width < 320:
             raise ContractViolation("grounded planner image width must be at least 320")
         self._client = client
         self._structured_output = structured_output
         self._max_image_width = max_image_width
+        self._journal = journal or NullJournal()
         self._schema_supported: bool | None = None
         self.last_raw_reply: str | None = None
         self.last_schema_valid = False
+
+    @property
+    def policy_version(self) -> str:
+        return "grounded-vlm-1.0.0"
 
     def decide(
         self,
@@ -197,6 +205,7 @@ class GroundedVlmPlanner:
         goal: str,
         high_resolution_retry: bool = False,
     ) -> PlannerOutcome:
+        started = time.monotonic()
         if not frames or frames[-1].frame_id != snapshot.frame_id:
             raise ContractViolation("grounded planner frames must end at the snapshot frame")
         images = self._images(frames[-1], snapshot, goal, high_resolution_retry)
@@ -238,9 +247,36 @@ class GroundedVlmPlanner:
                 outcome = self._parse(repair, snapshot)
             except PlannerReplyError:
                 self.last_schema_valid = False
-                return self._abstain(snapshot, "model reply remained invalid after one repair")
+                outcome = self._abstain(
+                    snapshot, "model reply remained invalid after one repair"
+                )
+                self._record(outcome, time.monotonic() - started)
+                return outcome
         self.last_schema_valid = True
+        self._record(outcome, time.monotonic() - started)
         return outcome
+
+    def _record(self, outcome: PlannerOutcome, latency_s: float) -> None:
+        action = outcome.action
+        action_label = outcome.kind.value
+        if action is not None:
+            action_label = f"{action.kind.value}({action.target_label})"
+        self._journal.record(
+            DecisionRecord(
+                timestamp=time.time(),
+                kind="decision",
+                latency_s=latency_s,
+                action=action_label,
+                detail=(
+                    f"schema_valid={self.last_schema_valid}; confidence={outcome.confidence:.3f}; "
+                    f"expected_effect={None if action is None else action.expected_effect}"
+                ),
+                quest=None,
+                quest_step=outcome.explanation[:200] or None,
+                images=None,
+                reply_head=None if self.last_raw_reply is None else self.last_raw_reply[:500],
+            )
+        )
 
     def _images(
         self,
@@ -378,3 +414,65 @@ class GroundedVlmPlanner:
             0.0,
             explanation=explanation,
         )
+
+
+VERIFIER_RESPONSE_FORMAT: dict[str, Any] = {
+    "type": "json_schema",
+    "json_schema": {
+        "name": "uga_action_verdict",
+        "strict": True,
+        "schema": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["approved", "confidence", "reason"],
+            "properties": {
+                "approved": {"type": "boolean"},
+                "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+                "reason": {"type": "string"},
+            },
+        },
+    },
+}
+
+
+class GroundedOutcomeVerifier:
+    """Optional larger-model cross-check used only for ambiguous decisions."""
+
+    def __init__(self, client: StructuredVisionClient, *, threshold: float = 0.85) -> None:
+        if not 0.0 <= threshold <= 1.0:
+            raise ContractViolation("verifier confidence threshold must be in [0, 1]")
+        self._client = client
+        self._threshold = threshold
+
+    def __call__(
+        self,
+        outcome: PlannerOutcome,
+        snapshot: PerceptionSnapshot,
+        frame: Frame,
+        goal: str,
+    ) -> bool:
+        action = outcome.action
+        instruction = (
+            "独立复核以下 GUI 单步操作是否与屏幕和目标一致。仅返回 Schema JSON。\n"
+            f"目标：{goal}\n"
+            f"场景：{outcome.scene_summary}\n"
+            f"OCR：{list(snapshot.text)}\n"
+            f"候选动作：{None if action is None else action.target_label}\n"
+            f"候选 bbox：{None if action is None else action.target_box}\n"
+            f"预期效果：{None if action is None else action.expected_effect}"
+        )
+        try:
+            reply = self._client.decide(
+                images=[encode_frame_png(frame, max_width=1280)],
+                instruction=instruction,
+                response_format=VERIFIER_RESPONSE_FORMAT,
+            )
+            payload = json.loads(reply)
+            return (
+                isinstance(payload, dict)
+                and payload.get("approved") is True
+                and float(payload.get("confidence", -1)) >= self._threshold
+                and isinstance(payload.get("reason"), str)
+            )
+        except (BackendUnavailableError, TypeError, ValueError, json.JSONDecodeError):
+            return False

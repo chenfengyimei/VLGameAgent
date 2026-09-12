@@ -25,6 +25,7 @@ from pathlib import Path
 from types import FrameType
 
 from apps.agent.dashboard import DecisionDashboard
+from uga.agent.closed_loop import ClosedLoopSupervisor, TerminalStatus
 from uga.agent.mode_router import ModeRouter, RuleModeClassifier
 from uga.capture.dxgi import DXGIDuplicationBackend
 from uga.capture.fallback import GDIFallbackCaptureBackend
@@ -42,18 +43,17 @@ from uga.core.agent_loop import RealtimeAgentLoop
 from uga.core.errors import BackendUnavailableError, CaptureTimeoutError, ContractViolation
 from uga.core.events import EventBus
 from uga.environment.generic import GenericEnvironment
-from uga.environment.profile import GameProfile, load_game_profile
+from uga.environment.profile import BindingKind, GameProfile, load_game_profile
+from uga.gui.controller import GuiActionController
 from uga.observation.buffer import TemporalObservationBuffer
 from uga.observation.builder import ObservationBuilder, ObservationInputs
+from uga.perception.builder import PerceptionBuilder
+from uga.perception.text import NullTextProvider, RapidOcrProvider, TextObservationProvider
 from uga.policy.chunk_controller import ActionChunkController
 from uga.policy.decision_journal import DecisionJournal, DecisionRecord
+from uga.policy.grounded_vlm import GroundedOutcomeVerifier, GroundedVlmPlanner
 from uga.policy.scripted_tap import ScriptedTapPolicy
-from uga.policy.vlm_planner import (
-    OpenAICompatibleVisionClient,
-    VlmPlannerPolicy,
-    build_android_quest_instruction,
-    build_instruction,
-)
+from uga.policy.vlm_planner import OpenAICompatibleVisionClient
 from uga.recording.episode_writer import EpisodeWriter
 from uga.recording.schema import EpisodeMetadata, EpisodeResult
 from uga.recording.video import PyAvVideoRecorder
@@ -81,6 +81,28 @@ def _persist_planner_decision(
     record: DecisionRecord,
 ) -> None:
     recorder.record_planner(uuid.uuid4().hex, clock.now(), record.to_row())
+
+
+def _episode_outcome(
+    *,
+    user_stopped: bool,
+    run_error: BaseException | None,
+    terminal_status: TerminalStatus,
+    terminal_reason: str | None,
+    duration_expired: bool,
+) -> tuple[EpisodeResult, str]:
+    """Resolve one unambiguous terminal result for the Episode contract."""
+    if user_stopped:
+        return EpisodeResult.ABORTED, "user_stopped"
+    if run_error is not None:
+        return EpisodeResult.FAILURE, "runtime_error"
+    if terminal_status == TerminalStatus.SUCCEEDED:
+        return EpisodeResult.SUCCESS, terminal_reason or "goal_confirmed"
+    if terminal_status in {TerminalStatus.BLOCKED, TerminalStatus.FAILED}:
+        return EpisodeResult.FAILURE, terminal_reason or terminal_status.value
+    if duration_expired:
+        return EpisodeResult.FAILURE, "timeout"
+    return EpisodeResult.FAILURE, "loop_ended_without_goal_confirmation"
 
 
 def _capture_backend(
@@ -147,10 +169,13 @@ async def _run(args: argparse.Namespace) -> int:
         or args.vlm_timeout_seconds <= 0
     ):
         raise SystemExit("vision planner intervals and timeouts must be positive")
+    if args.policy == "vlm" and not 0 <= args.max_recoveries <= 2:
+        raise SystemExit("--max-recoveries must be within [0, 2]")
     if args.tap_interval_seconds and args.tap_interval_seconds <= args.tap_delay:
         raise SystemExit("--tap-interval-seconds must exceed --tap-delay")
     extra_body: dict[str, object] | None = None
     vision_client: OpenAICompatibleVisionClient | None = None
+    outcome_verifier: GroundedOutcomeVerifier | None = None
     if args.policy == "vlm":
         try:
             parsed_extra = json.loads(args.vlm_extra_body) if args.vlm_extra_body else None
@@ -167,9 +192,20 @@ async def _run(args: argparse.Namespace) -> int:
             disable_thinking=args.vlm_no_thinking,
             extra_body=extra_body,
         )
+        use_verifier = args.vision_mode == "hybrid" or (
+            args.vision_mode == "auto" and bool(args.verifier_model)
+        )
+        if use_verifier:
+            if not args.verifier_model:
+                raise SystemExit("--vision-mode hybrid requires --verifier-model")
+            verifier_client = OpenAICompatibleVisionClient(
+                base_url=args.verifier_base_url or args.vlm_base_url,
+                model=args.verifier_model,
+                api_key=os.environ.get(args.verifier_api_key_env, ""),
+                timeout_s=args.vlm_timeout_seconds,
+            )
+            outcome_verifier = GroundedOutcomeVerifier(verifier_client)
     profile = load_game_profile(args.profile)
-    # Enforce the environment safety manifest before activating, capturing, or
-    # otherwise interacting with the target.
     environment = GenericEnvironment(profile)
     windows = Win32WindowBackend()
     target = _find_target(windows, profile)
@@ -214,15 +250,11 @@ async def _run(args: argparse.Namespace) -> int:
     client = target.client_screen_rect
     tap_x = round(client.left + client.width * args.tap_x_fraction)
     tap_y = round(client.top + client.height * args.tap_y_fraction)
-    title_pattern = re.compile(profile.window_title_pattern or r".*")
-
-    def _current_client_rect() -> Rect:
-        return _current_target_client_rect(windows, target, title_pattern)
-
     frames = FrameRingBuffer()
     sampler_backend: GDIFallbackCaptureBackend | None = None
     dashboard: DecisionDashboard | None = None
     journal: DecisionJournal | None = None
+    grounded_planner: GroundedVlmPlanner | None = None
 
     if args.policy == "vlm":
         try:
@@ -242,30 +274,14 @@ async def _run(args: argparse.Namespace) -> int:
                         _best_effort_cleanup(dashboard.stop)
                         dashboard = None
                     print(f"[dashboard] disabled: {exc}", flush=True)
-            # The model may press semantic buttons; only ones with confirmed
-            # bindings in this profile can actuate — the rest are skipped at the
-            # policy so a press never produces an empty chunk (pipeline contract).
-            available_buttons = frozenset(
-                name
-                for name in ("jump", "menu", "confirm", "back", "primary", "secondary")
-                if (binding := profile.binding(name)) is not None and binding.confirmed
-            )
             assert vision_client is not None
-            instruction_builder = (
-                build_android_quest_instruction
-                if profile.planner_prompt_strategy == "android_quest"
-                else build_instruction
-            )
-            policy: ScriptedTapPolicy | VlmPlannerPolicy = VlmPlannerPolicy(
-                client=vision_client,
-                frame_source=lambda: frames.snapshot()[-1].frame,
-                client_rect=_current_client_rect,
-                goal=args.goal,
-                decision_interval_s=args.vlm_decision_interval,
+            grounded_planner = GroundedVlmPlanner(
+                vision_client,
+                structured_output=True,
+                max_image_width=1280,
                 journal=journal,
-                available_buttons=available_buttons,
-                instruction_builder=instruction_builder,
             )
+            policy: ScriptedTapPolicy | None = None
         except BaseException:
             _best_effort_cleanup(
                 *(
@@ -288,12 +304,20 @@ async def _run(args: argparse.Namespace) -> int:
         ObservationInputs(goal=args.goal),
     )
     observations = TemporalObservationBuffer()
-    router = ModeRouter(initial_mode=ControlMode.PLAY_3D, confirmation_frames=1)
+    router = ModeRouter(
+        initial_mode=ControlMode.GUI if args.policy == "vlm" else ControlMode.PLAY_3D,
+        confirmation_frames=1,
+    )
 
     recorder: EpisodeWriter | None = None
     episode_id = f"{profile.game_id}-{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:8]}"
     if args.record:
         try:
+            policy_version = (
+                grounded_planner.policy_version
+                if grounded_planner is not None
+                else (None if policy is None else policy.policy_version)
+            )
             recorder = EpisodeWriter(
                 args.record,
                 EpisodeMetadata(
@@ -306,7 +330,7 @@ async def _run(args: argparse.Namespace) -> int:
                     args.goal,
                     EpisodeResult.IN_PROGRESS,
                     "0.1.0",
-                    policy.policy_version,
+                    policy_version,
                     False,
                 ),
             )
@@ -330,6 +354,38 @@ async def _run(args: argparse.Namespace) -> int:
             raise
 
     controller = ActionChunkController(environment, arbiter, scheduler, recorder)
+    perception_builder: PerceptionBuilder | None = None
+    closed_loop: ClosedLoopSupervisor | None = None
+    gui_controller: GuiActionController | None = None
+    if args.policy == "vlm":
+        text_provider: TextObservationProvider = NullTextProvider()
+        if args.ocr == "auto" and profile.perception.ocr_enabled:
+            try:
+                text_provider = RapidOcrProvider()
+                print("[perception] RapidOCR enabled", flush=True)
+            except BackendUnavailableError as exc:
+                print(
+                    f"[perception] OCR unavailable; continuing fail-safe: {exc}",
+                    flush=True,
+                )
+        perception_builder = PerceptionBuilder(text_provider)
+        closed_loop = ClosedLoopSupervisor(
+            clock,
+            profile.perception,
+            verifier=outcome_verifier,
+        )
+        gui_controller = GuiActionController(arbiter, scheduler, recorder)
+
+    def _resolve_key(name: str) -> tuple[int, ...] | None:
+        binding = profile.binding(name)
+        if (
+            binding is None
+            or not binding.confirmed
+            or binding.kind != BindingKind.VIRTUAL_KEY
+            or not isinstance(binding.code, int)
+        ):
+            return None
+        return (binding.code,)
 
     capture_source = CaptureHub(
         primary=backend,
@@ -347,7 +403,7 @@ async def _run(args: argparse.Namespace) -> int:
         observation_builder=builder,
         observations=observations,
         environment=environment,
-        mode_classifier=RuleModeClassifier(),
+        mode_classifier=RuleModeClassifier(profile.perception.mode_hints),
         mode_router=router,
         policy=policy,
         leases=leases,
@@ -355,6 +411,14 @@ async def _run(args: argparse.Namespace) -> int:
         scheduler=scheduler,
         events=events,
         recorder=recorder,
+        grounded_planner=grounded_planner,
+        perception_builder=perception_builder,
+        closed_loop=closed_loop,
+        gui_controller=gui_controller,
+        key_resolver=_resolve_key if grounded_planner is not None else None,
+        grounded_decision_interval_s=(
+            args.vlm_decision_interval if grounded_planner is not None else 0.0
+        ),
     )
 
     stop = asyncio.Event()
@@ -400,6 +464,7 @@ async def _run(args: argparse.Namespace) -> int:
         raise
 
     started = time.monotonic()
+    duration_expired = False
     if args.policy == "vlm":
         print(
             f"running: game={profile.game_id} target={target.title}"
@@ -414,6 +479,7 @@ async def _run(args: argparse.Namespace) -> int:
     try:
         while not task.done():
             if 0 < args.duration_seconds <= time.monotonic() - started:
+                duration_expired = True
                 break
             await asyncio.sleep(0.2)
     except (KeyboardInterrupt, asyncio.CancelledError):
@@ -467,13 +533,14 @@ async def _run(args: argparse.Namespace) -> int:
                 ),
             }
         )
-        result = (
-            EpisodeResult.ABORTED
-            if stop_state["user"]
-            else EpisodeResult.FAILURE
-            if run_error is not None
-            else EpisodeResult.SUCCESS
+        result, termination_reason = _episode_outcome(
+            user_stopped=stop_state["user"],
+            run_error=run_error,
+            terminal_status=loop.terminal_status,
+            terminal_reason=loop.termination_reason,
+            duration_expired=duration_expired,
         )
+        recorder.set_terminal_context(termination_reason, loop.goal_confidence)
         episode_path = recorder.finalize(result, clock.now())
         print(f"episode: {episode_path}")
     if run_error is not None:
@@ -539,7 +606,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--vlm-model",
-        default="gemma-3-4b-it",
+        default="qwen3-vl-4b-instruct",
         help="vision model name exposed at the endpoint",
     )
     parser.add_argument(
@@ -569,6 +636,22 @@ def build_parser() -> argparse.ArgumentParser:
         help="JSON object merged into the vision request body (e.g. "
         '\'{"enable_thinking": false}\' for DashScope Qwen3 models)',
     )
+    parser.add_argument(
+        "--vision-mode",
+        choices=["auto", "local", "hybrid"],
+        default="auto",
+        help="local-first vision routing; hybrid uses the optional verifier",
+    )
+    parser.add_argument(
+        "--ocr",
+        choices=["auto", "off"],
+        default="auto",
+        help="enable profile-requested OCR when its locked extras are installed",
+    )
+    parser.add_argument("--max-recoveries", type=int, default=2)
+    parser.add_argument("--verifier-base-url")
+    parser.add_argument("--verifier-model")
+    parser.add_argument("--verifier-api-key-env", default="UGA_VERIFIER_API_KEY")
     return parser
 
 

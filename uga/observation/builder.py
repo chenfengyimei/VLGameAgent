@@ -64,6 +64,11 @@ class ObservationBuilder:
         history: tuple[Frame, ...],
         mode: ControlMode,
         lease: ControlLease | None,
+        *,
+        visible_text: tuple[str, ...] | None = None,
+        belief_confidence: float | None = None,
+        gui_state: tuple[tuple[str, str], ...] = (),
+        progress_state: tuple[tuple[str, str], ...] = (),
     ) -> Observation:
         started = self._clock.now()
         if started < latest.capture_timestamp:
@@ -83,11 +88,11 @@ class ObservationBuilder:
             (),
             (),
             (),
-            (),
-            (),
+            gui_state,
+            progress_state,
             inputs.last_success,
             inputs.last_failure,
-            0.5,
+            0.5 if belief_confidence is None else belief_confidence,
             started,
         )
         ended = self._clock.now()
@@ -102,7 +107,7 @@ class ObservationBuilder:
             inputs.recent_action_ids,
             inputs.recent_events,
             belief,
-            inputs.visible_text,
+            inputs.visible_text if visible_text is None else visible_text,
             inputs.active_skill,
             lease,
             LatencyContext(

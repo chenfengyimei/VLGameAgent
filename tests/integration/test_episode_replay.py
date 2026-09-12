@@ -148,6 +148,7 @@ class EpisodeReplayTests(unittest.TestCase):
         input_state = InputStateRecord(UGATime(140), human_action, (), ())
         writer.record_action(human_action, human_provenance, input_state=input_state)
         writer.record_annotation("annotation-1", UGATime(130), {"quality": "ok"})
+        writer.set_terminal_context("goal_confirmed", 0.93)
         return writer.finalize(EpisodeResult.SUCCESS, UGATime(40_000_000))
 
     def test_episode_round_trip_has_video_provenance_and_stable_replay(self) -> None:
@@ -160,6 +161,11 @@ class EpisodeReplayTests(unittest.TestCase):
                 json.loads((episode / "metrics.json").read_text(encoding="utf-8"))["capture_fps"],
                 30.0,
             )
+            run = json.loads((episode / "run.json").read_text(encoding="utf-8"))
+            metadata = json.loads((episode / "metadata.json").read_text(encoding="utf-8"))
+            self.assertEqual(run["termination_reason"], "goal_confirmed")
+            self.assertEqual(run["goal_confidence"], 0.93)
+            self.assertEqual(metadata["termination_reason"], "goal_confirmed")
             self.assertGreater((episode / "video.mp4").stat().st_size, 0)
             av = importlib.import_module("av")
             with av.open(str(episode / "video.mp4")) as container:

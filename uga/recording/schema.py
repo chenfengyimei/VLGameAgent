@@ -51,6 +51,8 @@ class EpisodeMetadata(VersionedMixin):
     policy_version: str | None
     human_controlled: bool
     end_monotonic_ns: int | None = None
+    termination_reason: str | None = None
+    goal_confidence: float | None = None
 
     def __post_init__(self) -> None:
         self.validate()
@@ -74,6 +76,10 @@ class EpisodeMetadata(VersionedMixin):
             UGATime(self.end_monotonic_ns)
             if self.end_monotonic_ns < self.start_monotonic_ns:
                 raise ContractViolation("episode end cannot precede start")
+        if self.termination_reason is not None and not self.termination_reason.strip():
+            raise ContractViolation("episode termination reason cannot be blank")
+        if self.goal_confidence is not None and not 0.0 <= self.goal_confidence <= 1.0:
+            raise ContractViolation("episode goal confidence must be in [0, 1]")
 
 
 @dataclass(frozen=True, slots=True)

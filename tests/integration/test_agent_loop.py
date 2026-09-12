@@ -4,7 +4,9 @@ import unittest
 
 from tests.helpers import frame, identity
 from tests.integration.test_baseline_agent import FakeIntegrity, FakeWindows, profile
+from uga.agent.closed_loop import ClosedLoopSupervisor, DecisionDisposition
 from uga.agent.mode_router import ModeRouter, RuleModeClassifier
+from uga.capture.frame import Frame
 from uga.capture.ring_buffer import FrameRingBuffer, SequencedFrame
 from uga.control.arbiter import ActionArbiter
 from uga.control.executor import InputExecutor
@@ -15,8 +17,20 @@ from uga.control.scheduler import ActionScheduler
 from uga.core.agent_loop import RealtimeAgentLoop
 from uga.core.events import EventBus, EventType
 from uga.environment.generic import GenericEnvironment
+from uga.gui.controller import GuiActionController
+from uga.gui.schema import GuiActionKind
 from uga.observation.buffer import TemporalObservationBuffer
 from uga.observation.builder import ObservationBuilder, ObservationInputs
+from uga.perception.builder import PerceptionBuilder
+from uga.perception.schema import (
+    DecisionKind,
+    GoalStatus,
+    GroundedAction,
+    NormalizedBox,
+    PerceptionSnapshot,
+    PlannerOutcome,
+)
+from uga.perception.text import NullTextProvider
 from uga.policy.action_chunk import ActionChunk
 from uga.policy.chunk_controller import ActionChunkController
 from uga.policy.fast_policy import FastPolicyOutput, PolicyContext
@@ -65,6 +79,40 @@ class ForwardPolicy:
         )
 
 
+class GroundedClickPlanner:
+    @property
+    def policy_version(self) -> str:
+        return "grounded-fixture"
+
+    def decide(
+        self,
+        *,
+        snapshot: PerceptionSnapshot,
+        frames: tuple[Frame, ...],
+        goal: str,
+        high_resolution_retry: bool = False,
+    ) -> PlannerOutcome:
+        del frames, goal, high_resolution_retry
+        return PlannerOutcome(
+            "grounded-decision-1",
+            snapshot.frame_id,
+            snapshot.frame_sequence,
+            snapshot.window_identity.window_generation,
+            snapshot.geometry_generation,
+            snapshot.task_generation,
+            DecisionKind.ACT,
+            "fixture GUI",
+            (),
+            GoalStatus.IN_PROGRESS,
+            0.95,
+            GroundedAction(
+                GuiActionKind.CLICK,
+                "settings",
+                NormalizedBox(0.25, 0.25, 0.75, 0.75),
+                "settings opens",
+                0.95,
+            ),
+        )
 class AgentLoopTests(unittest.IsolatedAsyncioTestCase):
     def _build_loop(
         self, policy: ForwardPolicy
@@ -131,6 +179,59 @@ class AgentLoopTests(unittest.IsolatedAsyncioTestCase):
             EventType.REASONING_REQUESTED,
             [event.event_type for event in events.history()],
         )
+
+    async def test_grounded_loop_executes_exactly_one_gui_action(self) -> None:
+        clock = ManualClock(100)
+        target = identity()
+        frames = FrameRingBuffer()
+        events = EventBus(clock)
+        leases = ControlLeaseManager(clock)
+        backend = DryRunInputBackend()
+        executor = InputExecutor(
+            clock,
+            backend,
+            FocusGuard(FakeWindows(target), FakeIntegrity(), leases, AgentEnableState(True)),
+            leases,
+        )
+        scheduler = ActionScheduler(clock, executor, leases)
+        arbiter = ActionArbiter(clock, leases)
+        fixture_profile = profile()
+        loop = RealtimeAgentLoop(
+            clock=clock,
+            capture=FakeCaptureSource(frames),
+            frames=frames,
+            observation_builder=ObservationBuilder(
+                clock, "fixture-game", ObservationInputs("open settings")
+            ),
+            observations=TemporalObservationBuffer(),
+            environment=GenericEnvironment(fixture_profile),
+            mode_classifier=RuleModeClassifier(),
+            mode_router=ModeRouter(
+                ControlMode.GUI, confirmation_frames=1, started_at=UGATime(0)
+            ),
+            policy=None,
+            leases=leases,
+            controller=ActionChunkController(
+                GenericEnvironment(fixture_profile), arbiter, scheduler
+            ),
+            scheduler=scheduler,
+            events=events,
+            grounded_planner=GroundedClickPlanner(),
+            perception_builder=PerceptionBuilder(NullTextProvider()),
+            closed_loop=ClosedLoopSupervisor(clock, fixture_profile.perception),
+            gui_controller=GuiActionController(arbiter, scheduler),
+            key_resolver=lambda _: None,
+        )
+
+        result = await loop.step()
+
+        self.assertIsNotNone(result.supervision)
+        assert result.supervision is not None
+        self.assertEqual(result.supervision.disposition, DecisionDisposition.EXECUTE)
+        self.assertIsNotNone(result.gui_submission)
+        self.assertEqual(result.gui_submission.scheduled_physical_actions, 3)
+        self.assertEqual(result.scheduler_stats.executed, 3)
+        self.assertEqual(len(backend.actions), 3)
 
 
 if __name__ == "__main__":
