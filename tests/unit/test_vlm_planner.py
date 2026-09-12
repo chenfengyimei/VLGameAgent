@@ -5,6 +5,7 @@ import json
 import time
 import unittest
 import urllib.error
+from dataclasses import replace
 from unittest import mock
 
 from tests.helpers import identity
@@ -745,6 +746,13 @@ class TapFreshnessGuardTests(unittest.TestCase):
         policy = _policy(_FakeClient([]))
 
         self.assertTrue(policy._tap_target_stale(_frame(), changed, 0.5, 0.5))
+
+    def test_changed_window_generation_is_stale_even_when_pixels_match(self) -> None:
+        decided = _frame()
+        fresh = replace(decided, window_identity=identity(generation=2))
+        policy = _policy(_FakeClient([]))
+
+        self.assertTrue(policy._tap_target_stale(decided, fresh, 0.5, 0.5))
 
     def test_full_screen_change_elsewhere_does_not_invalidate_tap(self) -> None:
         # The tap box (±8% around 0.08, 0.9) must stay clean even when the

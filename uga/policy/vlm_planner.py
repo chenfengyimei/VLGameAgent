@@ -809,6 +809,13 @@ class VlmPlannerPolicy:
         characters, effects) elsewhere must not invalidate the tap. A
         different region size (window resize) counts as stale.
         """
+        if (
+            decided.window_identity != fresh.window_identity
+            or decided.client_rect != fresh.client_rect
+            or decided.width != fresh.width
+            or decided.height != fresh.height
+        ):
+            return True
         decided_region = self._region_digest(decided, fx, fy)
         fresh_region = self._region_digest(fresh, fx, fy)
         if not decided_region or len(decided_region) != len(fresh_region):
@@ -1151,14 +1158,11 @@ class VlmPlannerPolicy:
         # Freshness guard: the model replied to a screenshot that is now
         # seconds old (inference latency). If the area it decided to tap has
         # changed meanwhile, the tap would land on a stale layout — drop the
-        # decision and immediately re-decide on the live frame. After three
-        # consecutive discards the tap is allowed through anyway: an old tap
-        # is better than never acting on a permanently animated screen.
+        # decision and immediately re-decide on the live frame. A stale target
+        # is never allowed through merely because earlier replies were stale.
         if x is None or y is None:
             raise PlannerReplyError(f"vision {action} reply lacks tap coordinates")
-        if self._stale_discards < 3 and self._tap_target_stale(
-            decision_frame, self._frame_source(), x, y
-        ):
+        if self._tap_target_stale(decision_frame, self._frame_source(), x, y):
             self._stale_discards += 1
             self._pending_actions.clear()
             print(
@@ -1172,7 +1176,7 @@ class VlmPlannerPolicy:
                     kind="stale_discard",
                     latency_s=None,
                     action=action_label,
-                    detail=f"discards: {self._stale_discards}/3; queue cleared",
+                    detail=f"discards: {self._stale_discards}; queue cleared",
                     quest=self._quest,
                     quest_step=self._quest_step,
                     images=None,

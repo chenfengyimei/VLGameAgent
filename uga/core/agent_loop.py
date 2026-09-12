@@ -4,7 +4,7 @@ import asyncio
 import contextlib
 import uuid
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Protocol, runtime_checkable
 
 from uga.agent.mode_router import ModeClassifier, ModeRouter, ModeTransition
 from uga.capture.ring_buffer import FrameRingBuffer, LatestFrameSlot, SequencedFrame
@@ -26,6 +26,13 @@ from uga.time.clock import ClockBackend
 
 class CaptureSource(Protocol):
     async def capture_once(self) -> SequencedFrame: ...
+
+
+@runtime_checkable
+class ContinuousCaptureSource(CaptureSource, Protocol):
+    records_frames: bool
+
+    async def run(self, stop: asyncio.Event) -> None: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -86,7 +93,10 @@ class RealtimeAgentLoop:
         pending = self._slot.take()
         if pending is None:
             raise ContractViolation("realtime frame slot was unexpectedly empty")
-        if self._recorder is not None:
+        source_records_frames = isinstance(self._capture, ContinuousCaptureSource) and (
+            self._capture.records_frames
+        )
+        if self._recorder is not None and not source_records_frames:
             self._recorder.record_frame(pending.frame)
 
         history = tuple(value.frame for value in self._frames.snapshot())
@@ -216,6 +226,8 @@ class RealtimeAgentLoop:
 
         try:
             async with asyncio.TaskGroup() as tasks:
+                if isinstance(self._capture, ContinuousCaptureSource):
+                    tasks.create_task(self._capture.run(stop))
                 tasks.create_task(self._scheduler.run(stop, frequency_hz=scheduler_hz))
                 tasks.create_task(observe())
         finally:

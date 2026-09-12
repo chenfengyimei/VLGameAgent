@@ -28,8 +28,9 @@ from apps.agent.dashboard import DecisionDashboard
 from uga.agent.mode_router import ModeRouter, RuleModeClassifier
 from uga.capture.dxgi import DXGIDuplicationBackend
 from uga.capture.fallback import GDIFallbackCaptureBackend
+from uga.capture.hub import CaptureHub
 from uga.capture.registry import CaptureBackendRegistry
-from uga.capture.ring_buffer import FrameRingBuffer, SequencedFrame
+from uga.capture.ring_buffer import FrameRingBuffer
 from uga.capture.windows_graphics_capture import WindowsGraphicsCaptureBackend
 from uga.control.arbiter import ActionArbiter
 from uga.control.executor import InputExecutor
@@ -48,7 +49,6 @@ from uga.policy.chunk_controller import ActionChunkController
 from uga.policy.decision_journal import DecisionJournal, DecisionRecord
 from uga.policy.scripted_tap import ScriptedTapPolicy
 from uga.policy.vlm_planner import (
-    FrameHistorySampler,
     OpenAICompatibleVisionClient,
     VlmPlannerPolicy,
     build_android_quest_instruction,
@@ -220,23 +220,14 @@ async def _run(args: argparse.Namespace) -> int:
         return _current_target_client_rect(windows, target, title_pattern)
 
     frames = FrameRingBuffer()
-    sampler: FrameHistorySampler | None = None
     sampler_backend: GDIFallbackCaptureBackend | None = None
     dashboard: DecisionDashboard | None = None
     journal: DecisionJournal | None = None
 
     if args.policy == "vlm":
         try:
-            # The vision planner blocks the observe loop for the whole model
-            # round-trip; an independent GDI thread keeps screenshotting during
-            # that gap so the next decision gets a chronological bundle.
             sampler_backend = GDIFallbackCaptureBackend(windows)
             sampler_backend.start(target.identity)
-            sampler = FrameHistorySampler(
-                capture=sampler_backend.capture,
-                interval_s=1.0,
-            )
-            sampler.start()
             journal = DecisionJournal()
             if args.dashboard_port > 0:
                 try:
@@ -271,7 +262,6 @@ async def _run(args: argparse.Namespace) -> int:
                 client_rect=_current_client_rect,
                 goal=args.goal,
                 decision_interval_s=args.vlm_decision_interval,
-                sampler=sampler,
                 journal=journal,
                 available_buttons=available_buttons,
                 instruction_builder=instruction_builder,
@@ -280,7 +270,7 @@ async def _run(args: argparse.Namespace) -> int:
             _best_effort_cleanup(
                 *(
                     value.stop
-                    for value in (dashboard, sampler, sampler_backend)
+                    for value in (dashboard, sampler_backend)
                     if value is not None
                 ),
                 backend.stop,
@@ -332,7 +322,7 @@ async def _run(args: argparse.Namespace) -> int:
                 lambda: leases.revoke_all(notify=False),
                 *(
                     value.stop
-                    for value in (dashboard, sampler, sampler_backend)
+                    for value in (dashboard, sampler_backend)
                     if value is not None
                 ),
                 backend.stop,
@@ -341,28 +331,15 @@ async def _run(args: argparse.Namespace) -> int:
 
     controller = ActionChunkController(environment, arbiter, scheduler, recorder)
 
-    class CaptureSource:
-        def __init__(self) -> None:
-            self.count = 0
-
-        async def capture_once(self) -> SequencedFrame:
-            # Present-driven backends only deliver frames while the target
-            # renders; emulator menus, dialogs, and transitions can hold the
-            # surface still for seconds. Wait through those gaps within a
-            # bounded budget before failing closed — no observation means no
-            # new policy output, so waiting cannot act blind.
-            deadline = time.monotonic() + _CAPTURE_STALL_BUDGET_S
-            while True:
-                try:
-                    frame = await asyncio.to_thread(backend.capture)
-                    sequenced = frames.publish(frame)
-                    self.count += 1
-                    return sequenced
-                except CaptureTimeoutError:
-                    if time.monotonic() >= deadline:
-                        raise
-
-    capture_source = CaptureSource()
+    capture_source = CaptureHub(
+        primary=backend,
+        fallback=sampler_backend,
+        frames=frames,
+        record_frame=None if recorder is None else recorder.record_frame,
+        fallback_after_s=0.25,
+        fallback_hz=4.0,
+        consumer_timeout_s=_CAPTURE_STALL_BUDGET_S,
+    )
     loop = RealtimeAgentLoop(
         clock=clock,
         capture=capture_source,
@@ -412,7 +389,7 @@ async def _run(args: argparse.Namespace) -> int:
             lambda: leases.revoke_all(notify=False),
             *(
                 value.stop
-                for value in (dashboard, sampler, sampler_backend)
+                for value in (dashboard, sampler_backend)
                 if value is not None
             ),
             backend.stop,
@@ -463,8 +440,6 @@ async def _run(args: argparse.Namespace) -> int:
 
         cleanup(scheduler.neutralize)
         cleanup(lambda: leases.revoke_all(notify=False))
-        if sampler is not None:
-            cleanup(sampler.stop)
         if sampler_backend is not None:
             cleanup(sampler_backend.stop)
         if dashboard is not None:
@@ -477,7 +452,14 @@ async def _run(args: argparse.Namespace) -> int:
         stats = scheduler.stats()
         recorder.set_metrics(
             {
-                "capture_frames": capture_source.count,
+                "capture_frames": capture_source.stats().accepted_frames,
+                "capture_primary_frames": capture_source.stats().primary_frames,
+                "capture_fallback_frames": capture_source.stats().fallback_frames,
+                "capture_consumer_skipped_frames": (
+                    capture_source.stats().consumer_skipped_frames
+                ),
+                "capture_gap_p95_ns": capture_source.stats().p95_gap_ns,
+                "capture_gap_max_ns": capture_source.stats().max_gap_ns,
                 "scheduled_actions": stats.scheduled,
                 "executed_actions": stats.executed,
                 "action_execution_ratio": (
