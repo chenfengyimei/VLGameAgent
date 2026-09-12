@@ -136,6 +136,15 @@ class SendInputBackend:
         self.keyboard.clear()
         self._pressed_buttons.clear()
 
+    def key_is_pressed(
+        self,
+        encoding: KeyEncoding,
+        code: int,
+        is_extended: bool = False,
+    ) -> bool:
+        """Observe the real Win32 key state for supervised neutralization tests."""
+        return self._observe_key((encoding, code, is_extended))
+
     def _send_keyboard(
         self, encoding: KeyEncoding, code: int, is_down: bool, is_extended: bool
     ) -> None:

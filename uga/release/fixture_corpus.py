@@ -69,6 +69,7 @@ def run_fixture_corpus(
                 report_path=report_path,
                 allow_physical_input=True,
                 exercise_focus_loss=True,
+                exercise_held_key_fault=True,
                 exercise_emergency_hotkey=True,
                 fixture_scenario=scenario.value,
                 expected_pid=process.pid,

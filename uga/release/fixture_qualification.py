@@ -403,6 +403,54 @@ def _exercise_focus_loss(
     }
 
 
+def _exercise_held_key_fault(
+    target: WindowSnapshot,
+    executor: InputExecutor,
+    input_backend: SendInputBackend,
+    lease: ControlLease,
+) -> dict[str, object]:
+    encoding = KeyEncoding.SCAN_CODE
+    code = 17  # W
+    now = PerfCounterClock().now()
+    action = KeyboardAction(
+        f"held-key-probe-{uuid.uuid4().hex}",
+        ActionLifetime(now, now, UGATime(now.value_ns + 2_000_000_000)),
+        code,
+        True,
+        encoding,
+    )
+    pressed_seen = False
+    release_latency_ms: float | None = None
+    try:
+        result = executor.execute(action, target.identity, lease)
+        pressed_deadline = time.monotonic() + 0.5
+        while result.executed and time.monotonic() < pressed_deadline:
+            if input_backend.key_is_pressed(encoding, code):
+                pressed_seen = True
+                break
+            time.sleep(0.005)
+        release_started = time.perf_counter_ns()
+        executor.release_all()
+        release_deadline = time.monotonic() + 0.5
+        while time.monotonic() < release_deadline:
+            if not input_backend.key_is_pressed(encoding, code):
+                release_latency_ms = (time.perf_counter_ns() - release_started) / 1_000_000
+                break
+            time.sleep(0.005)
+        state = input_backend.keyboard.snapshot()
+        released = release_latency_ms is not None and not state.submitted and not state.desired
+        return {
+            "exercised": True,
+            "input_result": str(result.reason),
+            "pressed_observed": pressed_seen,
+            "released": released,
+            "release_latency_ms": release_latency_ms,
+            "passed": result.executed and pressed_seen and released,
+        }
+    finally:
+        executor.release_all()
+
+
 def _exercise_emergency_hotkey(
     target: WindowSnapshot,
     executor: InputExecutor,
@@ -570,6 +618,7 @@ def run_fixture_qualification(
     report_path: Path,
     allow_physical_input: bool,
     exercise_focus_loss: bool,
+    exercise_held_key_fault: bool,
     exercise_emergency_hotkey: bool,
     exercise_watchdog_timeout: bool = False,
     fixture_scenario: str = FixtureScenario.EXPLORATION.value,
@@ -881,6 +930,26 @@ def run_fixture_qualification(
         else:
             focus_report = {"exercised": False, "reason": "not requested"}
         if not _activate(windows, target.identity.hwnd):
+            raise ContractViolation("fixture focus could not be restored before held-key test")
+        if exercise_held_key_fault:
+            if not watchdog.heartbeat():
+                raise ContractViolation("fixture safety supervision tripped before held-key test")
+            held_key_lease = leases.grant(
+                ControlOwner.FAST_POLICY,
+                ControlMode.PLAY_3D,
+                5_000_000_000,
+                confidence=1.0,
+                reason="fixture held-key neutralization qualification",
+            )
+            held_key_report = _exercise_held_key_fault(
+                target,
+                executor,
+                input_backend,
+                held_key_lease,
+            )
+        else:
+            held_key_report = {"exercised": False, "reason": "not requested"}
+        if not _activate(windows, target.identity.hwnd):
             raise ContractViolation("fixture focus could not be restored before emergency test")
         if exercise_emergency_hotkey:
             if not watchdog.heartbeat():
@@ -928,7 +997,12 @@ def run_fixture_qualification(
         writer.record_event(
             "safety-checks-complete",
             ended,
-            {"focus": focus_report, "emergency": emergency_report, "watchdog": watchdog_report},
+            {
+                "focus": focus_report,
+                "held_key": held_key_report,
+                "emergency": emergency_report,
+                "watchdog": watchdog_report,
+            },
         )
         writer.set_metrics(
             {
@@ -964,6 +1038,7 @@ def run_fixture_qualification(
     quality = DatasetValidator().validate(episode_path)
     stats = scheduler.stats()
     focus_passed = not exercise_focus_loss or bool(focus_report.get("passed"))
+    held_key_passed = not exercise_held_key_fault or bool(held_key_report.get("passed"))
     emergency_passed = not exercise_emergency_hotkey or bool(emergency_report.get("passed"))
     watchdog_passed = not exercise_watchdog_timeout or bool(watchdog_report.get("passed"))
     passed = (
@@ -973,6 +1048,7 @@ def run_fixture_qualification(
         and replay.action_count == scheduled + canonical_recorded
         and quality.status.value == "accepted"
         and focus_passed
+        and held_key_passed
         and emergency_passed
         and watchdog_passed
     )
@@ -1013,6 +1089,12 @@ def run_fixture_qualification(
             "observed_flushes": observed_flushes,
             "scheduler": asdict(stats),
             "focus_loss": focus_report,
+            "held_key_fault": held_key_report,
+            "uipi_mismatch": {
+                "exercised": False,
+                "passed": False,
+                "reason": "requires a supervised higher-integrity controlled target",
+            },
             "emergency_hotkey": emergency_report,
             "watchdog_timeout": watchdog_report,
         },

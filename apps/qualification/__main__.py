@@ -120,6 +120,7 @@ def _fixture(args: argparse.Namespace) -> None:
             report_path=args.output,
             allow_physical_input=args.allow_physical_input,
             exercise_focus_loss=args.exercise_focus_loss,
+            exercise_held_key_fault=args.exercise_held_key_fault,
             exercise_emergency_hotkey=args.exercise_emergency_hotkey,
             exercise_watchdog_timeout=args.exercise_watchdog_timeout,
             fixture_scenario=scenario.value,
@@ -214,6 +215,7 @@ def main() -> None:
     fixture.add_argument("--output", type=Path, required=True)
     fixture.add_argument("--allow-physical-input", action="store_true")
     fixture.add_argument("--exercise-focus-loss", action="store_true")
+    fixture.add_argument("--exercise-held-key-fault", action="store_true")
     fixture.add_argument("--exercise-emergency-hotkey", action="store_true")
     fixture.add_argument("--exercise-watchdog-timeout", action="store_true")
     fixture.set_defaults(handler=_fixture)

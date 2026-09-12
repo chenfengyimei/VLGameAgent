@@ -4,10 +4,14 @@ import unittest
 from pathlib import Path
 
 from uga.capture.frame import BufferHandle, BufferKind, Frame, PixelFormat
+from uga.control.executor import ExecutionReason, ExecutionResult
+from uga.control.input_state import KeyboardStateSnapshot
+from uga.control.physical import KeyEncoding
 from uga.core.errors import ContractViolation
 from uga.release.fixture_corpus import run_fixture_corpus
 from uga.release.fixture_qualification import (
     _emergency_hotkey_passed,
+    _exercise_held_key_fault,
     _require_click_point_owned,
     _select_owned_fixture_target,
     _watchdog_timeout_passed,
@@ -114,6 +118,58 @@ class FixtureQualificationTests(unittest.TestCase):
         self.assertFalse(_watchdog_timeout_passed(watchdog_trip, still_enabled, False))
         self.assertFalse(_watchdog_timeout_passed(watchdog_trip, disabled, True))
         self.assertTrue(_watchdog_timeout_passed(watchdog_trip, disabled, False))
+
+    def test_held_key_exercise_observes_and_neutralizes_real_key_state(self) -> None:
+        identity = WindowIdentity(1, 10, "a" * 64, 1, 1)
+        rect = Rect(0, 0, 100, 100)
+        target = WindowSnapshot(identity, "fixture", rect, rect, 96, True, True)
+
+        class Keyboard:
+            @staticmethod
+            def snapshot() -> KeyboardStateSnapshot:
+                return KeyboardStateSnapshot(frozenset(), frozenset(), frozenset())
+
+        class Backend:
+            keyboard = Keyboard()
+
+            def __init__(self) -> None:
+                self.observations = iter((True, False))
+                self.releases = 0
+
+            def key_is_pressed(
+                self,
+                encoding: KeyEncoding,
+                code: int,
+                is_extended: bool = False,
+            ) -> bool:
+                self.asserted = (encoding, code, is_extended)
+                return next(self.observations)
+
+            def release_all(self) -> None:
+                self.releases += 1
+
+        backend = Backend()
+
+        class Executor:
+            @staticmethod
+            def execute(action: object, target_identity: object, lease: object) -> ExecutionResult:
+                return ExecutionResult(True, ExecutionReason.EXECUTED, UGATime(1))
+
+            def release_all(self) -> None:
+                backend.release_all()
+
+        report = _exercise_held_key_fault(
+            target,
+            Executor(),  # type: ignore[arg-type]
+            backend,  # type: ignore[arg-type]
+            object(),  # type: ignore[arg-type]
+        )
+
+        self.assertTrue(report["pressed_observed"])
+        self.assertTrue(report["released"])
+        self.assertTrue(report["passed"])
+        self.assertEqual(backend.asserted, (KeyEncoding.SCAN_CODE, 17, False))
+        self.assertGreaterEqual(backend.releases, 2)
 
     def test_release_corpus_requires_explicit_input_and_five_train_hours(self) -> None:
         with self.assertRaisesRegex(ContractViolation, "allow-physical-input"):

@@ -119,6 +119,7 @@ uga-qualify fixture `
   --episode-root runs/qualification `
   --output runs/qualification/report.json `
   --allow-physical-input `
+  --exercise-held-key-fault `
   --exercise-watchdog-timeout `
   --exercise-emergency-hotkey
 ```
