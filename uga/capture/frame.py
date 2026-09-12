@@ -91,8 +91,21 @@ class Frame(VersionedMixin):
         self.window_identity.validate()
         if self.width < 1 or self.height < 1:
             raise ContractViolation("frame dimensions must be positive")
-        if self.stride_bytes < self.width:
+        bytes_per_pixel = {
+            PixelFormat.BGRA8: 4,
+            PixelFormat.RGBA8: 4,
+            PixelFormat.RGB8: 3,
+            PixelFormat.NV12: 1,
+            PixelFormat.R10G10B10A2: 4,
+        }[self.pixel_format]
+        if self.stride_bytes < self.width * bytes_per_pixel:
             raise ContractViolation("frame stride is too small")
+        minimum_buffer_bytes = self.stride_bytes * self.height
+        if (
+            self.buffer_handle.kind in {BufferKind.CPU_BYTES, BufferKind.SHARED_MEMORY}
+            and self.buffer_handle.size_bytes < minimum_buffer_bytes
+        ):
+            raise ContractViolation("frame buffer cannot cover its declared rows")
         if not self.source_backend.strip():
             raise ContractViolation("source backend cannot be empty")
 

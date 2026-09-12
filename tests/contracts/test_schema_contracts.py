@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import unittest
+from dataclasses import replace
 
 from tests.helpers import frame, identity
+from uga.capture.frame import BufferHandle, BufferKind
 from uga.core.errors import ContractViolation
 from uga.core.schema import SCHEMA_VERSION, require_schema_version
 from uga.time.clock import INT64_MAX, UGATime
@@ -30,6 +32,22 @@ class SchemaContractTests(unittest.TestCase):
         data = require_schema_version(envelope, "uga.frame")
         self.assertNotIn("payload", data["buffer_handle"])
         self.assertEqual(data["capture_timestamp_ns"], 1)
+
+    def test_frame_rejects_undersized_stride_and_buffer(self) -> None:
+        source = frame(1)
+        with self.assertRaisesRegex(ContractViolation, "stride"):
+            replace(source, stride_bytes=source.width)
+        short_payload = b"\x00" * source.stride_bytes
+        with self.assertRaisesRegex(ContractViolation, "cover"):
+            replace(
+                source,
+                buffer_handle=BufferHandle(
+                    "short",
+                    BufferKind.CPU_BYTES,
+                    len(short_payload),
+                    short_payload,
+                ),
+            )
 
     def test_unsupported_schema_version_fails_closed(self) -> None:
         envelope = UGATime(1).to_envelope()

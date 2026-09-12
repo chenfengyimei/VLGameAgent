@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import unittest
+from dataclasses import replace
 
 from tests.helpers import frame
 from uga.capture.diagnostics import CaptureDiagnosticsAccumulator, summarize_capture
+from uga.capture.frame import BufferHandle, BufferKind
 
 
 class CaptureDiagnosticsTests(unittest.TestCase):
@@ -11,19 +13,17 @@ class CaptureDiagnosticsTests(unittest.TestCase):
         first = frame(1, timestamp_ns=100)
         second = frame(2, timestamp_ns=200)
         third = frame(3, timestamp_ns=150)
-        third = type(third)(
-            third.frame_id,
-            third.capture_timestamp,
-            third.present_estimate,
-            third.window_identity,
-            4,
-            2,
-            16,
-            third.pixel_format,
-            third.physical_rect,
-            third.client_rect,
-            third.source_backend,
-            third.buffer_handle,
+        resized_payload = bytes([3]) * 32
+        third = replace(
+            third,
+            width=4,
+            stride_bytes=16,
+            buffer_handle=BufferHandle(
+                "resized-buffer",
+                BufferKind.CPU_BYTES,
+                len(resized_payload),
+                resized_payload,
+            ),
         )
         report = summarize_capture(
             "fixture",
