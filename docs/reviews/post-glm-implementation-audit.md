@@ -1,6 +1,6 @@
 # Post-GLM implementation audit
 
-Date: 2026-09-12  
+Date: 2026-09-12
 Audit baseline: `60a51dc`  
 Remediation commits: `2c02d58`, `df1561c`, `bb9582e`, `d04d8e4`, `0a962b7`
 Continuation hardening: `9cee1f4` through `6cd9ece`
