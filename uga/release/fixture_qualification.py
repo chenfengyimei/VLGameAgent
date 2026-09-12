@@ -5,7 +5,6 @@ import json
 import math
 import re
 import subprocess
-import sys
 import time
 import uuid
 from collections.abc import Callable, Iterator
@@ -44,6 +43,7 @@ from uga.recording.episode_writer import EpisodeWriter
 from uga.recording.replay import ReplayEngine
 from uga.recording.schema import ActionProvenance, EpisodeMetadata, EpisodeResult
 from uga.recording.video import PyAvVideoRecorder
+from uga.release.fixture_process import launch_owned_python_gui
 from uga.release.revision import validate_source_revision
 from uga.safety.emergency_stop import EmergencyStop, Win32EmergencyHotkey
 from uga.safety.environment_policy import (
@@ -303,15 +303,9 @@ def _require_click_point_owned(windows: Win32WindowBackend, target: WindowSnapsh
 
 @contextlib.contextmanager
 def _owned_focus_sink(windows: Win32WindowBackend) -> Iterator[WindowSnapshot]:
-    executable = Path(sys.executable)
-    pythonw = executable.with_name("pythonw.exe")
-    if pythonw.is_file():
-        executable = pythonw
-    process = subprocess.Popen(
-        [str(executable), "-m", "apps.example_game", "--focus-sink"],
+    process = launch_owned_python_gui(
+        ("-m", "apps.example_game", "--focus-sink"),
         cwd=Path.cwd(),
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
     )
     try:
         deadline = time.monotonic() + 8.0

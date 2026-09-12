@@ -4,7 +4,6 @@ import contextlib
 import json
 import re
 import subprocess
-import sys
 import time
 from datetime import date
 from pathlib import Path
@@ -13,6 +12,7 @@ from uga.core.artifact_limits import DEFAULT_ARTIFACT_LIMITS, parse_json_text, r
 from uga.core.errors import ContractViolation
 from uga.dataset.builder import build_dataset_manifest
 from uga.environment.fixture_world import FixtureScenario, FixtureWorld
+from uga.release.fixture_process import launch_owned_python_gui
 from uga.release.fixture_qualification import run_fixture_qualification
 from uga.release.revision import require_clean_source_revision
 from uga.training.motor_pipeline import export_motor_samples
@@ -170,19 +170,14 @@ def _inventory(
 
 
 def _launch_fixture(project_root: Path, world: FixtureWorld) -> subprocess.Popen[bytes]:
-    executable = Path(sys.executable)
-    pythonw = executable.with_name("pythonw.exe")
-    if pythonw.is_file():
-        executable = pythonw
-    return subprocess.Popen(
+    return launch_owned_python_gui(
         (
-            str(executable),
             "-m",
             "apps.example_game",
             "--scenario",
             world.scenario.value,
         ),
-        cwd=project_root.resolve(),
+        cwd=project_root,
     )
 
 

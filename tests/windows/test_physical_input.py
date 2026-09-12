@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import os
 import subprocess
-import sys
 import time
 import unittest
 from pathlib import Path
@@ -14,6 +13,7 @@ from uga.control.lease_manager import ControlLeaseManager
 from uga.control.lifetime import ActionLifetime
 from uga.control.physical import KeyboardAction
 from uga.control.windows_input import SendInputBackend
+from uga.release.fixture_process import launch_owned_python_gui
 from uga.release.fixture_qualification import FixtureVisualState, analyze_fixture_frame
 from uga.safety.focus_guard import AgentEnableState, FocusGuard
 from uga.time.clock import PerfCounterClock, UGATime
@@ -26,15 +26,9 @@ _PHYSICAL_TESTS = os.environ.get("UGA_RUN_PHYSICAL_INPUT_TESTS") == "1"
 @unittest.skipUnless(os.name == "nt" and _PHYSICAL_TESTS, "physical input test is opt-in")
 class PhysicalInputTests(unittest.TestCase):
     def test_send_input_moves_the_owned_fixture(self) -> None:
-        executable = Path(sys.executable)
-        pythonw = executable.with_name("pythonw.exe")
-        if pythonw.is_file():
-            executable = pythonw
-        process = subprocess.Popen(
-            [str(executable), "-m", "apps.example_game"],
+        process = launch_owned_python_gui(
+            ("-m", "apps.example_game"),
             cwd=Path.cwd(),
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
         )
         backend: GDIFallbackCaptureBackend | None = None
         input_backend: SendInputBackend | None = None

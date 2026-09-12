@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import subprocess
 import tempfile
 import unittest
@@ -9,6 +10,7 @@ from unittest.mock import patch
 
 from apps.training.__main__ import _motor
 from uga.core.errors import ContractViolation
+from uga.release.fixture_process import launch_owned_python_gui
 from uga.release.revision import require_clean_source_revision
 
 
@@ -75,6 +77,33 @@ class QualificationRevisionTests(unittest.TestCase):
                     allow_physical_input=True,
                 )
             self.assertFalse(output.exists())
+
+    def test_gui_launcher_uses_base_interpreter_pid_and_propagates_imports(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            base = root / "python.exe"
+            pythonw = root / "pythonw.exe"
+            base.touch()
+            pythonw.touch()
+            sentinel = object()
+            with (
+                patch(
+                    "uga.release.fixture_process.sys._base_executable",
+                    str(base),
+                    create=True,
+                ),
+                patch(
+                    "uga.release.fixture_process.subprocess.Popen",
+                    return_value=sentinel,
+                ) as popen,
+            ):
+                launched = launch_owned_python_gui(("-m", "apps.example_game"), cwd=root)
+
+            self.assertIs(launched, sentinel)
+            command = popen.call_args.args[0]
+            environment = popen.call_args.kwargs["env"]
+            self.assertEqual(command[0], str(pythonw.resolve()))
+            self.assertIn(str(root.resolve()), environment["PYTHONPATH"].split(os.pathsep))
 
 
 if __name__ == "__main__":
