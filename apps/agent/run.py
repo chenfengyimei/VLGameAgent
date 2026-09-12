@@ -314,6 +314,7 @@ async def _run(args: argparse.Namespace) -> int:
             recorder.attach_video(PyAvVideoRecorder(recorder.video_path, fps=15))
         except BaseException:
             _best_effort_cleanup(
+                *(value.abort for value in (recorder,) if value is not None),
                 scheduler.neutralize,
                 lambda: leases.revoke_all(notify=False),
                 *(

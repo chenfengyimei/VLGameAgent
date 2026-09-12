@@ -26,6 +26,34 @@ from uga.time.clock import UGATime
 
 
 class EpisodeReplayTests(unittest.TestCase):
+    def test_abort_removes_private_staging_episode(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            writer = EpisodeWriter(
+                root,
+                EpisodeMetadata(
+                    episode_id="aborted-episode",
+                    game_id="fixture-game",
+                    game_version="1.0",
+                    window_size=(2, 2),
+                    capture_backend="fixture",
+                    start_monotonic_ns=100,
+                    task="abort setup",
+                    result=EpisodeResult.IN_PROGRESS,
+                    agent_version="test-agent",
+                    policy_version="test-policy",
+                    human_controlled=False,
+                ),
+                require_video=False,
+            )
+            staging = writer.staging_path
+
+            writer.abort()
+
+            self.assertFalse(staging.exists())
+            with self.assertRaisesRegex(ContractViolation, "already finalized"):
+                writer.finalize(EpisodeResult.ABORTED)
+
     def test_writer_rejects_buffer_growth_during_recording(self) -> None:
         metadata = EpisodeMetadata(
             episode_id="bounded-episode",

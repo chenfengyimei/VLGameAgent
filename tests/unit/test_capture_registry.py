@@ -28,12 +28,19 @@ CAPABILITY = CaptureCapability(
 
 class FakeBackend(CaptureBackend):
     def __init__(
-        self, backend_id: str, available: bool, score: int, start_fails: bool = False
+        self,
+        backend_id: str,
+        available: bool,
+        score: int,
+        start_fails: bool = False,
+        stop_fails: bool = False,
     ) -> None:
         self.backend_id = backend_id
         self.available = available
         self.score = score
         self.start_fails = start_fails
+        self.stop_fails = stop_fails
+        self.stop_calls = 0
         super().__init__()
 
     def probe(self, target: WindowIdentity) -> CaptureProbe:
@@ -47,7 +54,9 @@ class FakeBackend(CaptureBackend):
         return frame(1, backend=self.backend_id)
 
     def _stop(self) -> None:
-        pass
+        self.stop_calls += 1
+        if self.stop_fails:
+            raise RuntimeError("stop failed")
 
 
 class CaptureRegistryTests(unittest.TestCase):
@@ -60,10 +69,21 @@ class CaptureRegistryTests(unittest.TestCase):
 
     def test_start_failure_falls_back(self) -> None:
         registry = CaptureBackendRegistry(("first", "second"))
-        registry.register(FakeBackend("first", True, 100, start_fails=True))
+        first = FakeBackend("first", True, 100, start_fails=True)
+        registry.register(first)
         second = FakeBackend("second", True, 50)
         registry.register(second)
         self.assertIs(registry.start_best(identity()), second)
+        self.assertEqual(first.stop_calls, 1)
+
+    def test_start_failure_preserves_error_when_partial_cleanup_also_fails(self) -> None:
+        backend = FakeBackend("broken", True, 100, start_fails=True, stop_fails=True)
+
+        with self.assertRaisesRegex(RuntimeError, "start failed") as raised:
+            backend.start(identity())
+
+        self.assertEqual(backend.stop_calls, 1)
+        self.assertIn("partial-start cleanup failed", "\n".join(raised.exception.__notes__))
 
     def test_no_available_backend_reports_failure(self) -> None:
         registry = CaptureBackendRegistry()

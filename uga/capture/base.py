@@ -73,7 +73,20 @@ class CaptureBackend(ABC):
         if self._target is not None:
             raise BackendStateError(f"{self.backend_id} is already started")
         target.validate()
-        self._start(target)
+        try:
+            self._start(target)
+        except BaseException as start_error:
+            # Native setup may allocate a device/session before a later step
+            # fails. The public started marker is intentionally not set yet,
+            # so stop() would be a no-op; invoke the implementation cleanup
+            # directly and preserve the original startup failure.
+            try:
+                self._stop()
+            except BaseException as cleanup_error:
+                start_error.add_note(
+                    f"{self.backend_id} partial-start cleanup failed: {cleanup_error}"
+                )
+            raise
         self._target = target
         self._consecutive_failures = 0
         self._last_error = "ok"

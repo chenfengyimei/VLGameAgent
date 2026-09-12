@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 import os
 import queue
+import shutil
 import uuid
 from collections.abc import Callable
 from dataclasses import replace
@@ -335,6 +336,35 @@ class EpisodeWriter:
             os.replace(self._staging_path, self._final_path)
             self._closed = True
             return self._final_path
+
+    def abort(self) -> None:
+        """Close attached resources and remove this writer's private staging tree."""
+        with self._lock:
+            if self._closed:
+                return
+            staging_prefix = f".{self._metadata.episode_id}.inprogress-"
+            if (
+                self._staging_path.parent != self._root
+                or not self._staging_path.name.startswith(staging_prefix)
+            ):
+                raise ContractViolation("Episode staging path failed its ownership guard")
+            failure: BaseException | None = None
+            if self._video is not None:
+                try:
+                    self._video.close()
+                except BaseException as exc:
+                    failure = exc
+            try:
+                if self._staging_path.exists():
+                    shutil.rmtree(self._staging_path)
+            except BaseException as exc:
+                if failure is None:
+                    failure = exc
+                else:
+                    failure.add_note(f"Episode staging cleanup also failed: {exc}")
+            self._closed = not self._staging_path.exists()
+            if failure is not None:
+                raise RuntimeError("failed to abort Episode writer cleanly") from failure
 
     def _record_jsonl(
         self,
