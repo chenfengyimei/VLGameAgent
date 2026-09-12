@@ -4,11 +4,16 @@ import argparse
 import json
 from pathlib import Path
 
+from uga.core.errors import ContractViolation
+from uga.release.revision import require_clean_source_revision
 from uga.training.artifact import TrainingArtifactManifest
 from uga.training.motor_pipeline import export_motor_samples, train_motor_policy
 
 
 def _motor(args: argparse.Namespace) -> None:
+    revision = require_clean_source_revision(args.project_root)
+    if args.source_revision != revision:
+        raise ContractViolation("training source revision does not match clean Git HEAD")
     result = train_motor_policy(
         samples_path=args.samples,
         dataset_manifest_path=args.dataset_manifest,
@@ -73,6 +78,7 @@ def main() -> None:
     motor.add_argument("--output", type=Path, required=True)
     motor.add_argument("--policy-version", required=True)
     motor.add_argument("--source-revision", required=True)
+    motor.add_argument("--project-root", type=Path, default=Path("."))
     motor.add_argument("--base-model-license", required=True)
     motor.set_defaults(handler=_motor)
     verify = subparsers.add_parser("verify", help="verify a training artifact and its inputs")

@@ -221,6 +221,8 @@ def train_motor_policy(
         raise ContractViolation("motor training identity/license arguments cannot be blank")
     config = load_motor_training_config(training_config_path, limits=limits)
     dataset = DatasetManifest.load(dataset_manifest_path, limits=limits)
+    if dataset.source_revision != source_revision:
+        raise ContractViolation("training source revision does not match Dataset Manifest")
     dataset.verify_episode_artifacts(dataset_root, limits=limits)
     samples = load_motor_samples(
         samples_path,

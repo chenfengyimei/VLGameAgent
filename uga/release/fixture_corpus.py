@@ -42,13 +42,16 @@ def run_fixture_corpus(
     planned_train_hours = train_duration_seconds * len(_TRAIN_SCENARIOS) / 3600
     if require_release_volume and planned_train_hours < 5.0:
         raise ContractViolation("release corpus collection requires at least five train hours")
+    # Establish provenance before creating any output. Otherwise an output
+    # directory outside an ignored run root could make the checkout dirty and
+    # leave a partial artifact even though collection never started.
+    revision = require_clean_source_revision(project_root)
     root = output_root.resolve()
     episodes_root = root / "episodes"
     reports_root = root / "reports"
     root.mkdir(parents=True, exist_ok=True)
     episodes_root.mkdir(exist_ok=True)
     reports_root.mkdir(exist_ok=True)
-    revision = require_clean_source_revision(project_root)
     collected: list[tuple[FixtureScenario, str, str]] = []
     for scenario in (*_TRAIN_SCENARIOS, *_TEST_SCENARIOS):
         duration = train_duration_seconds if scenario in _TRAIN_SCENARIOS else test_duration_seconds

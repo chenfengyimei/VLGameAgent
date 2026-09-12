@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import subprocess
+import tempfile
 import unittest
+from argparse import Namespace
 from pathlib import Path
 from unittest.mock import patch
 
+from apps.training.__main__ import _motor
 from uga.core.errors import ContractViolation
 from uga.release.revision import require_clean_source_revision
 
@@ -39,6 +42,39 @@ class QualificationRevisionTests(unittest.TestCase):
             self.assertRaisesRegex(ContractViolation, "full Git"),
         ):
             require_clean_source_revision(Path("."))
+
+    def test_training_cli_rejects_revision_other_than_clean_head(self) -> None:
+        args = Namespace(project_root=Path("."), source_revision="b" * 40)
+        with (
+            patch("apps.training.__main__.require_clean_source_revision", return_value="a" * 40),
+            patch("apps.training.__main__.train_motor_policy") as train,
+            self.assertRaisesRegex(ContractViolation, "does not match clean Git HEAD"),
+        ):
+            _motor(args)
+        train.assert_not_called()
+
+    def test_corpus_checks_revision_before_creating_output(self) -> None:
+        from uga.release.fixture_corpus import run_fixture_corpus
+
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / "must-not-exist"
+            with (
+                patch(
+                    "uga.release.fixture_corpus.require_clean_source_revision",
+                    side_effect=ContractViolation("dirty"),
+                ),
+                self.assertRaisesRegex(ContractViolation, "dirty"),
+            ):
+                run_fixture_corpus(
+                    project_root=Path("."),
+                    output_root=output,
+                    train_duration_seconds=6000,
+                    test_duration_seconds=600,
+                    target_fps=3,
+                    backend="gdi_fallback",
+                    allow_physical_input=True,
+                )
+            self.assertFalse(output.exists())
 
 
 if __name__ == "__main__":

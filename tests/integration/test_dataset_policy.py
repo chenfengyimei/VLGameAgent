@@ -382,7 +382,7 @@ class DatasetPolicyTests(unittest.TestCase):
             manifest = DatasetManifest(
                 "dataset-v1-fixture",
                 "0.1",
-                "test-revision",
+                "a" * 40,
                 ("game-d",),
                 (
                     DatasetLicense(
@@ -426,6 +426,17 @@ class DatasetPolicyTests(unittest.TestCase):
             samples = root / "motor-samples.jsonl"
             export_motor_samples((episode_path,), samples)
             project = Path(__file__).resolve().parents[2]
+            with self.assertRaisesRegex(ContractViolation, "Dataset Manifest"):
+                train_motor_policy(
+                    samples_path=samples,
+                    dataset_manifest_path=written,
+                    dataset_root=root,
+                    training_config_path=project / "configs" / "training" / "motor_bc.yaml",
+                    output_directory=root / "mismatched-revision-checkpoint",
+                    policy_version="motor-fixture-v1",
+                    source_revision="b" * 40,
+                    base_model_license="fixture-only",
+                )
             trained = train_motor_policy(
                 samples_path=samples,
                 dataset_manifest_path=written,
@@ -433,7 +444,7 @@ class DatasetPolicyTests(unittest.TestCase):
                 training_config_path=project / "configs" / "training" / "motor_bc.yaml",
                 output_directory=root / "checkpoint",
                 policy_version="motor-fixture-v1",
-                source_revision="test-revision",
+                source_revision="a" * 40,
                 base_model_license="fixture-only",
             )
             self.assertTrue(trained.checkpoint.is_file())
@@ -453,7 +464,7 @@ class DatasetPolicyTests(unittest.TestCase):
                     training_config_path=project / "configs" / "training" / "motor_bc.yaml",
                     output_directory=root / "tampered-checkpoint",
                     policy_version="motor-fixture-v1",
-                    source_revision="test-revision",
+                    source_revision="a" * 40,
                     base_model_license="fixture-only",
                 )
             samples.write_text(original + original, encoding="utf-8")
@@ -465,7 +476,7 @@ class DatasetPolicyTests(unittest.TestCase):
                     training_config_path=project / "configs" / "training" / "motor_bc.yaml",
                     output_directory=root / "duplicate-checkpoint",
                     policy_version="motor-fixture-v1",
-                    source_revision="test-revision",
+                    source_revision="a" * 40,
                     base_model_license="fixture-only",
                 )
 
