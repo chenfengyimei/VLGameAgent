@@ -10,6 +10,9 @@ Loading or displaying a ledger re-hashes every referenced file. A changed or
 missing file invalidates verification. The repository-license gate additionally
 requires a `LICENSE*` artifact. Placeholder revisions such as
 `workspace-unversioned` can never yield a releasable manifest.
+Every passed record also carries the full 40-character Git revision observed
+when it was recorded. It must match the ledger revision; legacy or hand-written
+records without that binding are rejected rather than silently promoted.
 
 The required gates cover automated tests, package construction and installation,
 capture soak, supervised control hardware tests, ten-minute Recorder/Replay,

@@ -59,6 +59,7 @@ class QualificationPreflightTests(unittest.TestCase):
 
     def test_promotion_recomputes_rules_instead_of_trusting_deleted_blockers(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
+            revision = "a" * 40
             root = Path(temporary)
             project = root / "project"
             evidence = root / "evidence"
@@ -69,9 +70,15 @@ class QualificationPreflightTests(unittest.TestCase):
             (evidence / "LICENSE").write_text("fixture", encoding="utf-8")
             artifacts = hash_evidence(evidence, ("LICENSE",))
             ledger = QualificationLedger(
-                "revision-1",
+                revision,
                 tuple(
-                    QualificationRecord(gate_id, GateStatus.PASSED, "fixture", artifacts)
+                    QualificationRecord(
+                        gate_id,
+                        GateStatus.PASSED,
+                        "fixture",
+                        artifacts,
+                        revision,
+                    )
                     for gate_id in REQUIRED_GATE_IDS
                 ),
             )
@@ -79,7 +86,7 @@ class QualificationPreflightTests(unittest.TestCase):
             dataset = DatasetManifest(
                 "dataset-v1",
                 "1.0",
-                "revision-1",
+                revision,
                 (),
                 (
                     DatasetLicense(
@@ -105,7 +112,7 @@ class QualificationPreflightTests(unittest.TestCase):
                 model.name,
                 "1.1",
                 str(dataset_path),
-                "revision-1",
+                revision,
                 str(config),
                 str(samples),
                 "fixture",
@@ -123,7 +130,7 @@ class QualificationPreflightTests(unittest.TestCase):
                 ),
             )
             artifact_path = artifact.write(root / "training-artifact.json")
-            host = HostQualificationProbe("revision-1", (), True)
+            host = HostQualificationProbe(revision, (), True)
             report_path = build_qualification_preflight(
                 ledger,
                 project,

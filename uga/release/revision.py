@@ -9,8 +9,12 @@ from uga.core.errors import ContractViolation
 _FULL_GIT_REVISION = re.compile(r"[0-9a-f]{40}")
 
 
+def is_traceable_source_revision(source_revision: str) -> bool:
+    return _FULL_GIT_REVISION.fullmatch(source_revision) is not None
+
+
 def validate_source_revision(source_revision: str) -> str:
-    if _FULL_GIT_REVISION.fullmatch(source_revision) is None:
+    if not is_traceable_source_revision(source_revision):
         raise ContractViolation("qualification requires a full Git source revision")
     return source_revision
 

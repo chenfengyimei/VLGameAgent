@@ -53,6 +53,7 @@ def _record(args: argparse.Namespace) -> None:
             GateStatus(args.status),
             args.evidence,
             artifacts,
+            revision if args.status == GateStatus.PASSED.value else None,
         )
     )
     updated.verify_artifacts(root)

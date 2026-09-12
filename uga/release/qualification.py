@@ -19,6 +19,7 @@ from uga.release.manifest import (
     hash_artifacts,
     hash_bundle_tree,
 )
+from uga.release.revision import is_traceable_source_revision, validate_source_revision
 
 REQUIRED_GATE_IDS = REQUIRED_RELEASE_GATE_IDS
 _SHA256 = re.compile(r"[0-9a-f]{64}")
@@ -48,6 +49,7 @@ class QualificationRecord:
     status: GateStatus
     evidence: str
     artifacts: tuple[EvidenceArtifact, ...] = ()
+    source_revision: str | None = None
 
     def __post_init__(self) -> None:
         if self.gate_id not in REQUIRED_GATE_IDS or not self.evidence.strip():
@@ -63,6 +65,12 @@ class QualificationRecord:
             )
         ):
             raise ContractViolation("repository license gate requires a LICENSE evidence artifact")
+        if self.status == GateStatus.PASSED:
+            if self.source_revision is None:
+                raise ContractViolation("passed qualification gate requires a source revision")
+            validate_source_revision(self.source_revision)
+        elif self.source_revision is not None:
+            validate_source_revision(self.source_revision)
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,6 +86,12 @@ class QualificationLedger(VersionedMixin):
         ids = tuple(record.gate_id for record in self.records)
         if len(ids) != len(set(ids)) or set(ids) != set(REQUIRED_GATE_IDS):
             raise ContractViolation("qualification ledger must contain every required gate once")
+        if any(
+            record.status == GateStatus.PASSED
+            and record.source_revision != self.source_revision
+            for record in self.records
+        ):
+            raise ContractViolation("qualification gate source revision does not match ledger")
 
     @classmethod
     def initialize(cls, source_revision: str) -> QualificationLedger:
@@ -91,11 +105,7 @@ class QualificationLedger(VersionedMixin):
 
     @property
     def releasable(self) -> bool:
-        revision_is_traceable = self.source_revision not in {
-            "workspace-unversioned",
-            "unknown",
-            "unversioned",
-        }
+        revision_is_traceable = is_traceable_source_revision(self.source_revision)
         return revision_is_traceable and all(
             record.status == GateStatus.PASSED for record in self.records
         )
@@ -167,6 +177,7 @@ class QualificationLedger(VersionedMixin):
                 "gate_id": record.gate_id,
                 "status": record.status.value,
                 "evidence": record.evidence,
+                "source_revision": record.source_revision,
                 "artifacts": [
                     {"relative_path": item.relative_path, "sha256": item.sha256}
                     for item in record.artifacts
@@ -208,6 +219,11 @@ class QualificationLedger(VersionedMixin):
                         EvidenceArtifact(str(artifact["relative_path"]), str(artifact["sha256"]))
                         for artifact in item["artifacts"]
                         if isinstance(artifact, dict)
+                    ),
+                    (
+                        None
+                        if item.get("source_revision") is None
+                        else str(item["source_revision"])
                     ),
                 )
             )

@@ -16,6 +16,7 @@ from uga.core.artifact_limits import (
     read_text_limited,
 )
 from uga.core.errors import ContractViolation
+from uga.release.revision import is_traceable_source_revision
 
 REQUIRED_RELEASE_GATE_IDS = (
     "automated-tests",
@@ -83,11 +84,7 @@ class ReleaseManifest:
 
     @property
     def releasable(self) -> bool:
-        revision_is_traceable = self.source_revision not in {
-            "workspace-unversioned",
-            "unknown",
-            "unversioned",
-        }
+        revision_is_traceable = is_traceable_source_revision(self.source_revision)
         return (
             revision_is_traceable
             and set(gate.gate_id for gate in self.gates) == set(REQUIRED_RELEASE_GATE_IDS)

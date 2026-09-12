@@ -12,7 +12,7 @@ the handoff baseline. It has not completed UGA-075 release qualification.
 
 The distinction is objective:
 
-- The automated source gates pass: Ruff, strict mypy over `uga` and `apps`, 294
+- The automated source gates pass: Ruff, strict mypy over `uga` and `apps`, 301
   pytest tests, 79 subtests, TypeScript typecheck/build, Cargo fmt, Clippy, tests,
   and release compilation.
 - One physical-input test remains opt-in and was skipped. This is expected for an
@@ -26,9 +26,9 @@ The distinction is objective:
 - The newest development corpus report contains about 0.006 hours, far below the
   required five hours, and is bound to an older source revision.
 - No final training artifact is present under the qualification root.
-- The checked development bundle is internally hash-consistent, but its manifest
-  records source revision `8b8c7c7...` and `releasable: false`; it is not a bundle
-  of the audited source.
+- The most recently rebuilt development bundle is internally hash-consistent and
+  records source revision `321bb98...` with `releasable: false`. Later source
+  hardening means it is again a diagnostic package rather than the final bundle.
 
 Therefore the current state is: implementation substantially complete,
 development verification passing, release qualification incomplete.
@@ -96,19 +96,19 @@ development verification passing, release qualification incomplete.
 
 ### P1: architectural hardening
 
-- Extract the current Android/MMO quest heuristics from the generic VLM planner
-  into a game/profile-specific strategy. Until then, the implementation should not
-  be described as semantically universal even though the runtime interfaces are
-  generic.
-- Add an explicit source-revision field to generated capture, control, Recorder,
-  and benchmark reports. The ledger hashes artifacts, but most historical reports
-  do not self-identify the code revision that produced them.
 - Add fault-injection coverage for failures during live-run setup (after primary
   capture starts but before the main task starts), including video encoder and
   emergency-hotkey startup failures.
 - Increase native backend unit/contract coverage. The Rust workspace builds and
   its integration evidence is useful, but most platform behavior is currently
   proven by supervised reports rather than granular native tests.
+
+Completed during continuation: the VLM planner now defaults to an
+environment-neutral prompt and only enables Android quest-tracker heuristics via
+an explicit Game Profile strategy. Generated Fixture qualification, corpus, and
+benchmark reports carry clean source revisions; training is bound to the clean
+HEAD and Dataset Manifest; and every passed ledger record must carry the same
+full Git revision as its ledger.
 
 ## Release decision rule
 
