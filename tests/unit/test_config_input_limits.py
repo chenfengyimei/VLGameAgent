@@ -26,11 +26,6 @@ capabilities:
   gui: false
   combat: false
   gamepad: false
-safety:
-  environment_class: developer_owned
-  automation_allowed: true
-  multiplayer: false
-  anti_cheat_present: false
 """
 
 VALID_REGISTRY = """\
@@ -65,15 +60,6 @@ class ConfigInputLimitTests(unittest.TestCase):
         path.write_text(VALID_PROFILE, encoding="utf-8")
         profile = load_game_profile(path)
         self.assertEqual(profile.game_id, "probe")
-
-    def test_game_profile_rejects_string_safety_boolean(self) -> None:
-        path = self.root / "profile.yaml"
-        path.write_text(
-            VALID_PROFILE.replace("automation_allowed: true", 'automation_allowed: "false"'),
-            encoding="utf-8",
-        )
-        with self.assertRaisesRegex(ContractViolation, "must be a boolean"):
-            load_game_profile(path)
 
     def test_game_profile_rejects_string_binding_confirmation(self) -> None:
         path = self.root / "profile.yaml"

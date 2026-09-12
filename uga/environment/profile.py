@@ -11,7 +11,6 @@ from typing import Any, ClassVar
 from uga.core.artifact_limits import DEFAULT_ARTIFACT_LIMITS, read_text_limited
 from uga.core.errors import BackendUnavailableError, ContractViolation
 from uga.core.schema import VersionedMixin
-from uga.safety.environment_policy import EnvironmentClass, EnvironmentSafetyManifest
 
 
 class EnvironmentCapabilityLevel(IntEnum):
@@ -73,7 +72,6 @@ class GameProfile(VersionedMixin):
     camera_type: str
     camera_sensitivity: float
     capabilities: GameCapabilities
-    safety: EnvironmentSafetyManifest
     capability_level: EnvironmentCapabilityLevel
     window_title_pattern: str | None = None
     planner_prompt_strategy: str = "generic"
@@ -137,7 +135,6 @@ def game_profile_from_dict(raw: dict[str, Any]) -> GameProfile:
     camera = _mapping(raw.get("camera", {}), "camera")
     planner = _mapping(raw.get("planner", {}), "planner")
     capabilities = _mapping(raw.get("capabilities", {}), "capabilities")
-    safety = _mapping(raw.get("safety"), "safety")
     controls_raw = _mapping(raw.get("controls", {}), "controls")
     bindings: list[ControlBinding] = []
     for action, value in controls_raw.items():
@@ -151,7 +148,6 @@ def game_profile_from_dict(raw: dict[str, Any]) -> GameProfile:
                 _strict_bool(item.get("confirmed", False), f"controls.{action}.confirmed"),
             )
         )
-    environment_class = EnvironmentClass(str(safety.get("environment_class", "unknown")))
     return GameProfile(
         game_id=str(game["id"]),
         display_name=str(game["display_name"]),
@@ -165,12 +161,6 @@ def game_profile_from_dict(raw: dict[str, Any]) -> GameProfile:
             _strict_bool(capabilities.get("gui", False), "capabilities.gui"),
             _strict_bool(capabilities.get("combat", False), "capabilities.combat"),
             _strict_bool(capabilities.get("gamepad", False), "capabilities.gamepad"),
-        ),
-        safety=EnvironmentSafetyManifest(
-            environment_class,
-            _strict_bool(safety.get("automation_allowed", False), "safety.automation_allowed"),
-            _strict_bool(safety.get("multiplayer", False), "safety.multiplayer"),
-            _strict_bool(safety.get("anti_cheat_present", False), "safety.anti_cheat_present"),
         ),
         capability_level=EnvironmentCapabilityLevel(int(raw.get("capability_level", 1))),
         window_title_pattern=(

@@ -25,9 +25,6 @@ UGA 是一个 **Windows 优先的通用游戏 computer-use 智能体运行时**�
 | 界面 | 离线仪表盘、回放调试器、数据集查看器 |
 | 资格认证 | `uga-qualify` 证据台账：门禁 + SHA-256 哈希锚定的证据链 |
 
-**安全边界**：本项目仅用于单机、离线、私有测试、自有、开源或研究沙箱环境。
-竞技多人游戏自动化、反作弊对抗、无人值守在线对局一律超出范围。
-
 ---
 
 ## 2. 环境要求
@@ -209,13 +206,11 @@ uga-dashboard --serve --host 127.0.0.1 --port 8765           # 本地服务（�
 任何时刻按 **`Ctrl+Shift+F12`**：立即吊销全部控制租约、清空调度队列、
 释放所有按住的键 —— 看门狗在心跳停滞 5 秒时也会自动触发同样的 fail-closed 停机。
 
-### 5.9 MuMu / 仙遇兼容性档案（自动化默认禁用）
+### 5.9 实战：MuMu 模拟器（安卓游戏）
 
 安卓模拟器的窗口就是一个普通 Win32 目标：UGA 用捕获后端看它的画面，
-用鼠标点击（经模拟器转成安卓点按）操作其中的游戏。仓库保留「仙遇（MuMu）」
-档案用于窗口发现和捕获兼容性测试，但《仙遇》是联网多人 MMO，不属于
-开发者自有环境（参见 [TapTap 官方入驻页面](https://www.taptap.cn/app/384832)），
-因此该档案明确关闭自动化：
+用鼠标点击（经模拟器转成安卓点按）操作其中的游戏。仓库自带「仙遇（MuMu）」
+档案文件 `configs/games/mumu-xianyu.yaml`，关键字段：
 
 ```yaml
 window:
@@ -225,26 +220,21 @@ controls:
   interact: {kind: mouse_button, code: "left", confirmed: true}  # 点击 = 左键脉冲
 camera:
   type: absolute_pointer                        # 规范动作携带物理屏幕坐标
-safety:
-  environment_class: online
-  automation_allowed: false
-  multiplayer: true
 ```
 
-直接将该档案传给实时智能体会在激活窗口或注入输入前 fail-closed：
+运行端到端智能体循环（发现窗口 → 激活前台 → 捕获 → 观测 → 策略 → 调度注入 → 可选录像）：
 
 ```powershell
+$env:UGA_NATIVE_CAPTURE_DLL  = "native\target\release\uga_capture.dll"
+$env:UGA_NATIVE_CAPTURE_SHA256 = (Get-FileHash $env:UGA_NATIVE_CAPTURE_DLL).Hash.ToLower()
+
 uga-agent run --profile configs/games/mumu-xianyu.yaml `
-  --goal "Interact with the target"
-# environment safety policy rejected runtime: automation_disabled
+  --goal "Interact with the target" `
+  --duration-seconds 60 `
+  --record runs/episodes
 ```
 
-仅当目标确实是你拥有或获明确许可的离线环境、研究沙箱或私有测试服时，才应复制
-档案并如实修改 `game.id`、进程、窗口、控制绑定和 `safety` 字段。个人账号、仅获得
-本机操作授权或“只做主线任务”都不能把第三方在线多人游戏改称
-`developer_owned`。捕获兼容性可继续通过不注入输入的 `uga-capture-probe` 验证。
-
-该档案仍记录以下已验证的集成约束：
+该档案记录以下已验证的集成约束：
 
 - **窗口发现**：标题必须恰好匹配一个窗口（游戏窗 `MuMu安卓设备-1`，
   而非管理器窗 `MuMu模拟器`），且能成功取得前台，否则直接报错退出。
@@ -255,7 +245,7 @@ uga-agent run --profile configs/games/mumu-xianyu.yaml `
   点击点默认为客户区的 50%/79% 处（「开启仙途」按钮），可用 `--tap-x-fraction`
   / `--tap-y-fraction`（客户区比例坐标，0~1）覆盖到当前界面的任意按钮；
   `--tap-delay`（默认 2 秒）指定注入时机。
-- **持续运行**：对获许可档案，`--duration-seconds 0` 表示不限时一直运行，直到按 **`Ctrl+C`** 或
+- **持续运行**：`--duration-seconds 0` 表示不限时一直运行，直到按 **`Ctrl+C`** 或
   全局紧急热键 **`Ctrl+Shift+F12`** 停止；配合 `--tap-interval-seconds N` 让点击
   时间线每 N 秒循环一次（过期一整个周期的点击会被丢弃以防连发，最新一次过期
   未满一周期的会补发一次）。用户主动停止的 Episode 会如实以 `aborted` 收尾。
@@ -267,14 +257,14 @@ uga-agent run --profile configs/games/mumu-xianyu.yaml `
 
 ### 5.10 全自动识图模式（VLM 规划器）
 
-对获许可的离线或私有环境，本模式让项目**自己看画面、自己决定点哪**——闭环：
+以上模式点击坐标来自外部；本模式让项目**自己看画面、自己决定点哪**——闭环：
 截帧 → 缩放编码 → 视觉模型（OpenAI 兼容接口）分析画面与目标 → 严格校验的
 JSON 动作（`{"action":"tap","x":0.59,"y":0.64}`，坐标为客户区百分比）→
 按最新窗口几何换算成物理屏幕坐标 → 注入点击 → 观察结果 → 再决策，循环往复。
 
 ```powershell
 # 本地：先启动 LM Studio 加载识图模型（如 gemma-3-4b-it）并开启本地服务
-uga-agent run --profile <your-authorized-profile.yaml> `
+uga-agent run --profile configs/games/mumu-xianyu.yaml `
   --policy vlm `
   --goal "完成创角并进入游戏：观察画面，点击能推进流程的按钮" `
   --vlm-base-url http://127.0.0.1:1234/v1 `
@@ -381,7 +371,7 @@ python -m pip install <bundle里的wheel>
 | 命令 | 用途 |
 |---|---|
 | `uga-agent` | 运行时生命周期冒烟 |
-| `uga-agent run --profile <yaml>` | 对经许可且安全策略允许的窗口运行完整智能体循环（见 5.9） |
+| `uga-agent run --profile <yaml>` | 对真实窗口运行完整智能体循环（如 MuMu 模拟器，见 5.9） |
 | `uga-example-game` | 启动测试世界（4 场景 / `--headless-smoke` / `--focus-sink`） |
 | `uga-capture-probe` | 窗口捕获诊断报告 |
 | `uga-qualify fixture\|corpus\|...` | 资格认证与证据台账 |

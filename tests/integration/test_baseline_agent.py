@@ -53,7 +53,6 @@ from uga.recording.episode_writer import EpisodeWriter
 from uga.recording.replay import ReplayEngine
 from uga.recording.schema import EpisodeMetadata, EpisodeResult
 from uga.recording.video import PyAvVideoRecorder
-from uga.safety.environment_policy import EnvironmentClass, EnvironmentSafetyManifest
 from uga.safety.focus_guard import AgentEnableState, FocusGuard
 from uga.time.clock import ManualClock, UGATime
 from uga.windows.backend import WindowSnapshot
@@ -75,7 +74,6 @@ def profile() -> GameProfile:
         "relative_mouse",
         100.0,
         GameCapabilities(True, True, False, False),
-        EnvironmentSafetyManifest(EnvironmentClass.OFFLINE, True, False, False),
         EnvironmentCapabilityLevel.USER_CONFIRMED_PROFILE,
     )
 
@@ -223,11 +221,6 @@ controls:
   move_forward: {kind: scan_code, code: 17, confirmed: true}
 camera: {type: relative_mouse, sensitivity: 100}
 capabilities: {realtime_3d: true, gui: false, combat: false, gamepad: false}
-safety:
-  environment_class: offline
-  automation_allowed: true
-  multiplayer: false
-  anti_cheat_present: false
 capability_level: 3
 """.strip(),
                 encoding="utf-8",

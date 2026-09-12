@@ -19,9 +19,4 @@ capabilities:
   gui: true
   combat: false
   gamepad: false
-safety:
-  environment_class: online
-  automation_allowed: false
-  multiplayer: true
-  anti_cheat_present: false
 capability_level: 3

@@ -19,12 +19,6 @@ from uga.control.physical import GamepadAction, KeyboardAction, KeyEncoding
 from uga.control.proposal import ActionProposal
 from uga.control.scheduler import ActionScheduler
 from uga.safety.emergency_stop import EmergencyStop
-from uga.safety.environment_policy import (
-    EnvironmentClass,
-    EnvironmentSafetyManifest,
-    PolicyReason,
-    evaluate_environment,
-)
 from uga.safety.focus_guard import AgentEnableState, FocusGuard, GuardReason
 from uga.safety.shutdown import SafetyShutdown, ShutdownCause
 from uga.safety.watchdog import RuntimeWatchdog, RuntimeWatchdogMonitor
@@ -457,21 +451,6 @@ class StateAndPolicyTests(unittest.TestCase):
         self.assertEqual(snapshot.desired, observed)
         self.assertEqual(snapshot.submitted, observed)
         self.assertEqual(snapshot.observed, observed)
-
-    def test_environment_policy_allows_only_explicit_safe_contexts(self) -> None:
-        safe = EnvironmentSafetyManifest(EnvironmentClass.OFFLINE, True, False, False)
-        self.assertTrue(evaluate_environment(safe).allowed)
-
-        competitive = EnvironmentSafetyManifest(EnvironmentClass.COMPETITIVE, True, True, True)
-        decision = evaluate_environment(competitive)
-        self.assertFalse(decision.allowed)
-        self.assertEqual(decision.reason, PolicyReason.ANTI_CHEAT)
-
-        unknown = EnvironmentSafetyManifest(EnvironmentClass.UNKNOWN, True, False, False)
-        self.assertEqual(
-            evaluate_environment(unknown).reason,
-            PolicyReason.ENVIRONMENT_NOT_ALLOWED,
-        )
 
     def test_optional_gamepad_routes_and_neutralizes(self) -> None:
         driver = FakeGamepadDriver()

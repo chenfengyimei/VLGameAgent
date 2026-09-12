@@ -12,7 +12,7 @@
   and capture telemetry.
 - Add three-layer action contracts, leases, arbitration, 30 Hz scheduling,
   expiry, stateful SendInput keyboard/mouse support, optional virtual gamepad
-  routing, focus/integrity guards, environment policy, watchdog, and a latched
+  routing, focus/integrity guards, watchdog, and a latched
   Ctrl+Shift+F12 emergency stop.
 - Add transactional Episode recording, explicit Parquet schemas, full action
   provenance, raw-input state snapshots, source-timed H.264 video, checksums,

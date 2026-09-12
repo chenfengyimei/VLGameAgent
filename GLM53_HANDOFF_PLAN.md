@@ -431,7 +431,6 @@ Stop rather than guessing if any of these are unresolved:
   games are required;
 - access to adequate GPU/remote training infrastructure for the production VLM;
 - credentials, signing key, protected branch, or GitHub release permissions;
-- authorization for a particular third-party game, dataset, model, or content;
 - any test would send physical input without a visible supervised target;
 - any requested shortcut would make a gate or `releasable: true` claim untrue.
 

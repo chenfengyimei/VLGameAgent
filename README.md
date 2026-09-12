@@ -78,10 +78,3 @@ supervised Windows testing. See
 [docs/runbooks/fixture-qualification.md](docs/runbooks/fixture-qualification.md).
 Qualification evidence is hash-anchored according to
 [docs/contracts/qualification-evidence.md](docs/contracts/qualification-evidence.md).
-
-## Safety scope
-
-Development and evaluation are limited to single-player, offline, private test,
-developer-owned, open-source, or research sandbox environments. Competitive
-multiplayer automation, anti-cheat circumvention, and unattended online match
-automation are out of scope.

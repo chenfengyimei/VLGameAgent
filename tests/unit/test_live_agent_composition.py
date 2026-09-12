@@ -21,7 +21,6 @@ from uga.environment.profile import (
     GameCapabilities,
     GameProfile,
 )
-from uga.safety.environment_policy import EnvironmentClass, EnvironmentSafetyManifest
 from uga.windows.backend import WindowSnapshot
 from uga.windows.coordinates import Rect
 
@@ -36,7 +35,6 @@ def _profile() -> GameProfile:
         "relative_mouse",
         1.0,
         GameCapabilities(True, True, False, False),
-        EnvironmentSafetyManifest(EnvironmentClass.DEVELOPER_OWNED, True, False, False),
         EnvironmentCapabilityLevel.GENERIC,
         r"^Trusted Window$",
     )
@@ -82,7 +80,7 @@ class FakeWindows:
 
 class LiveAgentCompositionTests(unittest.TestCase):
     def test_cli_renders_contract_rejection_without_traceback(self) -> None:
-        error = ContractViolation("environment safety policy rejected runtime")
+        error = ContractViolation("contract rejected: invalid profile")
         stderr = io.StringIO()
         with (
             patch("apps.agent.__main__._run", side_effect=error),
@@ -93,7 +91,7 @@ class LiveAgentCompositionTests(unittest.TestCase):
         self.assertEqual(result, 2)
         self.assertEqual(
             stderr.getvalue(),
-            "uga-agent: environment safety policy rejected runtime\n",
+            "uga-agent: contract rejected: invalid profile\n",
         )
         self.assertNotIn("Traceback", stderr.getvalue())
 

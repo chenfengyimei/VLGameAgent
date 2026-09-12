@@ -43,8 +43,8 @@ configured 5, 4, 2.5, and 2 Hz ladder while action horizons remain capped.
 
 Instruction, recovery, reasoning-gate, and DAgger records preserve source
 episode IDs and split ownership. DAgger collection is operator-supervised and
-may append demonstrations, but may not bypass environment policy or record data
-whose license/provenance is unknown.
+may append demonstrations, but may not record data whose license/provenance is
+unknown.
 Instruction, recovery, and DAgger retraining APIs reject records outside the
 train split so held-out gameplay cannot silently enter a checkpoint.
 

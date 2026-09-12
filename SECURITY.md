@@ -1,12 +1,5 @@
 # Security Policy
 
-## Supported environment policy
-
-UGA development is restricted to offline/single-player games, private test
-servers, developer-owned games, open-source games, and research sandboxes.
-Competitive multiplayer automation, anti-cheat circumvention, and unattended
-online match automation are not supported.
-
 ## Reporting
 
 Do not publish a suspected vulnerability with a working exploit against a

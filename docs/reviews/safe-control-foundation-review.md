@@ -26,7 +26,7 @@ Date: 2026-09-09
 Safe Control Foundation passes implementation review. Unit and contract tests
 cover lease preemption, arbiter rejection, execution ordering, expiry, focus and
 integrity failures, queue flushing, keyboard state, gamepad routing, watchdog,
-emergency-stop idempotence, and environment policy. On the Windows development
+and emergency-stop idempotence. On the Windows development
 host, the 64-bit `INPUT` ABI was confirmed as 40 bytes, the process integrity
 level was resolved, and Ctrl+Shift+F12 registered and unregistered successfully.
 

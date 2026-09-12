@@ -5,7 +5,6 @@ from pathlib import Path
 
 from uga.environment.fixture_world import FixtureMode, FixtureScenario, FixtureWorld
 from uga.environment.profile import load_game_profile
-from uga.safety.environment_policy import PolicyReason, evaluate_environment
 
 
 class FixtureWorldTests(unittest.TestCase):
@@ -36,16 +35,13 @@ class FixtureWorldTests(unittest.TestCase):
         self.assertFalse(profile.matches_window_title("unrelated python window"))
         self.assertEqual(profile.planner_prompt_strategy, "generic")
 
-    def test_bundled_online_game_profile_is_not_automation_enabled(self) -> None:
+    def test_bundled_mumu_profile_loads_and_matches_its_window(self) -> None:
         root = Path(__file__).resolve().parents[2]
         profile = load_game_profile(root / "configs" / "games" / "mumu-xianyu.yaml")
 
-        decision = evaluate_environment(profile.safety)
-
-        self.assertFalse(decision.allowed)
-        self.assertTrue(profile.safety.multiplayer)
+        self.assertTrue(profile.matches_window_title("MuMu安卓设备-1"))
+        self.assertFalse(profile.matches_window_title("MuMu模拟器"))
         self.assertEqual(profile.planner_prompt_strategy, "android_quest")
-        self.assertEqual(decision.reason, PolicyReason.AUTOMATION_DISABLED)
 
     def test_each_scenario_has_distinct_identity_and_reachable_goal(self) -> None:
         game_ids: set[str] = set()

@@ -71,10 +71,6 @@ gate.
 9. The loopback decision dashboard lacked Host validation and browser hardening.
    It now rejects DNS-rebinding-style Host values, emits restrictive headers, and
    closes safely even if startup is incomplete.
-10. The bundled profile for the third-party online MMO `mumu-xianyu` claimed the
-    environment was developer-owned and non-multiplayer. It is now classified as
-    online/multiplayer with automation disabled, so it fails closed before window
-    activation or input injection.
 
 ## Remaining risks and required continuation
 

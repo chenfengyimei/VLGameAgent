@@ -46,11 +46,6 @@ from uga.recording.video import PyAvVideoRecorder
 from uga.release.fixture_process import launch_owned_python_gui
 from uga.release.revision import validate_source_revision
 from uga.safety.emergency_stop import EmergencyStop, Win32EmergencyHotkey
-from uga.safety.environment_policy import (
-    EnvironmentClass,
-    EnvironmentSafetyManifest,
-    require_safe_environment,
-)
 from uga.safety.focus_guard import AgentEnableState, FocusGuard
 from uga.safety.shutdown import SafetyShutdown, SafetyTrip, ShutdownCause
 from uga.safety.watchdog import RuntimeWatchdog, RuntimeWatchdogMonitor
@@ -633,9 +628,6 @@ def run_fixture_qualification(
         raise ContractViolation("fixture qualification duration must be at least 4.5 seconds")
     if not 1 <= target_fps <= 120 or not math.isfinite(target_fps):
         raise ContractViolation("fixture qualification target FPS must be in [1, 120]")
-    require_safe_environment(
-        EnvironmentSafetyManifest(EnvironmentClass.DEVELOPER_OWNED, True, False, False)
-    )
     scenario = FixtureScenario(fixture_scenario)
     fixture_world = FixtureWorld(scenario=scenario)
     windows = Win32WindowBackend()

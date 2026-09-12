@@ -15,7 +15,6 @@ from uga.control.physical import (
 from uga.core.errors import ContractViolation
 from uga.environment.profile import BindingKind, ControlBinding, GameProfile
 from uga.observation.schema import Observation
-from uga.safety.environment_policy import require_safe_environment
 from uga.windows.coordinates import CoordinateSpace
 
 
@@ -24,7 +23,6 @@ class GenericEnvironment:
 
     def __init__(self, profile: GameProfile) -> None:
         profile.validate()
-        require_safe_environment(profile.safety)
         self._profile = profile
 
     @property

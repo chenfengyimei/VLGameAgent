@@ -21,9 +21,4 @@ capabilities:
   gui: true
   combat: false
   gamepad: false
-safety:
-  environment_class: offline
-  automation_allowed: true
-  multiplayer: false
-  anti_cheat_present: false
 capability_level: 3

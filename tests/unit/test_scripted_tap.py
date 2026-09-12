@@ -25,7 +25,6 @@ from uga.policy.action_chunk import ActionButton, ActionChunk
 from uga.policy.chunk_controller import ActionChunkController, expand_action_chunk
 from uga.policy.fast_policy import PolicyContext
 from uga.policy.scripted_tap import ScriptedTapPolicy
-from uga.safety.environment_policy import EnvironmentClass, EnvironmentSafetyManifest
 from uga.safety.focus_guard import AgentEnableState, FocusGuard
 from uga.time.clock import ManualClock, UGATime
 
@@ -40,7 +39,6 @@ def absolute_pointer_profile(confirmed: bool = True) -> GameProfile:
         "absolute_pointer",
         1.0,
         GameCapabilities(True, True, False, False),
-        EnvironmentSafetyManifest(EnvironmentClass.DEVELOPER_OWNED, True, False, False),
         EnvironmentCapabilityLevel.USER_CONFIRMED_PROFILE,
     )
 
@@ -190,7 +188,6 @@ class AbsolutePointerEnvironmentTests(unittest.TestCase):
             "relative_mouse",
             100.0,
             profile.capabilities,
-            profile.safety,
             profile.capability_level,
         )
         environment = GenericEnvironment(relative)
@@ -211,7 +208,6 @@ class AbsolutePointerEnvironmentTests(unittest.TestCase):
             profile.camera_type,
             profile.camera_sensitivity,
             profile.capabilities,
-            profile.safety,
             EnvironmentCapabilityLevel.GENERIC,
         )
         environment = GenericEnvironment(unconfirmed)
