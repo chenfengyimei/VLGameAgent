@@ -496,7 +496,7 @@ async def _run(args: argparse.Namespace) -> int:
         print(f"episode: {episode_path}")
     if run_error is not None:
         raise run_error
-    print(f"taps executed: {scheduler.stats().executed}")
+    print(f"physical actions executed: {scheduler.stats().executed}")
     return 0
 
 
