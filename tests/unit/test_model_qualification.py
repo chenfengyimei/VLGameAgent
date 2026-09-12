@@ -105,6 +105,48 @@ class ModelQualificationTests(unittest.TestCase):
                     gpu_devices=("NVIDIA Fixture GPU",),
                 )
 
+    def test_stage_report_rejects_unbounded_or_malformed_metric_values(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            revision = "a" * 40
+            dataset_path = self._dataset(root, revision)
+            stage_root, artifact_path = self._artifact(root, dataset_path, revision, "motor")
+            artifact_digest = sha256_file(artifact_path)
+            offline = self._metrics(
+                stage_root / "offline.json",
+                "uga.offline_metrics",
+                "motor",
+                revision,
+                sha256_file(dataset_path),
+                artifact_digest,
+            )
+            closed = self._metrics(
+                stage_root / "closed.json",
+                "uga.closed_loop_metrics",
+                "motor",
+                revision,
+                sha256_file(dataset_path),
+                artifact_digest,
+            )
+            payload = json.loads(offline.read_text(encoding="utf-8"))
+            payload["metrics"]["score"] = 10**4_000
+            payload["checks"][0]["operator"] = []
+            offline.write_text(json.dumps(payload), encoding="utf-8")
+
+            with self.assertRaisesRegex(ContractViolation, "metrics are invalid"):
+                build_model_stage_report(
+                    stage="motor",
+                    dataset_manifest_path=dataset_path,
+                    artifact_manifest_path=artifact_path,
+                    offline_metrics_path=offline,
+                    closed_loop_metrics_path=closed,
+                    trainer_backend="fixture-gpu-trainer",
+                    training_run_id="run-motor",
+                    output_path=root / "motor-stage.json",
+                    source_revision=revision,
+                    gpu_devices=("NVIDIA Fixture GPU",),
+                )
+
     def _stage(
         self, root: Path, dataset_path: Path, revision: str, stage: str
     ) -> Path:

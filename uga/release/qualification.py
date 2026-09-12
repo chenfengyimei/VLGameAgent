@@ -505,7 +505,16 @@ def _model_report_proves_gate(path: Path, payload: dict[str, Any]) -> bool:
             path,
             expected_revision=str(payload.get("source_revision", "")),
         )
-    except (OSError, UnicodeError, json.JSONDecodeError, ContractViolation):
+    except (
+        OSError,
+        UnicodeError,
+        OverflowError,
+        KeyError,
+        TypeError,
+        ValueError,
+        json.JSONDecodeError,
+        ContractViolation,
+    ):
         return False
     return True
 

@@ -5,7 +5,7 @@ import math
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeGuard
 
 from uga.core.artifact_limits import (
     DEFAULT_ARTIFACT_LIMITS,
@@ -395,9 +395,7 @@ def _validate_metrics_report(
         for name, value in metrics.items()
         if isinstance(name, str)
         and name.strip()
-        and isinstance(value, (int, float))
-        and not isinstance(value, bool)
-        and math.isfinite(float(value))
+        and _is_finite_number(value)
     }
     if len(numeric_metrics) != len(metrics):
         raise ContractViolation(f"{expected_schema} metrics are invalid")
@@ -412,10 +410,9 @@ def _validate_metrics_report(
             not isinstance(name, str)
             or name in names
             or name not in numeric_metrics
+            or not isinstance(operator, str)
             or operator not in _OPERATORS
-            or not isinstance(threshold, (int, float))
-            or isinstance(threshold, bool)
-            or not math.isfinite(float(threshold))
+            or not _is_finite_number(threshold)
             or not _OPERATORS[str(operator)](numeric_metrics[name], float(threshold))
         ):
             raise ContractViolation(f"{expected_schema} threshold check did not pass")
@@ -429,6 +426,15 @@ def _validate_metrics_report(
             != len(games)
         ):
             raise ContractViolation("closed-loop metrics require distinct games")
+
+
+def _is_finite_number(value: object) -> TypeGuard[int | float]:
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return False
+    try:
+        return math.isfinite(float(value))
+    except (OverflowError, ValueError):
+        return False
 
 
 def _bound_reference(report_path: Path, payload: dict[str, Any], field: str, label: str) -> Path:
