@@ -23,6 +23,13 @@ aggregate, or benchmark report as applicable. A generic hand-written JSON object
 copies the current revision is not promotion evidence. Duration and structure
 minimums are enforced for the capture, Recorder, dataset, control-matrix, and
 four-scenario benchmark gates.
+The control gate uses an `uga.control_qualification` aggregate. It hash-binds a
+passed current-revision Fixture report (focus loss, held-key neutralization,
+emergency hotkey, and watchdog timeout all genuinely exercised) and a separate
+`uga.uipi_qualification` report. The UIPI report is valid only when the real
+Win32 integrity provider observes a higher-integrity, developer-owned target
+and `FocusGuard` rejects the side-effect-free F24 key-up probe with
+`integrity_incompatible`; same-integrity and simulated results fail closed.
 The model gate requires a GPU-backed `uga.model_qualification` aggregate bound
 to the Dataset Manifest. Motor, instruction, recovery, reasoning-gate, and
 DAgger stages must each bind an artifact plus offline and closed-loop metric

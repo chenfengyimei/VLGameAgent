@@ -9,7 +9,12 @@ from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
 from typing import Any, ClassVar
 
-from uga.core.artifact_limits import DEFAULT_ARTIFACT_LIMITS, parse_json_text, read_text_limited
+from uga.core.artifact_limits import (
+    DEFAULT_ARTIFACT_LIMITS,
+    parse_json_text,
+    read_text_limited,
+    sha256_file_limited,
+)
 from uga.core.errors import ContractViolation
 from uga.core.schema import VersionedMixin
 from uga.dataset.manifest import DatasetManifest
@@ -23,6 +28,7 @@ from uga.release.manifest import (
     hash_bundle_tree,
 )
 from uga.release.revision import is_traceable_source_revision, validate_source_revision
+from uga.windows.integrity import IntegrityLevel
 
 REQUIRED_GATE_IDS = REQUIRED_RELEASE_GATE_IDS
 _SHA256 = re.compile(r"[0-9a-f]{64}")
@@ -303,6 +309,8 @@ def _proves_gate_for_revision(path: Path, expected: str | None, gate_id: str) ->
         return False
     if payload.get("source_revision") != expected:
         return False
+    if gate_id == "control-hardware" and payload.get("schema") == "uga.control_qualification":
+        return _control_report_proves_gate(path, payload)
     if gate_id in {"capture-soak", "control-hardware", "recorder-10min"}:
         return _fixture_report_proves_gate(payload, gate_id)
     if gate_id == "generalization-bench":
@@ -350,11 +358,7 @@ def _fixture_report_proves_gate(payload: dict[str, Any], gate_id: str) -> bool:
             "emergency_hotkey",
             "watchdog_timeout",
         )
-        return all(
-            isinstance(control.get(name), dict)
-            and control[name].get("passed") is True
-            for name in required_exercises
-        )
+        return all(_control_exercise_passed(name, control.get(name)) for name in required_exercises)
     return False
 
 
@@ -380,6 +384,118 @@ def _benchmark_report_proves_gate(payload: dict[str, Any]) -> bool:
         if isinstance(item, list) and len(item) == 2 and isinstance(item[0], str)
     }
     return {"train", "test"}.issubset(labels)
+
+
+def _control_report_proves_gate(path: Path, payload: dict[str, Any]) -> bool:
+    exercises = payload.get("exercises")
+    source_revision = payload.get("source_revision")
+    if (
+        payload.get("schema_version") != "1.1"
+        or payload.get("passed") is not True
+        or not isinstance(exercises, dict)
+        or not isinstance(source_revision, str)
+    ):
+        return False
+    required = {
+        "focus_loss",
+        "held_key_fault",
+        "uipi_mismatch",
+        "emergency_hotkey",
+        "watchdog_timeout",
+    }
+    if not (
+        set(exercises) == required
+        and all(_control_exercise_passed(name, exercises[name]) for name in required)
+        and exercises["uipi_mismatch"].get("probe_report_sha256")
+        == payload.get("uipi_report_sha256")
+    ):
+        return False
+    for path_field, digest_field, schema in (
+        ("fixture_report", "fixture_report_sha256", "uga.fixture_qualification"),
+        ("uipi_report", "uipi_report_sha256", "uga.uipi_qualification"),
+    ):
+        relative = payload.get(path_field)
+        expected_digest = payload.get(digest_field)
+        if not isinstance(relative, str) or not isinstance(expected_digest, str):
+            return False
+        candidate = (path.parent / relative).resolve()
+        if path.parent not in candidate.parents or not candidate.is_file():
+            return False
+        try:
+            actual_digest = sha256_file_limited(
+                candidate,
+                DEFAULT_ARTIFACT_LIMITS.max_document_bytes,
+                "control qualification source report",
+            )
+        except (OSError, ContractViolation):
+            return False
+        if actual_digest != expected_digest:
+            return False
+        try:
+            source_payload: Any = parse_json_text(
+                read_text_limited(
+                    candidate,
+                    DEFAULT_ARTIFACT_LIMITS.max_document_bytes,
+                    "control qualification source report",
+                )
+            )
+        except (OSError, UnicodeError, json.JSONDecodeError, ContractViolation):
+            return False
+        if (
+            not isinstance(source_payload, dict)
+            or source_payload.get("schema") != schema
+            or source_payload.get("schema_version") != "1.1"
+            or source_payload.get("source_revision") != source_revision
+            or source_payload.get("passed") is not True
+        ):
+            return False
+        if schema == "uga.uipi_qualification" and not _valid_uipi_source_report(
+            source_payload
+        ):
+            return False
+        if schema == "uga.fixture_qualification":
+            source_control = source_payload.get("control")
+            fixture_exercises = required - {"uipi_mismatch"}
+            if not isinstance(source_control, dict) or not all(
+                _control_exercise_passed(name, source_control.get(name))
+                for name in fixture_exercises
+            ):
+                return False
+    return True
+
+
+def _valid_uipi_source_report(payload: dict[str, Any]) -> bool:
+    current = payload.get("current_integrity")
+    target = payload.get("target_integrity")
+    if not isinstance(current, dict) or not isinstance(target, dict):
+        return False
+    current_value = current.get("value")
+    target_value = target.get("value")
+    valid_values = {
+        int(level)
+        for level in IntegrityLevel
+        if level not in {IntegrityLevel.UNKNOWN, IntegrityLevel.PROTECTED}
+    }
+    return (
+        isinstance(current_value, int)
+        and not isinstance(current_value, bool)
+        and current_value in valid_values
+        and isinstance(target_value, int)
+        and not isinstance(target_value, bool)
+        and target_value in valid_values
+        and target_value > current_value
+        and payload.get("executed") is False
+        and payload.get("reason") == "integrity_incompatible"
+        and payload.get("probe_action") == "F24 key-up only"
+    )
+
+
+def _control_exercise_passed(name: str, payload: Any) -> bool:
+    if not isinstance(payload, dict) or payload.get("passed") is not True:
+        return False
+    if name == "emergency_hotkey":
+        return payload.get("registered") is True
+    return payload.get("exercised") is True
 
 
 def _model_report_proves_gate(payload: dict[str, Any]) -> bool:

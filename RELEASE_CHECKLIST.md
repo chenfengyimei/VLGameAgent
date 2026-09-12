@@ -29,7 +29,7 @@ when every gate below has recorded evidence.
   episode/session/player/game splits, licenses, and no test-game leakage.
 - [ ] Models: artifact manifests, base-model/dataset licenses, offline metrics,
   latency benchmarks, and closed-loop results for motor, instruction, recovery,
-  and reasoning-gate stages.
+  reasoning-gate, and DAgger stages.
 - [ ] Generalization: UGA-Bench Train A/B/C and held-out Game D results.
 - [ ] Product: runtime, recorder, replay debugger, dataset schema, environment
   and skill SDKs, fast policy, GUI backend, examples, recipes, documentation,

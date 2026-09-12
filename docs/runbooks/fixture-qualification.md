@@ -38,6 +38,7 @@ scripted movement goes the wrong way), for example:
 ```powershell
 uga-example-game --scenario realtime_control
 uga-qualify fixture --scenario realtime_control --duration-seconds 600 `
+  --expected-pid <fixture-window-owner-pid> `
   --episode-root runs/qualification-v1/episodes `
   --output runs/qualification-v1/realtime-control.json `
   --allow-physical-input
@@ -82,18 +83,47 @@ error in both the timeline and qualification report.
 
 ```powershell
 uga-qualify fixture `
+  --expected-pid <fixture-window-owner-pid> `
   --duration-seconds 8 `
   --backend gdi_fallback `
   --episode-root runs/qualification-v1/episodes `
   --output runs/qualification-v1/fixture-smoke.json `
   --allow-physical-input `
   --exercise-focus-loss `
-  --exercise-emergency-hotkey
+  --exercise-held-key-fault `
+  --exercise-emergency-hotkey `
+  --exercise-watchdog-timeout
 ```
 
 The command intentionally refuses to run without `--allow-physical-input`.
 Ctrl+Shift+F12 remains the global emergency stop. Use a 600-second duration for
 the Recorder acceptance run after the smoke report passes.
+
+The UIPI check cannot be produced against the normal Fixture process because it
+inherits the qualification process's integrity level. For that one supervised
+test, the operator must start a separate developer-owned Fixture with "Run as
+administrator", approve the Windows UAC prompt, keep it foreground, and supply
+its real window-owner PID. The probe constructs only an F24 key-up action; a
+correct guard rejects it before `SendInput` because the target integrity is
+higher.
+
+```powershell
+uga-qualify uipi-probe `
+  --expected-pid <elevated-fixture-window-owner-pid> `
+  --output runs/qualification-v1/control/uipi.json `
+  --allow-physical-input
+
+uga-qualify control-report `
+  --fixture-report runs/qualification-v1/control/fixture.json `
+  --uipi-report runs/qualification-v1/control/uipi.json `
+  --output runs/qualification-v1/control/control-qualification.json
+```
+
+If the target is not genuinely higher-integrity or the action is not rejected
+with `integrity_incompatible`, the UIPI command writes a failed report and exits
+nonzero. Target-selection and focus failures stop before probing and also exit
+nonzero. Never approve the control gate from a simulated integrity provider or
+a normal same-integrity Fixture.
 
 ## Dataset and benchmark checks
 

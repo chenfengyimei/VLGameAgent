@@ -7,6 +7,10 @@ from pathlib import Path
 
 from uga.core.errors import ContractViolation
 from uga.environment.fixture_world import FixtureScenario, FixtureWorld
+from uga.release.control_qualification import (
+    build_control_qualification_report,
+    run_supervised_uipi_probe,
+)
 from uga.release.fixture_corpus import run_fixture_corpus
 from uga.release.fixture_qualification import run_fixture_qualification
 from uga.release.manifest import GateStatus
@@ -145,6 +149,30 @@ def _corpus(args: argparse.Namespace) -> None:
     )
 
 
+def _uipi_probe(args: argparse.Namespace) -> None:
+    title = args.title or f"^{re.escape(FixtureWorld().window_title)}$"
+    print(
+        run_supervised_uipi_probe(
+            title_pattern=title,
+            expected_pid=args.expected_pid,
+            report_path=args.output,
+            source_revision=require_clean_source_revision(args.project_root),
+            allow_physical_input=args.allow_physical_input,
+        )
+    )
+
+
+def _control_report(args: argparse.Namespace) -> None:
+    print(
+        build_control_qualification_report(
+            fixture_report_path=args.fixture_report,
+            uipi_report_path=args.uipi_report,
+            output_path=args.output,
+            source_revision=require_clean_source_revision(args.project_root),
+        )
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Manage UGA V1 qualification evidence")
     subparsers = parser.add_subparsers(required=True)
@@ -236,6 +264,27 @@ def main() -> None:
     corpus.add_argument("--allow-physical-input", action="store_true")
     corpus.add_argument("--development-smoke", action="store_true")
     corpus.set_defaults(handler=_corpus)
+
+    uipi = subparsers.add_parser(
+        "uipi-probe",
+        help="verify real Win32 integrity mismatch rejection on a controlled target",
+    )
+    uipi.add_argument("--title")
+    uipi.add_argument("--expected-pid", type=int, required=True)
+    uipi.add_argument("--project-root", type=Path, default=Path("."))
+    uipi.add_argument("--output", type=Path, required=True)
+    uipi.add_argument("--allow-physical-input", action="store_true")
+    uipi.set_defaults(handler=_uipi_probe)
+
+    control_report = subparsers.add_parser(
+        "control-report",
+        help="combine passed Fixture and UIPI reports into control-gate evidence",
+    )
+    control_report.add_argument("--fixture-report", type=Path, required=True)
+    control_report.add_argument("--uipi-report", type=Path, required=True)
+    control_report.add_argument("--project-root", type=Path, default=Path("."))
+    control_report.add_argument("--output", type=Path, required=True)
+    control_report.set_defaults(handler=_control_report)
 
     args = parser.parse_args()
     args.handler(args)
