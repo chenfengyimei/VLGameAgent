@@ -39,7 +39,7 @@ from uga.dataset.validator import DatasetValidator, QualityStatus
 from uga.dataset.viewer import write_episode_viewer
 from uga.evaluation.closed_loop import ClosedLoopEpisodeResult, ClosedLoopEvaluator
 from uga.evaluation.offline import OfflineEvaluator
-from uga.policy.action_chunk import ActionChunk
+from uga.policy.action_chunk import ActionButton, ActionChunk
 from uga.policy.cadence import AdaptivePolicyCadence
 from uga.policy.chunk_controller import ActionChunkController, CanonicalButton, expand_action_chunk
 from uga.policy.fast_policy import (
@@ -449,9 +449,11 @@ class DatasetPolicyTests(unittest.TestCase):
             )
             self.assertTrue(trained.checkpoint.is_file())
             self.assertTrue(trained.artifact_manifest.is_file())
-            TrainingArtifactManifest.load(trained.artifact_manifest).verify(
-                trained.output_directory
-            )
+            artifact = TrainingArtifactManifest.load(trained.artifact_manifest)
+            artifact.verify(trained.output_directory)
+            training_metadata = dict(artifact.license_metadata)
+            self.assertEqual(training_metadata["trainer"], "deterministic_linear_v1")
+            self.assertEqual(training_metadata["loss:camera"], "huber")
             original = samples.read_text(encoding="utf-8")
             payload = json.loads(original)
             payload["features"][0] += 0.25
@@ -588,6 +590,27 @@ class DatasetPolicyTests(unittest.TestCase):
         output = policy.infer(PolicyContext("obs-1", UGATime(100), (), "move"))
         self.assertEqual(output.chunk.horizon, 6)
         self.assertEqual(output.chunk.tick_rate_hz, 30.0)
+
+    def test_behavior_cloning_uses_independent_button_bit_priors(self) -> None:
+        samples = (
+            MotorTrainingSample((0.0,), 0.0, 0.0, 0.0, 0.0, int(ActionButton.JUMP)),
+            MotorTrainingSample((1.0,), 0.0, 0.0, 0.0, 0.0, int(ActionButton.SPRINT)),
+            MotorTrainingSample(
+                (2.0,),
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                int(ActionButton.JUMP | ActionButton.SPRINT),
+            ),
+        )
+
+        checkpoint, _ = BehaviorCloningTrainer().train(samples, policy_version="buttons")
+
+        self.assertEqual(
+            checkpoint.button_mask,
+            int(ActionButton.JUMP | ActionButton.SPRINT),
+        )
 
     def test_offline_and_closed_loop_evaluation(self) -> None:
         perfect = OfflineEvaluator().evaluate((chunk("pred"),), (chunk("target"),))

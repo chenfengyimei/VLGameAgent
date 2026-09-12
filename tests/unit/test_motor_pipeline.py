@@ -14,6 +14,8 @@ class MotorPipelineTests(unittest.TestCase):
         root = Path(__file__).resolve().parents[2]
         config = load_motor_training_config(root / "configs" / "training" / "motor_bc.yaml")
         self.assertEqual(config.stage, "motor_bc")
+        self.assertTrue(config.freeze_visual_layers)
+        self.assertEqual(config.loss[1], ("camera", "huber"))
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "samples.jsonl"
             path.write_text(
@@ -24,6 +26,28 @@ class MotorPipelineTests(unittest.TestCase):
             )
             samples = load_motor_samples(path)
             self.assertEqual(samples[0].features, (1.0, 0.0))
+
+    def test_config_rejects_losses_the_trainer_does_not_implement(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "misleading.yaml"
+            path.write_text(
+                """stage: motor_bc
+base_model: fixture
+freeze_visual_layers: true
+train_components: [axis_linear_head, button_bit_prior, residual_confidence]
+tick_rate_hz: 30
+action_horizon: 6
+loss:
+  movement: mse
+  camera: huber
+  buttons: binary_cross_entropy
+  confidence: residual_calibration
+""",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ContractViolation, "losses do not match"):
+                load_motor_training_config(path)
 
     def test_empty_samples_are_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

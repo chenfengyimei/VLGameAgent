@@ -36,6 +36,9 @@ class MotorTrainingConfig:
     learning_rate: float
     tick_rate_hz: float
     action_horizon: int
+    freeze_visual_layers: bool
+    train_components: tuple[str, ...]
+    loss: tuple[tuple[str, str], ...]
 
     def __post_init__(self) -> None:
         if (
@@ -47,6 +50,21 @@ class MotorTrainingConfig:
             or self.action_horizon < 1
         ):
             raise ContractViolation("motor training configuration is invalid")
+        if type(self.freeze_visual_layers) is not bool or not self.freeze_visual_layers:
+            raise ContractViolation("deterministic motor training requires frozen visual layers")
+        if self.train_components != (
+            "axis_linear_head",
+            "button_bit_prior",
+            "residual_confidence",
+        ):
+            raise ContractViolation("motor training components do not match this trainer")
+        if dict(self.loss) != {
+            "movement": "mse",
+            "camera": "huber",
+            "buttons": "bitwise_prior_accuracy",
+            "confidence": "residual_calibration",
+        }:
+            raise ContractViolation("motor training losses do not match this trainer")
 
 
 @dataclass(frozen=True, slots=True)
@@ -138,6 +156,17 @@ def load_motor_training_config(
     if not isinstance(payload, dict):
         raise ContractViolation("motor training config root must be an object")
     try:
+        components = payload["train_components"]
+        losses = payload["loss"]
+        if not isinstance(components, list) or any(
+            not isinstance(item, str) for item in components
+        ):
+            raise TypeError("train_components must be a string list")
+        if not isinstance(losses, dict) or any(
+            not isinstance(name, str) or not isinstance(value, str)
+            for name, value in losses.items()
+        ):
+            raise TypeError("loss must map strings to strings")
         config = MotorTrainingConfig(
             str(payload["stage"]),
             str(payload["base_model"]),
@@ -145,6 +174,9 @@ def load_motor_training_config(
             float(payload.get("learning_rate", 0.05)),
             float(payload["tick_rate_hz"]),
             int(payload["action_horizon"]),
+            payload["freeze_visual_layers"],
+            tuple(components),
+            tuple((name, value) for name, value in losses.items()),
         )
         if config.epochs > limits.max_training_epochs:
             raise ContractViolation("motor training epochs exceed the resource limit")
@@ -257,7 +289,12 @@ def train_motor_policy(
             ),
             (f"dataset:{item.license_id}:review_date", item.review_date),
         )
-    ) + (("base_model", base_model_license),)
+    ) + (
+        ("base_model", base_model_license),
+        ("trainer", "deterministic_linear_v1"),
+        ("freeze_visual_layers", str(config.freeze_visual_layers).lower()),
+        ("train_components", ",".join(config.train_components)),
+    ) + tuple((f"loss:{name}", value) for name, value in config.loss)
     artifact = TrainingArtifactManifest(
         policy_version,
         checkpoint_path.name,

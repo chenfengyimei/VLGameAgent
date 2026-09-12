@@ -92,13 +92,22 @@ class BehaviorCloningTrainer:
                         + biases[axis]
                     )
                     error = prediction - targets[axis]
+                    gradient = (
+                        error
+                        if axis < 2 or abs(error) <= 0.1
+                        else math.copysign(0.1, error)
+                    )
                     for index, value in enumerate(sample.features):
-                        weights[axis][index] -= learning_rate * error * value
-                    biases[axis] -= learning_rate * error
-        button_counts: dict[int, int] = {}
-        for sample in samples:
-            button_counts[sample.buttons] = button_counts.get(sample.buttons, 0) + 1
-        button_mask = max(button_counts, key=button_counts.get)  # type: ignore[arg-type]
+                        weights[axis][index] -= learning_rate * gradient * value
+                    biases[axis] -= learning_rate * gradient
+        button_mask = 0
+        for bit in range(KNOWN_ACTION_BUTTON_MASK.bit_length()):
+            flag = 1 << bit
+            if not flag & KNOWN_ACTION_BUTTON_MASK:
+                continue
+            positives = sum(bool(sample.buttons & flag) for sample in samples)
+            if positives * 2 >= len(samples):
+                button_mask |= flag
         predictions = [
             self._predict(tuple(tuple(row) for row in weights), tuple(biases), sample)
             for sample in samples
