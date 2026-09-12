@@ -18,6 +18,7 @@ from uga.core.errors import ContractViolation
 from uga.dataset.manifest import DatasetManifest
 from uga.dataset.processor import DatasetSplit
 from uga.release.manifest import GateStatus
+from uga.release.model_qualification import load_model_qualification_inputs
 from uga.release.qualification import QualificationLedger
 from uga.training.artifact import TrainingArtifactManifest
 
@@ -40,6 +41,8 @@ class QualificationPreflight:
     ledger_sha256: str
     license_files: tuple[str, ...]
     gpu_devices: tuple[str, ...]
+    model_qualification_path: str | None
+    model_qualification_sha256: str | None
     training_artifact_id: str | None
     training_artifact_path: str | None
     training_artifact_sha256: str | None
@@ -62,6 +65,7 @@ class QualificationPreflight:
             raise ContractViolation("qualification revision binding is invalid")
         digests = (
             self.ledger_sha256,
+            self.model_qualification_sha256,
             self.training_artifact_sha256,
             self.dataset_manifest_sha256,
         )
@@ -73,6 +77,10 @@ class QualificationPreflight:
             raise ContractViolation("qualification dataset hours are invalid")
         if (self.training_artifact_path is None) != (self.training_artifact_sha256 is None):
             raise ContractViolation("qualification training artifact binding is incomplete")
+        if (self.model_qualification_path is None) != (
+            self.model_qualification_sha256 is None
+        ):
+            raise ContractViolation("qualification model aggregate binding is incomplete")
         dataset_fields = (
             self.dataset_manifest_path,
             self.dataset_manifest_sha256,
@@ -111,6 +119,8 @@ class QualificationPreflight:
                 _string(payload, "ledger_sha256"),
                 _string_tuple(payload, "license_files"),
                 _string_tuple(payload, "gpu_devices"),
+                _optional_string(payload, "model_qualification_path"),
+                _optional_string(payload, "model_qualification_sha256"),
                 _optional_string(payload, "training_artifact_id"),
                 _optional_string(payload, "training_artifact_path"),
                 _optional_string(payload, "training_artifact_sha256"),
@@ -150,6 +160,7 @@ def build_qualification_preflight(
     project_root: str | Path,
     *,
     host: HostQualificationProbe | None = None,
+    model_qualification_path: str | Path | None = None,
     training_artifact_path: str | Path | None = None,
     dataset_manifest_path: str | Path | None = None,
     dataset_root: str | Path | None = None,
@@ -157,6 +168,23 @@ def build_qualification_preflight(
     root = Path(project_root).resolve()
     detected = host or probe_host(root)
     licenses = tuple(sorted(path.name for path in root.glob("LICENSE*") if path.is_file()))
+    model_path: Path | None = None
+    model_artifacts: tuple[TrainingArtifactManifest, ...] = ()
+    if model_qualification_path is not None:
+        model_path = Path(model_qualification_path).resolve()
+        model_inputs = load_model_qualification_inputs(
+            model_path,
+            expected_revision=ledger.source_revision,
+        )
+        model_artifacts = model_inputs.artifacts
+        if (
+            dataset_manifest_path is not None
+            and Path(dataset_manifest_path).resolve() != model_inputs.dataset_manifest_path
+        ):
+            raise ContractViolation(
+                "model qualification and explicit Dataset Manifest do not match"
+            )
+        dataset_manifest_path = model_inputs.dataset_manifest_path
     artifact: TrainingArtifactManifest | None = None
     artifact_path: Path | None = None
     if training_artifact_path is not None:
@@ -193,8 +221,10 @@ def build_qualification_preflight(
         blockers.append("source worktree is not clean")
     if not licenses:
         blockers.append("repository license has not been selected")
-    if artifact is None:
-        blockers.append("verified training artifact was not supplied")
+    if not detected.gpu_devices:
+        blockers.append("no NVIDIA GPU detected for qualification")
+    if model_path is None:
+        blockers.append("verified five-stage model qualification was not supplied")
     if dataset is None:
         blockers.append("licensed Dataset Manifest was not supplied")
     else:
@@ -206,6 +236,16 @@ def build_qualification_preflight(
                     "training artifact source revision does not match qualification ledger"
                 )
             blockers.extend(_license_metadata_blockers(artifact, dataset))
+        for stage_artifact in model_artifacts:
+            if stage_artifact.source_revision != dataset.source_revision:
+                blockers.append(
+                    "model stage artifact source revision does not match Dataset Manifest"
+                )
+            if stage_artifact.source_revision != ledger.source_revision:
+                blockers.append(
+                    "model stage artifact source revision does not match qualification ledger"
+                )
+            blockers.extend(_license_metadata_blockers(stage_artifact, dataset))
         if dataset.source_revision != ledger.source_revision:
             blockers.append("Dataset Manifest source revision does not match qualification ledger")
         for item in dataset.licenses:
@@ -249,6 +289,16 @@ def build_qualification_preflight(
         ledger.canonical_sha256(),
         licenses,
         detected.gpu_devices,
+        None if model_path is None else str(model_path),
+        (
+            None
+            if model_path is None
+            else sha256_file_limited(
+                model_path,
+                DEFAULT_ARTIFACT_LIMITS.max_document_bytes,
+                "model qualification report",
+            )
+        ),
         None if artifact is None else artifact.artifact_id,
         None if artifact_path is None else str(artifact_path),
         (
@@ -276,7 +326,7 @@ def build_qualification_preflight(
         train_games_tuple,
         () if dataset is None else dataset.locked_test_games,
         statuses,
-        tuple(blockers),
+        tuple(dict.fromkeys(blockers)),
     )
 
 

@@ -13,6 +13,7 @@ from uga.release.model_qualification import (
     build_model_qualification_report,
     build_model_stage_report,
 )
+from uga.release.preflight import HostQualificationProbe, build_qualification_preflight
 from uga.release.qualification import QualificationLedger, QualificationRecord, hash_evidence
 from uga.training.artifact import TrainingArtifactManifest, sha256_file
 
@@ -42,6 +43,22 @@ class ModelQualificationTests(unittest.TestCase):
                 )
             )
             ledger.verify_artifacts(root)
+            (root / "LICENSE").write_text("fixture", encoding="utf-8")
+            preflight = build_qualification_preflight(
+                ledger,
+                root,
+                host=HostQualificationProbe(
+                    revision,
+                    ("NVIDIA Fixture GPU",),
+                ),
+                model_qualification_path=aggregate,
+                dataset_root=root,
+            )
+            self.assertEqual(preflight.model_qualification_path, str(aggregate))
+            self.assertNotIn(
+                "verified five-stage model qualification was not supplied",
+                preflight.blockers,
+            )
 
             offline = root / "motor" / "offline.json"
             payload = json.loads(offline.read_text(encoding="utf-8"))

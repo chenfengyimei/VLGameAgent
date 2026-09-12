@@ -103,6 +103,7 @@ def _preflight(args: argparse.Namespace) -> None:
     report = build_qualification_preflight(
         ledger,
         args.project_root,
+        model_qualification_path=args.model_qualification,
         training_artifact_path=args.training_artifact,
         dataset_manifest_path=args.dataset_manifest,
         dataset_root=args.dataset_root,
@@ -210,6 +211,7 @@ def main() -> None:
     )
     preflight.add_argument("root", type=Path)
     preflight.add_argument("--project-root", type=Path, default=Path("."))
+    preflight.add_argument("--model-qualification", type=Path)
     preflight.add_argument("--training-artifact", type=Path)
     preflight.add_argument("--dataset-manifest", type=Path)
     preflight.add_argument("--dataset-root", type=Path)

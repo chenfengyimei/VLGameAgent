@@ -41,7 +41,10 @@ class QualificationPreflightTests(unittest.TestCase):
             self.assertEqual(len(report.gpu_devices), 1)
             self.assertIn("source tree has no traceable Git revision", report.blockers)
             self.assertIn("repository license has not been selected", report.blockers)
-            self.assertIn("verified training artifact was not supplied", report.blockers)
+            self.assertIn(
+                "verified five-stage model qualification was not supplied",
+                report.blockers,
+            )
             path = report.write(root / "preflight.json")
             self.assertEqual(QualificationPreflight.load(path), report)
             self.assertEqual(report.ledger_sha256, ledger.canonical_sha256())
@@ -152,7 +155,7 @@ class QualificationPreflightTests(unittest.TestCase):
 
             with (
                 patch("uga.release.preflight.probe_host", return_value=host),
-                self.assertRaisesRegex(ContractViolation, "does not match"),
+                self.assertRaisesRegex(ContractViolation, "five-stage model"),
             ):
                 build_qualified_release_manifest(
                     bundle,

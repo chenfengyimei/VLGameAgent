@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import math
 import subprocess
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +25,12 @@ _OPERATORS = {
     ">": lambda observed, threshold: observed > threshold,
     "<": lambda observed, threshold: observed < threshold,
 }
+
+
+@dataclass(frozen=True, slots=True)
+class VerifiedModelQualification:
+    dataset_manifest_path: Path
+    artifacts: tuple[TrainingArtifactManifest, ...]
 
 
 def build_model_stage_report(
@@ -250,6 +257,36 @@ def validate_model_qualification_report(
     if seen != set(MODEL_STAGES) or set(devices) != reported_devices:
         raise ContractViolation("model qualification aggregate does not match stage reports")
     return payload
+
+
+def load_model_qualification_inputs(
+    path: str | Path,
+    *,
+    expected_revision: str,
+) -> VerifiedModelQualification:
+    report_path = Path(path).resolve()
+    payload = validate_model_qualification_report(
+        report_path,
+        expected_revision=expected_revision,
+    )
+    dataset_path = _bound_reference(
+        report_path,
+        payload,
+        "dataset_manifest",
+        "Dataset Manifest",
+    )
+    artifacts: list[TrainingArtifactManifest] = []
+    for stage in payload["stages"]:
+        stage_path = _bound_reference(report_path, stage, "report", "model stage report")
+        stage_payload = _read_object(stage_path, "model stage report")
+        artifact_path = _bound_reference(
+            stage_path,
+            stage_payload,
+            "artifact_manifest",
+            "training artifact manifest",
+        )
+        artifacts.append(TrainingArtifactManifest.load(artifact_path))
+    return VerifiedModelQualification(dataset_path, tuple(artifacts))
 
 
 def validate_model_stage_report(

@@ -309,7 +309,10 @@ uga-qualify init runs/qualification-v1 --source-revision <commit>
 uga-qualify record runs/qualification-v1 capture-soak passed `
   --evidence "30分钟矩阵通过" --artifact capture/soak-report.json
 uga-qualify status runs/qualification-v1
-uga-qualify preflight runs/qualification-v1 --project-root . [...]
+uga-qualify preflight runs/qualification-v1 --project-root . `
+  --model-qualification runs/qualification-v1/models/model-qualification.json `
+  --dataset-manifest runs/qualification-v1/corpus/dataset-manifest.json `
+  --dataset-root runs/qualification-v1/corpus/episodes
 ```
 
 V1 的泛化主张口径为**自有 Fixture 四场景**（Train A/B/C + 锁定 heldout_diagonal）；

@@ -545,15 +545,18 @@ def build_qualified_release_manifest(
     preflight = QualificationPreflight.load(bundled_preflight)
     current_host = probe_host(project)
     if (
-        preflight.training_artifact_path is None
+        preflight.model_qualification_path is None
         or preflight.dataset_manifest_path is None
         or preflight.dataset_root is None
     ):
-        raise ContractViolation("qualified promotion requires training and dataset bindings")
+        raise ContractViolation(
+            "qualified promotion requires five-stage model and dataset bindings"
+        )
     recomputed = build_qualification_preflight(
         ledger,
         project,
         host=current_host,
+        model_qualification_path=preflight.model_qualification_path,
         training_artifact_path=preflight.training_artifact_path,
         dataset_manifest_path=preflight.dataset_manifest_path,
         dataset_root=preflight.dataset_root,
