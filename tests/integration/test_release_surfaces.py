@@ -547,7 +547,8 @@ class ReleaseSurfaceTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            ledger().verify_artifacts(root)
+            with self.assertRaisesRegex(ContractViolation, "bound to its source revision"):
+                ledger().verify_artifacts(root)
 
             payload = json.loads(report.read_text(encoding="utf-8"))
             payload["stages"] = payload["stages"][:-1]

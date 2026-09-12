@@ -144,7 +144,7 @@ uga-dataset view <episode目录>           # 数据集查看器
 ### 5.5 训练（确定性马达策略）
 
 ```powershell
-uga-train prepare --episode <episode目录> --output samples.jsonl     # 可多个 --episode
+uga-train prepare-motor-samples --episode <episode目录> --output samples.jsonl # 可多个 --episode
 uga-train motor `
   --samples samples.jsonl `
   --dataset-manifest data/datasets/v1/manifest.json `
@@ -156,6 +156,32 @@ uga-train motor `
   --base-model-license <基础模型许可证>
 uga-train verify runs/models/fixture-motor-v1/training-artifact.json
 ```
+
+生产资格不能只提交一个马达 checkpoint。外部训练/评测流程须为五个阶段分别输出
+带阈值检查的 `uga.offline_metrics` 与 `uga.closed_loop_metrics` 报告，然后在实际
+GPU 主机上生成阶段报告，最后聚合：
+
+```powershell
+uga-train stage-report --stage motor `
+  --dataset-manifest runs/qualification-v1/corpus/dataset-manifest.json `
+  --artifact runs/qualification-v1/models/motor/training-artifact.json `
+  --offline-metrics runs/qualification-v1/models/motor/offline.json `
+  --closed-loop-metrics runs/qualification-v1/models/motor/closed-loop.json `
+  --trainer-backend veomni --training-run-id <run-id> `
+  --output runs/qualification-v1/models/motor-stage.json
+
+uga-train qualification-report `
+  --dataset-manifest runs/qualification-v1/corpus/dataset-manifest.json `
+  --stage-report runs/qualification-v1/models/motor-stage.json `
+  --stage-report runs/qualification-v1/models/instruction-stage.json `
+  --stage-report runs/qualification-v1/models/recovery-stage.json `
+  --stage-report runs/qualification-v1/models/reasoning_gate-stage.json `
+  --stage-report runs/qualification-v1/models/dagger-stage.json `
+  --output runs/qualification-v1/models/model-qualification.json
+```
+
+所有被引用文件必须位于输出报告所在的资格证据目录下；阈值未通过、GPU 未检测到、
+版本或任一哈希不一致时命令都会失败关闭。
 
 ### 5.6 基准评测
 

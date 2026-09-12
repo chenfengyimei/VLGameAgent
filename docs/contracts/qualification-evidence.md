@@ -32,8 +32,11 @@ and `FocusGuard` rejects the side-effect-free F24 key-up probe with
 `integrity_incompatible`; same-integrity and simulated results fail closed.
 The model gate requires a GPU-backed `uga.model_qualification` aggregate bound
 to the Dataset Manifest. Motor, instruction, recovery, reasoning-gate, and
-DAgger stages must each bind an artifact plus offline and closed-loop metric
-reports. A deterministic motor feasibility checkpoint alone cannot promote V1.
+DAgger stages must each bind an artifact plus typed offline and closed-loop
+metric reports. Ledger verification recursively re-hashes those source reports,
+recomputes their declared finite metric thresholds, verifies each training
+artifact and its inputs, and rejects a digest-only handwritten aggregate. A
+deterministic motor feasibility checkpoint alone cannot promote V1.
 
 The required gates cover automated tests, package construction and installation,
 capture soak, supervised control hardware tests, ten-minute Recorder/Replay,

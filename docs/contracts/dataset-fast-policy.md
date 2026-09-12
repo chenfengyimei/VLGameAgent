@@ -48,6 +48,23 @@ whose license/provenance is unknown.
 Instruction, recovery, and DAgger retraining APIs reject records outside the
 train split so held-out gameplay cannot silently enter a checkpoint.
 
+Each production stage is promoted with `uga-train stage-report`. The command
+requires a verified `uga.training_artifact`, a detected NVIDIA GPU, and typed
+`uga.offline_metrics` and `uga.closed_loop_metrics` JSON reports. Both metric
+reports bind the source revision, stage, Dataset Manifest digest, and training
+artifact digest. They contain finite numeric `metrics` plus non-empty `checks`
+entries (`metric`, `operator`, and `threshold`); the qualification command
+recomputes every comparison instead of trusting the top-level `passed` value.
+Offline reports also declare a positive `samples` count. Closed-loop reports
+declare positive `episodes` and a non-empty distinct `games` list.
+
+`uga-train qualification-report` accepts exactly the motor, instruction,
+recovery, reasoning-gate, and DAgger stage reports. The resulting
+`uga.model_qualification` recursively verifies and hash-binds every stage
+report, artifact manifest, metric report, Dataset Manifest, training input, and
+model file whenever the release ledger is checked. Merely copying plausible
+SHA-256 strings into an aggregate JSON document is not qualification evidence.
+
 The optional OpenCUA bridge targets the public AgentNetBench trajectory shape
 without making OpenCUA a runtime dependency. Exported GUI steps contain the
 high-level task description, image reference, normalized coordinates, and
