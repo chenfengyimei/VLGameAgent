@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 import shutil
 from dataclasses import dataclass, replace
@@ -11,6 +12,8 @@ from typing import Any, ClassVar
 from uga.core.artifact_limits import DEFAULT_ARTIFACT_LIMITS, parse_json_text, read_text_limited
 from uga.core.errors import ContractViolation
 from uga.core.schema import VersionedMixin
+from uga.dataset.manifest import DatasetManifest
+from uga.release.build_evidence import BuildQualificationReport
 from uga.release.manifest import (
     REQUIRED_RELEASE_GATE_IDS,
     GateStatus,
@@ -20,6 +23,7 @@ from uga.release.manifest import (
     hash_bundle_tree,
 )
 from uga.release.revision import is_traceable_source_revision, validate_source_revision
+from uga.training.artifact import TrainingArtifactManifest
 
 REQUIRED_GATE_IDS = REQUIRED_RELEASE_GATE_IDS
 _SHA256 = re.compile(r"[0-9a-f]{64}")
@@ -148,8 +152,10 @@ class QualificationLedger(VersionedMixin):
                     raise ContractViolation(
                         f"qualification evidence digest mismatch: {artifact.relative_path}"
                     )
-                revision_claimed = revision_claimed or _claims_source_revision(
-                    candidate, record.source_revision
+                revision_claimed = revision_claimed or _proves_gate_for_revision(
+                    candidate,
+                    record.source_revision,
+                    record.gate_id,
                 )
             if (
                 record.status == GateStatus.PASSED
@@ -266,10 +272,19 @@ def hash_evidence(
     )
 
 
-def _claims_source_revision(path: Path, expected: str | None) -> bool:
+def _proves_gate_for_revision(path: Path, expected: str | None, gate_id: str) -> bool:
     if expected is None or path.suffix.casefold() != ".json":
         return False
     try:
+        if gate_id in {"package-build", "package-install-smoke"}:
+            report = BuildQualificationReport.load(path)
+            return report.source_revision == expected and report.passed
+        if gate_id == "dataset-5h":
+            manifest = DatasetManifest.load(path)
+            return manifest.source_revision == expected and manifest.hours() >= 5.0
+        if gate_id == "model-training":
+            artifact = TrainingArtifactManifest.load(path)
+            return artifact.source_revision == expected
         payload: Any = parse_json_text(
             read_text_limited(
                 path,
@@ -281,11 +296,92 @@ def _claims_source_revision(path: Path, expected: str | None) -> bool:
         return False
     if not isinstance(payload, dict):
         return False
-    claimed = payload.get("source_revision")
-    data = payload.get("data")
-    if claimed is None and isinstance(data, dict):
-        claimed = data.get("source_revision")
-    return type(claimed) is str and claimed == expected
+    if payload.get("source_revision") != expected:
+        return False
+    if gate_id in {"capture-soak", "control-hardware", "recorder-10min"}:
+        return _fixture_report_proves_gate(payload, gate_id)
+    if gate_id == "generalization-bench":
+        return _benchmark_report_proves_gate(payload)
+    return False
+
+
+def _fixture_report_proves_gate(payload: dict[str, Any], gate_id: str) -> bool:
+    if (
+        payload.get("schema") != "uga.fixture_qualification"
+        or payload.get("schema_version") != "1.1"
+        or payload.get("passed") is not True
+    ):
+        return False
+    capture = payload.get("capture")
+    control = payload.get("control")
+    recorder = payload.get("recorder")
+    if not isinstance(capture, dict):
+        return False
+    if gate_id == "capture-soak":
+        return _at_least(capture.get("elapsed_seconds"), 1800.0) and (
+            capture.get("timestamp_regressions") == 0
+        )
+    if gate_id == "recorder-10min":
+        if not _at_least(capture.get("elapsed_seconds"), 600.0) or not isinstance(
+            recorder, dict
+        ):
+            return False
+        quality = recorder.get("quality")
+        replay = recorder.get("replay")
+        return (
+            isinstance(quality, dict)
+            and quality.get("status") == "accepted"
+            and isinstance(replay, dict)
+        )
+    if gate_id == "control-hardware":
+        if not isinstance(control, dict):
+            return False
+        required_exercises = (
+            "focus_loss",
+            "held_key_fault",
+            "uipi_mismatch",
+            "emergency_hotkey",
+            "watchdog_timeout",
+        )
+        return all(
+            isinstance(control.get(name), dict)
+            and control[name].get("passed") is True
+            for name in required_exercises
+        )
+    return False
+
+
+def _benchmark_report_proves_gate(payload: dict[str, Any]) -> bool:
+    games = payload.get("games")
+    split_rates = payload.get("split_success_rates")
+    policy_digest = payload.get("policy_artifact_sha256")
+    if (
+        payload.get("schema") != "uga.benchmark_report"
+        or payload.get("schema_version") != "1.1"
+        or not isinstance(payload.get("runs"), int)
+        or payload["runs"] < 1
+        or not isinstance(games, list)
+        or len(set(item for item in games if isinstance(item, str))) < 4
+        or not isinstance(split_rates, list)
+        or not isinstance(policy_digest, str)
+        or _SHA256.fullmatch(policy_digest) is None
+    ):
+        return False
+    labels = {
+        item[0]
+        for item in split_rates
+        if isinstance(item, list) and len(item) == 2 and isinstance(item[0], str)
+    }
+    return {"train", "test"}.issubset(labels)
+
+
+def _at_least(value: object, minimum: float) -> bool:
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(float(value))
+        and float(value) >= minimum
+    )
 
 
 def build_qualified_release_manifest(

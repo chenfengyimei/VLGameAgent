@@ -102,7 +102,10 @@ def _strict_bool(value: object, field: str) -> bool:
 
 def write_benchmark_report(report: BenchmarkReport, path: str | Path) -> Path:
     destination = Path(path)
-    destination.write_text(json.dumps(asdict(report), indent=2) + "\n", encoding="utf-8")
+    payload = asdict(report)
+    payload["schema"] = "uga.benchmark_report"
+    payload["schema_version"] = "1.1"
+    destination.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     return destination
 
 

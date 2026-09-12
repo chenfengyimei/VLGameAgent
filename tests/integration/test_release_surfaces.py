@@ -204,6 +204,8 @@ class ReleaseSurfaceTests(unittest.TestCase):
             payload = json.loads(output.read_text(encoding="utf-8"))
             self.assertEqual(payload["runs"], 1)
             self.assertEqual(payload["source_revision"], "a" * 40)
+            self.assertEqual(payload["schema"], "uga.benchmark_report")
+            self.assertEqual(payload["schema_version"], "1.1")
             self.assertEqual(len(report.task_plan_sha256), 64)
 
             with self.assertRaisesRegex(ContractViolation, "source revision"):
@@ -417,7 +419,19 @@ class ReleaseSurfaceTests(unittest.TestCase):
             root = Path(temporary)
             report = root / "capture.json"
             report.write_text(
-                json.dumps({"source_revision": "b" * 40}), encoding="utf-8"
+                json.dumps(
+                    {
+                        "schema": "uga.fixture_qualification",
+                        "schema_version": "1.1",
+                        "source_revision": "b" * 40,
+                        "passed": True,
+                        "capture": {
+                            "elapsed_seconds": 1800.0,
+                            "timestamp_regressions": 0,
+                        },
+                    }
+                ),
+                encoding="utf-8",
             )
             ledger = QualificationLedger.initialize("a" * 40).with_record(
                 QualificationRecord(
@@ -433,7 +447,19 @@ class ReleaseSurfaceTests(unittest.TestCase):
                 ledger.verify_artifacts(root)
 
             report.write_text(
-                json.dumps({"source_revision": "a" * 40}), encoding="utf-8"
+                json.dumps(
+                    {
+                        "schema": "uga.fixture_qualification",
+                        "schema_version": "1.1",
+                        "source_revision": "a" * 40,
+                        "passed": True,
+                        "capture": {
+                            "elapsed_seconds": 1800.0,
+                            "timestamp_regressions": 0,
+                        },
+                    }
+                ),
+                encoding="utf-8",
             )
             rebound = QualificationLedger.initialize("a" * 40).with_record(
                 QualificationRecord(
@@ -445,6 +471,21 @@ class ReleaseSurfaceTests(unittest.TestCase):
                 )
             )
             rebound.verify_artifacts(root)
+
+            report.write_text(
+                json.dumps({"source_revision": "a" * 40}), encoding="utf-8"
+            )
+            generic = QualificationLedger.initialize("a" * 40).with_record(
+                QualificationRecord(
+                    "capture-soak",
+                    GateStatus.PASSED,
+                    "capture passed",
+                    hash_evidence(root, ("capture.json",)),
+                    "a" * 40,
+                )
+            )
+            with self.assertRaisesRegex(ContractViolation, "bound to its source revision"):
+                generic.verify_artifacts(root)
 
     def test_development_manifest_license_gate_tracks_license_file(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
