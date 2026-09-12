@@ -28,6 +28,7 @@ REQUIRED_GATE_IDS = REQUIRED_RELEASE_GATE_IDS
 _SHA256 = re.compile(r"[0-9a-f]{64}")
 _REVISION_BOUND_GATE_IDS = frozenset(
     {
+        "automated-tests",
         "package-build",
         "package-install-smoke",
         "capture-soak",
@@ -275,7 +276,7 @@ def _proves_gate_for_revision(path: Path, expected: str | None, gate_id: str) ->
     if expected is None or path.suffix.casefold() != ".json":
         return False
     try:
-        if gate_id in {"package-build", "package-install-smoke"}:
+        if gate_id in {"automated-tests", "package-build", "package-install-smoke"}:
             report = BuildQualificationReport.load(path)
             return report.source_revision == expected and report.passed
         if gate_id == "dataset-5h":

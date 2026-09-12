@@ -372,14 +372,14 @@ class ReleaseSurfaceTests(unittest.TestCase):
     def test_qualification_ledger_hashes_and_revalidates_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            evidence = root / "automated-tests.txt"
-            evidence.write_text("70 tests passed", encoding="utf-8")
+            evidence = root / "LICENSE"
+            evidence.write_text("MIT License", encoding="utf-8")
             ledger = QualificationLedger.initialize("a" * 40).with_record(
                 QualificationRecord(
-                    "automated-tests",
+                    "repository-license",
                     GateStatus.PASSED,
-                    "local suite",
-                    hash_evidence(root, ("automated-tests.txt",)),
+                    "owner-selected MIT license",
+                    hash_evidence(root, ("LICENSE",)),
                     "a" * 40,
                 )
             )
@@ -387,7 +387,7 @@ class ReleaseSurfaceTests(unittest.TestCase):
             loaded = QualificationLedger.load(path)
             loaded.verify_artifacts(root)
             recorded = next(
-                item for item in loaded.records if item.gate_id == "automated-tests"
+                item for item in loaded.records if item.gate_id == "repository-license"
             )
             self.assertEqual(recorded.source_revision, "a" * 40)
             self.assertFalse(loaded.releasable)

@@ -18,8 +18,8 @@ must additionally reference at least one JSON artifact whose own top-level or
 enveloped `source_revision` matches the record. Hashing an older report while
 recording it at a newer checkout is therefore insufficient.
 The JSON must also be the expected typed report for that gate: build
-qualification, Fixture qualification, Dataset Manifest, training artifact, or
-benchmark report as applicable. A generic hand-written JSON object that merely
+qualification, Fixture qualification, Dataset Manifest, model-qualification
+aggregate, or benchmark report as applicable. A generic hand-written JSON object that merely
 copies the current revision is not promotion evidence. Duration and structure
 minimums are enforced for the capture, Recorder, dataset, control-matrix, and
 four-scenario benchmark gates.
