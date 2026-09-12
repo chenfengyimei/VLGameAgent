@@ -1374,7 +1374,6 @@ class VlmPlannerPolicy:
         return FastPolicyOutput(chunk, False, None, 30.0, 30.0)
 
     def _hold_chunk(self, context: PolicyContext, duration: float) -> FastPolicyOutput:
-        ticks = max(1, int(duration * 30.0))
         hold = self._last_point
         if hold is None:
             rect = self._client_rect()
@@ -1383,18 +1382,23 @@ class VlmPlannerPolicy:
                 round(rect.top + rect.height / 2),
             )
         now = self._clock.now()
+        # A hold carries no buttons or axes.  Absolute pointer placement is
+        # stateless, so schedule it once and keep the chunk/lease lifetime for
+        # the requested wait.  Emitting it at 30 Hz created thousands of
+        # duplicate mouse moves and poor execution ratios when observations
+        # replaced the lease before the queue drained.
         chunk = ActionChunk(
             chunk_id=f"vlm-hold-{uuid.uuid4().hex[:8]}",
             observation_id=context.observation_id,
             generated_at=now,
             effective_from=now,
             expires_at=UGATime(now.value_ns + int(duration * 1_000_000_000)),
-            tick_rate_hz=30.0,
-            move_x=(0.0,) * ticks,
-            move_y=(0.0,) * ticks,
-            look_x=(0.0,) * ticks,
-            look_y=(0.0,) * ticks,
-            buttons=(0,) * ticks,
+            tick_rate_hz=1.0,
+            move_x=(0.0,),
+            move_y=(0.0,),
+            look_x=(0.0,),
+            look_y=(0.0,),
+            buttons=(0,),
             confidence=1.0,
             policy_version=self._policy_version,
             pointer_x=float(hold[0]),

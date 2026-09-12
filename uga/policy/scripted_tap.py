@@ -103,7 +103,10 @@ class ScriptedTapPolicy:
                 self._index = 0
 
     def _idle_chunk(self, context: PolicyContext, duration: float) -> FastPolicyOutput:
-        ticks = max(1, int(duration * 30.0))
+        # An absolute pointer position is stateless: one move is enough to
+        # establish the idle location.  Repeating the same move at 30 Hz only
+        # inflates the scheduler/episode and each observation replaces the
+        # previous lease before most of those duplicate actions can execute.
         hold_index = min(self._index, len(self._taps) - 1)
         hold_x = float(self._taps[hold_index][1])
         hold_y = float(self._taps[hold_index][2])
@@ -113,12 +116,12 @@ class ScriptedTapPolicy:
             generated_at=context.generated_at,
             effective_from=context.generated_at,
             expires_at=UGATime(context.generated_at.value_ns + int(duration * 1_000_000_000)),
-            tick_rate_hz=30.0,
-            move_x=(0.0,) * ticks,
-            move_y=(0.0,) * ticks,
-            look_x=(0.0,) * ticks,
-            look_y=(0.0,) * ticks,
-            buttons=(0,) * ticks,
+            tick_rate_hz=1.0,
+            move_x=(0.0,),
+            move_y=(0.0,),
+            look_x=(0.0,),
+            look_y=(0.0,),
+            buttons=(0,),
             confidence=1.0,
             policy_version=self._policy_version,
             pointer_x=hold_x,

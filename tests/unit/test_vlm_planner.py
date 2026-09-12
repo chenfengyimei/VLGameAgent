@@ -456,7 +456,8 @@ class VlmPlannerPolicyTests(unittest.TestCase):
 
         output = policy.infer(_context())
 
-        self.assertEqual(output.chunk.buttons, (0,) * output.chunk.horizon)
+        self.assertEqual(output.chunk.horizon, 1)
+        self.assertEqual(output.chunk.buttons, (0,))
         self.assertEqual(output.chunk.pointer_x, 600.0)
         self.assertEqual(output.chunk.pointer_y, 760.0)
 
@@ -468,7 +469,8 @@ class VlmPlannerPolicyTests(unittest.TestCase):
         throttled = policy.infer(_context())
 
         self.assertEqual(client.calls, 1)
-        self.assertEqual(throttled.chunk.buttons, (0,) * throttled.chunk.horizon)
+        self.assertEqual(throttled.chunk.horizon, 1)
+        self.assertEqual(throttled.chunk.buttons, (0,))
 
     def test_unparseable_replies_back_off_then_fail_closed(self) -> None:
         clock = [0.0]

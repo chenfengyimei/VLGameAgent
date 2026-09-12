@@ -74,7 +74,8 @@ class ScriptedTapPolicyTests(unittest.TestCase):
 
         output = policy.infer(_context())
 
-        self.assertEqual(output.chunk.buttons, (0,) * output.chunk.horizon)
+        self.assertEqual(output.chunk.horizon, 1)
+        self.assertEqual(output.chunk.buttons, (0,))
         self.assertEqual(output.chunk.pointer_x, 3200.0)
         self.assertEqual(output.chunk.pointer_y, 890.0)
 
@@ -218,7 +219,7 @@ class AbsolutePointerEnvironmentTests(unittest.TestCase):
 
 
 class IdleChunkSubmissionTests(unittest.TestCase):
-    def test_idle_chunk_submits_at_least_one_physical_action(self) -> None:
+    def test_idle_chunk_submits_exactly_one_physical_action(self) -> None:
         clock = ManualClock(100)
         target = identity()
         leases = ControlLeaseManager(clock)
@@ -242,7 +243,7 @@ class IdleChunkSubmissionTests(unittest.TestCase):
 
         submission = controller.submit(policy.infer(_context()).chunk, target, lease)
 
-        self.assertGreaterEqual(submission.scheduled_physical_actions, 1)
+        self.assertEqual(submission.scheduled_physical_actions, 1)
 
 
 if __name__ == "__main__":
