@@ -487,6 +487,74 @@ class ReleaseSurfaceTests(unittest.TestCase):
             with self.assertRaisesRegex(ContractViolation, "bound to its source revision"):
                 generic.verify_artifacts(root)
 
+    def test_model_gate_requires_every_gpu_training_stage(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            report = root / "model.json"
+            revision = "a" * 40
+            report.write_text(
+                json.dumps(
+                    {
+                        "schema": "uga.training_artifact",
+                        "schema_version": "1.1",
+                        "source_revision": revision,
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            def ledger() -> QualificationLedger:
+                return QualificationLedger.initialize(revision).with_record(
+                    QualificationRecord(
+                        "model-training",
+                        GateStatus.PASSED,
+                        "model stages passed",
+                        hash_evidence(root, ("model.json",)),
+                        revision,
+                    )
+                )
+
+            with self.assertRaisesRegex(ContractViolation, "bound to its source revision"):
+                ledger().verify_artifacts(root)
+
+            digest = "0" * 64
+            report.write_text(
+                json.dumps(
+                    {
+                        "schema": "uga.model_qualification",
+                        "schema_version": "1.1",
+                        "source_revision": revision,
+                        "passed": True,
+                        "gpu_devices": ["NVIDIA Fixture GPU"],
+                        "dataset_manifest_sha256": digest,
+                        "stages": [
+                            {
+                                "stage": stage,
+                                "passed": True,
+                                "artifact_sha256": digest,
+                                "offline_metrics_sha256": digest,
+                                "closed_loop_metrics_sha256": digest,
+                            }
+                            for stage in (
+                                "motor",
+                                "instruction",
+                                "recovery",
+                                "reasoning_gate",
+                                "dagger",
+                            )
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            ledger().verify_artifacts(root)
+
+            payload = json.loads(report.read_text(encoding="utf-8"))
+            payload["stages"] = payload["stages"][:-1]
+            report.write_text(json.dumps(payload), encoding="utf-8")
+            with self.assertRaisesRegex(ContractViolation, "bound to its source revision"):
+                ledger().verify_artifacts(root)
+
     def test_development_manifest_license_gate_tracks_license_file(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

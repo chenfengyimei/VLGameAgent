@@ -23,6 +23,10 @@ benchmark report as applicable. A generic hand-written JSON object that merely
 copies the current revision is not promotion evidence. Duration and structure
 minimums are enforced for the capture, Recorder, dataset, control-matrix, and
 four-scenario benchmark gates.
+The model gate requires a GPU-backed `uga.model_qualification` aggregate bound
+to the Dataset Manifest. Motor, instruction, recovery, reasoning-gate, and
+DAgger stages must each bind an artifact plus offline and closed-loop metric
+reports. A deterministic motor feasibility checkpoint alone cannot promote V1.
 
 The required gates cover automated tests, package construction and installation,
 capture soak, supervised control hardware tests, ten-minute Recorder/Replay,

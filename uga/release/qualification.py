@@ -23,7 +23,6 @@ from uga.release.manifest import (
     hash_bundle_tree,
 )
 from uga.release.revision import is_traceable_source_revision, validate_source_revision
-from uga.training.artifact import TrainingArtifactManifest
 
 REQUIRED_GATE_IDS = REQUIRED_RELEASE_GATE_IDS
 _SHA256 = re.compile(r"[0-9a-f]{64}")
@@ -282,9 +281,6 @@ def _proves_gate_for_revision(path: Path, expected: str | None, gate_id: str) ->
         if gate_id == "dataset-5h":
             manifest = DatasetManifest.load(path)
             return manifest.source_revision == expected and manifest.hours() >= 5.0
-        if gate_id == "model-training":
-            artifact = TrainingArtifactManifest.load(path)
-            return artifact.source_revision == expected
         payload: Any = parse_json_text(
             read_text_limited(
                 path,
@@ -292,7 +288,15 @@ def _proves_gate_for_revision(path: Path, expected: str | None, gate_id: str) ->
                 "revision-bound qualification evidence",
             )
         )
-    except (OSError, UnicodeError, json.JSONDecodeError, ContractViolation):
+    except (
+        OSError,
+        UnicodeError,
+        json.JSONDecodeError,
+        ContractViolation,
+        KeyError,
+        TypeError,
+        ValueError,
+    ):
         return False
     if not isinstance(payload, dict):
         return False
@@ -302,6 +306,8 @@ def _proves_gate_for_revision(path: Path, expected: str | None, gate_id: str) ->
         return _fixture_report_proves_gate(payload, gate_id)
     if gate_id == "generalization-bench":
         return _benchmark_report_proves_gate(payload)
+    if gate_id == "model-training":
+        return _model_report_proves_gate(payload)
     return False
 
 
@@ -373,6 +379,42 @@ def _benchmark_report_proves_gate(payload: dict[str, Any]) -> bool:
         if isinstance(item, list) and len(item) == 2 and isinstance(item[0], str)
     }
     return {"train", "test"}.issubset(labels)
+
+
+def _model_report_proves_gate(payload: dict[str, Any]) -> bool:
+    gpu_devices = payload.get("gpu_devices")
+    dataset_digest = payload.get("dataset_manifest_sha256")
+    stages = payload.get("stages")
+    if (
+        payload.get("schema") != "uga.model_qualification"
+        or payload.get("schema_version") != "1.1"
+        or payload.get("passed") is not True
+        or not isinstance(gpu_devices, list)
+        or not gpu_devices
+        or any(not isinstance(device, str) or not device.strip() for device in gpu_devices)
+        or not isinstance(dataset_digest, str)
+        or _SHA256.fullmatch(dataset_digest) is None
+        or not isinstance(stages, list)
+    ):
+        return False
+    required_stages = {"motor", "instruction", "recovery", "reasoning_gate", "dagger"}
+    stage_names: set[str] = set()
+    for stage in stages:
+        if not isinstance(stage, dict) or stage.get("passed") is not True:
+            return False
+        stage_name = stage.get("stage")
+        if not isinstance(stage_name, str):
+            return False
+        stage_names.add(stage_name)
+        for field in (
+            "artifact_sha256",
+            "offline_metrics_sha256",
+            "closed_loop_metrics_sha256",
+        ):
+            digest = stage.get(field)
+            if not isinstance(digest, str) or _SHA256.fullmatch(digest) is None:
+                return False
+    return stage_names == required_stages and len(stages) == len(required_stages)
 
 
 def _at_least(value: object, minimum: float) -> bool:
