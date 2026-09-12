@@ -3,7 +3,9 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import sys
 
+from uga.core.errors import ContractViolation
 from uga.core.runtime import AgentRuntime
 
 
@@ -27,6 +29,14 @@ def _run(args: argparse.Namespace) -> int:
     from apps.agent import run as run_module
 
     return int(run_module.main(args))
+
+
+def _run_safely(args: argparse.Namespace) -> int:
+    try:
+        return _run(args)
+    except ContractViolation as error:
+        print(f"uga-agent: {error}", file=sys.stderr)
+        return 2
 
 
 def _client_fraction(value: str) -> float:
@@ -130,7 +140,7 @@ def cli() -> None:
         _smoke()
         return
     if args.command == "run":
-        raise SystemExit(_run(args))
+        raise SystemExit(_run_safely(args))
     parser.error(f"unknown command: {args.command}")
 
 

@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
+import io
 import re
 import unittest
+from unittest.mock import patch
 
+from apps.agent.__main__ import _run_safely
 from apps.agent.run import (
     _best_effort_cleanup,
     _client_fraction,
@@ -11,7 +15,7 @@ from apps.agent.run import (
     _find_target,
 )
 from tests.helpers import identity
-from uga.core.errors import BackendUnavailableError
+from uga.core.errors import BackendUnavailableError, ContractViolation
 from uga.environment.profile import (
     EnvironmentCapabilityLevel,
     GameCapabilities,
@@ -77,6 +81,22 @@ class FakeWindows:
 
 
 class LiveAgentCompositionTests(unittest.TestCase):
+    def test_cli_renders_contract_rejection_without_traceback(self) -> None:
+        error = ContractViolation("environment safety policy rejected runtime")
+        stderr = io.StringIO()
+        with (
+            patch("apps.agent.__main__._run", side_effect=error),
+            contextlib.redirect_stderr(stderr),
+        ):
+            result = _run_safely(argparse.Namespace())
+
+        self.assertEqual(result, 2)
+        self.assertEqual(
+            stderr.getvalue(),
+            "uga-agent: environment safety policy rejected runtime\n",
+        )
+        self.assertNotIn("Traceback", stderr.getvalue())
+
     def test_target_discovery_requires_a_profile_executable_match(self) -> None:
         spoof = _snapshot()
         windows = FakeWindows(unfiltered=(spoof,))
