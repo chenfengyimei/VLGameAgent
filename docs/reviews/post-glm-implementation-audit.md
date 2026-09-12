@@ -3,6 +3,7 @@
 Date: 2026-09-11  
 Audit baseline: `60a51dc`  
 Remediation commits: `2c02d58`, `df1561c`, `bb9582e`, `d04d8e4`, `0a962b7`
+Continuation hardening: `9cee1f4` through `4541c92`
 
 ## Verdict
 
@@ -12,11 +13,12 @@ the handoff baseline. It has not completed UGA-075 release qualification.
 
 The distinction is objective:
 
-- The automated source gates pass: Ruff, strict mypy over `uga` and `apps`, 301
+- The automated source gates pass: Ruff, strict mypy over `uga` and `apps`, 309
   pytest tests, 79 subtests, TypeScript typecheck/build, Cargo fmt, Clippy, tests,
   and release compilation.
-- One physical-input test remains opt-in and was skipped. This is expected for an
-  automated run, but it cannot count as the supervised control qualification.
+- The opt-in owned-Fixture physical-input test passes at the current candidate
+  revision. It proves the basic SendInput/PID ownership path, but does not replace
+  the full supervised control fault matrix.
 - Historical evidence includes a 30-minute owned Fixture WGC run, a 10-minute
   owned Fixture Recorder/Replay run, API/capture samples, and a four-scenario
   Fixture benchmark report with 100% recorded success.
@@ -25,13 +27,21 @@ The distinction is objective:
   source-bound promotion ledger.
 - The newest development corpus report contains about 0.006 hours, far below the
   required five hours, and is bound to an older source revision.
-- No final training artifact is present under the qualification root.
+- No qualification-volume production training artifact is present; the current
+  artifact is explicitly a development smoke result.
 - The most recently rebuilt development bundle is internally hash-consistent and
   records source revision `321bb98...` with `releasable: false`. Later source
   hardening means it is again a diagnostic package rather than the final bundle.
 
 Therefore the current state is: implementation substantially complete,
 development verification passing, release qualification incomplete.
+
+A current-revision development smoke additionally completed the full owned
+Fixture corpus → Dataset Manifest → provenance-checked samples → deterministic
+motor checkpoint → verified training artifact → 20-run four-scenario benchmark
+path. It used only about 0.00694 train hours and three samples, so it proves
+composition but deliberately does not satisfy the dataset or production-model
+gate.
 
 ## Confirmed defects corrected during audit
 
@@ -96,9 +106,6 @@ development verification passing, release qualification incomplete.
 
 ### P1: architectural hardening
 
-- Add fault-injection coverage for failures during live-run setup (after primary
-  capture starts but before the main task starts), including video encoder and
-  emergency-hotkey startup failures.
 - Increase native backend unit/contract coverage. The Rust workspace builds and
   its integration evidence is useful, but most platform behavior is currently
   proven by supervised reports rather than granular native tests.
@@ -109,6 +116,10 @@ an explicit Game Profile strategy. Generated Fixture qualification, corpus, and
 benchmark reports carry clean source revisions; training is bound to the clean
 HEAD and Dataset Manifest; and every passed ledger record must carry the same
 full Git revision as its ledger.
+Partial capture starts and Recorder setup now roll back their owned resources,
+including private Episode staging trees. The Fixture launcher uses the actual
+GUI-owner PID even from a Windows virtual environment, and Python/Rust Frame
+contracts reject undersized packed strides and CPU buffers before memory access.
 
 ## Release decision rule
 
