@@ -68,7 +68,10 @@ class QualificationPreflightTests(unittest.TestCase):
                 directory.mkdir(parents=True)
             (project / "LICENSE").write_text("fixture", encoding="utf-8")
             (evidence / "LICENSE").write_text("fixture", encoding="utf-8")
-            artifacts = hash_evidence(evidence, ("LICENSE",))
+            (evidence / "bound.json").write_text(
+                json.dumps({"source_revision": revision}), encoding="utf-8"
+            )
+            artifacts = hash_evidence(evidence, ("LICENSE", "bound.json"))
             ledger = QualificationLedger(
                 revision,
                 tuple(

@@ -13,6 +13,10 @@ requires a `LICENSE*` artifact. Placeholder revisions such as
 Every passed record also carries the full 40-character Git revision observed
 when it was recorded. It must match the ledger revision; legacy or hand-written
 records without that binding are rejected rather than silently promoted.
+Package, capture, control, Recorder, dataset, model, and generalization gates
+must additionally reference at least one JSON artifact whose own top-level or
+enveloped `source_revision` matches the record. Hashing an older report while
+recording it at a newer checkout is therefore insufficient.
 
 The required gates cover automated tests, package construction and installation,
 capture soak, supervised control hardware tests, ten-minute Recorder/Replay,

@@ -23,6 +23,18 @@ from uga.release.revision import is_traceable_source_revision, validate_source_r
 
 REQUIRED_GATE_IDS = REQUIRED_RELEASE_GATE_IDS
 _SHA256 = re.compile(r"[0-9a-f]{64}")
+_REVISION_BOUND_GATE_IDS = frozenset(
+    {
+        "package-build",
+        "package-install-smoke",
+        "capture-soak",
+        "control-hardware",
+        "recorder-10min",
+        "dataset-5h",
+        "model-training",
+        "generalization-bench",
+    }
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -121,6 +133,7 @@ class QualificationLedger(VersionedMixin):
     def verify_artifacts(self, root: str | Path) -> None:
         base = Path(root).resolve()
         for record in self.records:
+            revision_claimed = False
             for artifact in record.artifacts:
                 candidate = (base / artifact.relative_path).resolve()
                 if base not in candidate.parents or not candidate.is_file():
@@ -135,6 +148,18 @@ class QualificationLedger(VersionedMixin):
                     raise ContractViolation(
                         f"qualification evidence digest mismatch: {artifact.relative_path}"
                     )
+                revision_claimed = revision_claimed or _claims_source_revision(
+                    candidate, record.source_revision
+                )
+            if (
+                record.status == GateStatus.PASSED
+                and record.gate_id in _REVISION_BOUND_GATE_IDS
+                and not revision_claimed
+            ):
+                raise ContractViolation(
+                    f"passed gate {record.gate_id} requires JSON evidence "
+                    "bound to its source revision"
+                )
 
     def release_gates(self, evidence_root: str | Path) -> tuple[ReleaseGate, ...]:
         self.verify_artifacts(evidence_root)
@@ -239,6 +264,28 @@ def hash_evidence(
         EvidenceArtifact(relative, digest)
         for relative, digest in hash_artifacts(root, relative_paths)
     )
+
+
+def _claims_source_revision(path: Path, expected: str | None) -> bool:
+    if expected is None or path.suffix.casefold() != ".json":
+        return False
+    try:
+        payload: Any = parse_json_text(
+            read_text_limited(
+                path,
+                DEFAULT_ARTIFACT_LIMITS.max_document_bytes,
+                "revision-bound qualification evidence",
+            )
+        )
+    except (OSError, UnicodeError, json.JSONDecodeError, ContractViolation):
+        return False
+    if not isinstance(payload, dict):
+        return False
+    claimed = payload.get("source_revision")
+    data = payload.get("data")
+    if claimed is None and isinstance(data, dict):
+        claimed = data.get("source_revision")
+    return type(claimed) is str and claimed == expected
 
 
 def build_qualified_release_manifest(

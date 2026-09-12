@@ -412,6 +412,40 @@ class ReleaseSurfaceTests(unittest.TestCase):
         with self.assertRaisesRegex(ContractViolation, "does not match ledger"):
             QualificationLedger.initialize("b" * 40).with_record(record)
 
+    def test_revision_bound_gate_rejects_stale_json_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            report = root / "capture.json"
+            report.write_text(
+                json.dumps({"source_revision": "b" * 40}), encoding="utf-8"
+            )
+            ledger = QualificationLedger.initialize("a" * 40).with_record(
+                QualificationRecord(
+                    "capture-soak",
+                    GateStatus.PASSED,
+                    "capture passed",
+                    hash_evidence(root, ("capture.json",)),
+                    "a" * 40,
+                )
+            )
+
+            with self.assertRaisesRegex(ContractViolation, "bound to its source revision"):
+                ledger.verify_artifacts(root)
+
+            report.write_text(
+                json.dumps({"source_revision": "a" * 40}), encoding="utf-8"
+            )
+            rebound = QualificationLedger.initialize("a" * 40).with_record(
+                QualificationRecord(
+                    "capture-soak",
+                    GateStatus.PASSED,
+                    "capture passed",
+                    hash_evidence(root, ("capture.json",)),
+                    "a" * 40,
+                )
+            )
+            rebound.verify_artifacts(root)
+
     def test_development_manifest_license_gate_tracks_license_file(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
