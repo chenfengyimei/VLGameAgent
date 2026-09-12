@@ -42,6 +42,9 @@ class FixtureWorldTests(unittest.TestCase):
         self.assertTrue(profile.matches_window_title("MuMu安卓设备-1"))
         self.assertFalse(profile.matches_window_title("MuMu模拟器"))
         self.assertEqual(profile.planner_prompt_strategy, "android_quest")
+        self.assertTrue(profile.perception.ocr_enabled)
+        self.assertIn("back", profile.perception.recovery_safe_actions)
+        self.assertIn(("加载中", "loading"), profile.perception.mode_hints)
 
     def test_each_scenario_has_distinct_identity_and_reachable_goal(self) -> None:
         game_ids: set[str] = set()

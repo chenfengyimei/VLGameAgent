@@ -12,6 +12,8 @@ from uga.core.errors import BackendUnavailableError, ContractViolation
 
 class ModelRole(StrEnum):
     PLANNER = "planner"
+    PERCEPTION_PRIMARY = "perception_primary"
+    ACTION_VERIFIER = "action_verifier"
     FAST_POLICY = "fast_policy"
     GUI = "gui"
     MODE_ROUTER = "mode_router"

@@ -1,4 +1,12 @@
 models:
+  perception_primary:
+    provider: lm_studio
+    model: qwen3-vl-4b-instruct
+    enabled: true
+  action_verifier:
+    provider: openai_compatible
+    model: configure-an-optional-larger-vision-model
+    enabled: false
   planner:
     provider: qwen
     model: Qwen3-VL-8B-Thinking

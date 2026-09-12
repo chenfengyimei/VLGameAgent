@@ -189,7 +189,13 @@ class OpenAICompatibleVisionClient:
         self._disable_thinking = disable_thinking
         self._extra_body = dict(extra_body) if extra_body else None
 
-    def decide(self, *, images: list[bytes], instruction: str) -> str:
+    def decide(
+        self,
+        *,
+        images: list[bytes],
+        instruction: str,
+        response_format: dict[str, Any] | None = None,
+    ) -> str:
         """Send one or more frames (oldest first) plus the instruction."""
         if not images:
             raise ContractViolation("vision client requires at least one image")
@@ -224,6 +230,8 @@ class OpenAICompatibleVisionClient:
             # Provider-specific request fields, e.g. DashScope Qwen3
             # {"enable_thinking": false} or sampling overrides.
             payload.update(self._extra_body)
+        if response_format is not None:
+            payload["response_format"] = response_format
         headers = {"Content-Type": "application/json"}
         if self._api_key:
             headers["Authorization"] = f"Bearer {self._api_key}"
@@ -252,8 +260,14 @@ class OpenAICompatibleVisionClient:
                 detail = exc.read(MAX_VISION_ERROR_DETAIL_BYTES).decode(
                     "utf-8", "replace"
                 )[:200]
+            message = f"vision endpoint returned HTTP {exc.code}: {detail}"
+            if exc.code in {400, 422} and any(
+                token in detail.casefold()
+                for token in ("response_format", "json_schema", "structured output")
+            ):
+                message = f"structured output unsupported: {detail}"
             raise BackendUnavailableError(
-                f"vision endpoint returned HTTP {exc.code}: {detail}"
+                message
             ) from exc
         except (urllib.error.URLError, TimeoutError, OSError, ValueError) as exc:
             raise BackendUnavailableError(f"vision endpoint unreachable: {exc}") from exc

@@ -16,6 +16,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+vision = [
+  "onnxruntime==1.30.0",
+  "rapidocr==3.9.2",
+]
 dev = [
   "build==1.6.0",
   "editables==0.6",

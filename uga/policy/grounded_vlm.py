@@ -1,0 +1,380 @@
+from __future__ import annotations
+
+import json
+import uuid
+from collections.abc import Sequence
+from typing import Any, Protocol
+
+from uga.capture.frame import BufferHandle, BufferKind, Frame
+from uga.core.errors import BackendUnavailableError, ContractViolation
+from uga.gui.schema import GuiActionKind
+from uga.perception.builder import normalize_visible_text
+from uga.perception.schema import (
+    ActionRisk,
+    DecisionKind,
+    GoalStatus,
+    GroundedAction,
+    NormalizedBox,
+    PerceptionSnapshot,
+    PlannerOutcome,
+    WaitReason,
+)
+from uga.policy.vlm_planner import PlannerReplyError, encode_frame_png
+
+GROUNDING_RESPONSE_FORMAT: dict[str, Any] = {
+    "type": "json_schema",
+    "json_schema": {
+        "name": "uga_grounded_decision",
+        "strict": True,
+        "schema": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": [
+                "kind",
+                "scene_summary",
+                "visible_text",
+                "goal_status",
+                "confidence",
+                "action",
+                "wait_reason",
+                "explanation",
+            ],
+            "properties": {
+                "kind": {"enum": [item.value for item in DecisionKind]},
+                "scene_summary": {"type": "string"},
+                "visible_text": {"type": "array", "items": {"type": "string"}},
+                "goal_status": {"enum": [item.value for item in GoalStatus]},
+                "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+                "wait_reason": {
+                    "anyOf": [
+                        {"enum": [item.value for item in WaitReason]},
+                        {"type": "null"},
+                    ]
+                },
+                "explanation": {"type": "string"},
+                "action": {
+                    "anyOf": [
+                        {"type": "null"},
+                        {
+                            "type": "object",
+                            "additionalProperties": False,
+                            "required": [
+                                "kind",
+                                "target_label",
+                                "target_bbox",
+                                "expected_effect",
+                                "confidence",
+                                "risk",
+                                "key",
+                            ],
+                            "properties": {
+                                "kind": {
+                                    "enum": [
+                                        GuiActionKind.CLICK.value,
+                                        GuiActionKind.KEY.value,
+                                        GuiActionKind.HOTKEY.value,
+                                    ]
+                                },
+                                "target_label": {"type": "string"},
+                                "target_bbox": {
+                                    "anyOf": [
+                                        {"type": "null"},
+                                        {
+                                            "type": "array",
+                                            "items": {"type": "number"},
+                                            "minItems": 4,
+                                            "maxItems": 4,
+                                        },
+                                    ]
+                                },
+                                "expected_effect": {"type": "string"},
+                                "confidence": {
+                                    "type": "number",
+                                    "minimum": 0,
+                                    "maximum": 1,
+                                },
+                                "risk": {"enum": [item.value for item in ActionRisk]},
+                                "key": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+                            },
+                        },
+                    ]
+                },
+            },
+        },
+    },
+}
+
+
+class StructuredVisionClient(Protocol):
+    def decide(
+        self,
+        *,
+        images: list[bytes],
+        instruction: str,
+        response_format: dict[str, Any] | None = None,
+    ) -> str: ...
+
+
+def crop_frame(frame: Frame, box: NormalizedBox, *, padding: float = 0.02) -> Frame:
+    if not 0.0 <= padding <= 0.25:
+        raise ContractViolation("frame crop padding must be in [0, 0.25]")
+    if frame.buffer_handle.kind != BufferKind.CPU_BYTES:
+        raise ContractViolation("frame crop requires a CPU-addressable frame")
+    left = max(0, int((box.left - padding) * frame.width))
+    top = max(0, int((box.top - padding) * frame.height))
+    right = min(frame.width, max(left + 1, int((box.right + padding) * frame.width)))
+    bottom = min(frame.height, max(top + 1, int((box.bottom + padding) * frame.height)))
+    bytes_per_pixel = 4
+    row_bytes = (right - left) * bytes_per_pixel
+    source = frame.buffer_handle.readonly_view()
+    payload = bytearray(row_bytes * (bottom - top))
+    for row in range(bottom - top):
+        start = (top + row) * frame.stride_bytes + left * bytes_per_pixel
+        payload[row * row_bytes : (row + 1) * row_bytes] = source[start : start + row_bytes]
+    return Frame(
+        frame_id=f"{frame.frame_id}:crop:{left}:{top}:{right}:{bottom}",
+        capture_timestamp=frame.capture_timestamp,
+        present_estimate=frame.present_estimate,
+        window_identity=frame.window_identity,
+        width=right - left,
+        height=bottom - top,
+        stride_bytes=row_bytes,
+        pixel_format=frame.pixel_format,
+        physical_rect=frame.physical_rect,
+        client_rect=frame.client_rect,
+        source_backend=f"{frame.source_backend}:crop",
+        buffer_handle=BufferHandle(
+            f"{frame.buffer_handle.handle_id}:crop:{left}:{top}:{right}:{bottom}",
+            BufferKind.CPU_BYTES,
+            len(payload),
+            bytes(payload),
+        ),
+    )
+
+
+def select_target_regions(
+    snapshot: PerceptionSnapshot, goal: str, *, limit: int = 2
+) -> tuple[NormalizedBox, ...]:
+    if limit < 0:
+        raise ContractViolation("target crop limit cannot be negative")
+    normalized_goal = normalize_visible_text(goal)
+    scored: list[tuple[int, float, NormalizedBox]] = []
+    for region in snapshot.visible_text:
+        normalized = normalize_visible_text(region.text)
+        overlap = int(bool(normalized and normalized in normalized_goal)) + int(
+            bool(normalized_goal and normalized_goal in normalized)
+        )
+        token_overlap = sum(token in normalized_goal for token in region.text.casefold().split())
+        scored.append((overlap * 10 + token_overlap, region.confidence, region.box))
+    scored.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    return tuple(item[2] for item in scored[:limit] if item[0] > 0)
+
+
+class GroundedVlmPlanner:
+    """Strict one-decision vision planner; it never invents malformed actions."""
+
+    def __init__(
+        self,
+        client: StructuredVisionClient,
+        *,
+        structured_output: bool = True,
+        max_image_width: int = 1280,
+    ) -> None:
+        if max_image_width < 320:
+            raise ContractViolation("grounded planner image width must be at least 320")
+        self._client = client
+        self._structured_output = structured_output
+        self._max_image_width = max_image_width
+        self._schema_supported: bool | None = None
+        self.last_raw_reply: str | None = None
+        self.last_schema_valid = False
+
+    def decide(
+        self,
+        *,
+        snapshot: PerceptionSnapshot,
+        frames: Sequence[Frame],
+        goal: str,
+        high_resolution_retry: bool = False,
+    ) -> PlannerOutcome:
+        if not frames or frames[-1].frame_id != snapshot.frame_id:
+            raise ContractViolation("grounded planner frames must end at the snapshot frame")
+        images = self._images(frames[-1], snapshot, goal, high_resolution_retry)
+        instruction = self._instruction(snapshot, goal, repair_reply=None)
+        response_format = (
+            GROUNDING_RESPONSE_FORMAT
+            if self._structured_output and self._schema_supported is not False
+            else None
+        )
+        try:
+            reply = self._client.decide(
+                images=images,
+                instruction=instruction,
+                response_format=response_format,
+            )
+            if response_format is not None:
+                self._schema_supported = True
+        except BackendUnavailableError as exc:
+            if (
+                response_format is None
+                or "structured output unsupported" not in str(exc).casefold()
+            ):
+                raise
+            self._schema_supported = False
+            reply = self._client.decide(images=images, instruction=instruction)
+        self.last_raw_reply = reply
+        try:
+            outcome = self._parse(reply, snapshot)
+        except PlannerReplyError:
+            repair = self._client.decide(
+                images=images,
+                instruction=self._instruction(snapshot, goal, repair_reply=reply),
+                response_format=(
+                    GROUNDING_RESPONSE_FORMAT if self._schema_supported is True else None
+                ),
+            )
+            self.last_raw_reply = repair
+            try:
+                outcome = self._parse(repair, snapshot)
+            except PlannerReplyError:
+                self.last_schema_valid = False
+                return self._abstain(snapshot, "model reply remained invalid after one repair")
+        self.last_schema_valid = True
+        return outcome
+
+    def _images(
+        self,
+        frame: Frame,
+        snapshot: PerceptionSnapshot,
+        goal: str,
+        high_resolution_retry: bool,
+    ) -> list[bytes]:
+        overview_width = frame.width if high_resolution_retry else self._max_image_width
+        images = [encode_frame_png(frame, max_width=overview_width)]
+        for box in select_target_regions(snapshot, goal, limit=2):
+            crop = crop_frame(frame, box, padding=0.04 if high_resolution_retry else 0.02)
+            images.append(encode_frame_png(crop, max_width=max(crop.width, 32)))
+        return images[:3]
+
+    @staticmethod
+    def _instruction(
+        snapshot: PerceptionSnapshot, goal: str, repair_reply: str | None
+    ) -> str:
+        ocr = "\n".join(
+            f"- {region.text!r} bbox="
+            f"[{region.box.left:.4f},{region.box.top:.4f},"
+            f"{region.box.right:.4f},{region.box.bottom:.4f}]"
+            f" confidence={region.confidence:.3f}"
+            for region in snapshot.visible_text
+        ) or "- OCR 未识别到可靠文本"
+        repair = (
+            "\n上一次回复未通过 Schema。只输出一个修正后的 JSON 对象，不得解释。"
+            f"\n错误回复：{repair_reply[:1000]}"
+            if repair_reply is not None
+            else ""
+        )
+        return (
+            "你是像素 GUI 闭环规划器。目标：" + goal + "\n"
+            "只能返回一个符合 JSON Schema 的决策。每次最多一个动作。"
+            "不要返回自由点击坐标；点击必须给出所见控件的 normalized target_bbox。"
+            "加载时输出 wait，目标已完成时输出 done，不确定时输出 abstain。"
+            "action 仅允许 click/key/hotkey；拖拽和多步序列由其他控制路径处理。"
+            "expected_effect 必须描述下一帧可验证的界面或文本变化。"
+            "登录、删除、支付、发送、安装标记为 critical。\n"
+            "当前 OCR：\n" + ocr + repair
+        )
+
+    @staticmethod
+    def _parse(reply: str, snapshot: PerceptionSnapshot) -> PlannerOutcome:
+        text = reply.strip()
+        if text.startswith("```"):
+            lines = text.splitlines()
+            if len(lines) >= 3 and lines[-1].strip() == "```":
+                text = "\n".join(lines[1:-1])
+        try:
+            payload = json.loads(text)
+        except json.JSONDecodeError as exc:
+            raise PlannerReplyError("grounded reply is not one JSON object") from exc
+        if not isinstance(payload, dict):
+            raise PlannerReplyError("grounded reply JSON must be an object")
+        try:
+            kind = DecisionKind(str(payload["kind"]))
+            goal_status = GoalStatus(str(payload["goal_status"]))
+            confidence = float(payload["confidence"])
+            scene_summary = str(payload["scene_summary"])
+            visible_raw = payload["visible_text"]
+            explanation = str(payload["explanation"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise PlannerReplyError("grounded reply lacks required decision fields") from exc
+        if not isinstance(visible_raw, list) or any(
+            not isinstance(item, str) for item in visible_raw
+        ):
+            raise PlannerReplyError("grounded visible_text must be an array of strings")
+        wait_raw = payload.get("wait_reason")
+        try:
+            wait_reason = None if wait_raw is None else WaitReason(str(wait_raw))
+            action = GroundedVlmPlanner._parse_action(payload.get("action"))
+            return PlannerOutcome(
+                uuid.uuid4().hex,
+                snapshot.frame_id,
+                snapshot.frame_sequence,
+                snapshot.window_identity.window_generation,
+                snapshot.geometry_generation,
+                snapshot.task_generation,
+                kind,
+                scene_summary,
+                tuple(visible_raw),
+                goal_status,
+                confidence,
+                action,
+                wait_reason,
+                explanation,
+            )
+        except (ContractViolation, ValueError) as exc:
+            raise PlannerReplyError(f"invalid grounded decision: {exc}") from exc
+
+    @staticmethod
+    def _parse_action(value: object) -> GroundedAction | None:
+        if value is None:
+            return None
+        if not isinstance(value, dict):
+            raise PlannerReplyError("grounded action must be an object or null")
+        box_raw = value.get("target_bbox")
+        box: NormalizedBox | None = None
+        if box_raw is not None:
+            if not isinstance(box_raw, list) or len(box_raw) != 4:
+                raise PlannerReplyError("target_bbox must contain four normalized numbers")
+            try:
+                box = NormalizedBox(*(float(item) for item in box_raw))
+            except (TypeError, ValueError, ContractViolation) as exc:
+                raise PlannerReplyError("target_bbox is invalid") from exc
+        try:
+            key_raw = value.get("key")
+            return GroundedAction(
+                GuiActionKind(str(value["kind"])),
+                str(value["target_label"]),
+                box,
+                str(value["expected_effect"]),
+                float(value["confidence"]),
+                ActionRisk(str(value["risk"])),
+                None if key_raw is None else str(key_raw),
+            )
+        except (KeyError, TypeError, ValueError, ContractViolation) as exc:
+            raise PlannerReplyError(f"invalid grounded action: {exc}") from exc
+
+    @staticmethod
+    def _abstain(snapshot: PerceptionSnapshot, explanation: str) -> PlannerOutcome:
+        return PlannerOutcome(
+            uuid.uuid4().hex,
+            snapshot.frame_id,
+            snapshot.frame_sequence,
+            snapshot.window_identity.window_generation,
+            snapshot.geometry_generation,
+            snapshot.task_generation,
+            DecisionKind.ABSTAIN,
+            "unable to parse a reliable scene decision",
+            snapshot.text,
+            GoalStatus.UNKNOWN,
+            0.0,
+            explanation=explanation,
+        )

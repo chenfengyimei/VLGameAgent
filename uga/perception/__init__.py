@@ -12,6 +12,7 @@ from uga.perception.schema import (
     UiElement,
     WaitReason,
 )
+from uga.perception.text import NullTextProvider, RapidOcrProvider, TextObservationProvider
 
 __all__ = [
     "ActionRisk",
@@ -19,9 +20,12 @@ __all__ = [
     "GoalStatus",
     "GroundedAction",
     "NormalizedBox",
+    "NullTextProvider",
     "PerceptionSnapshot",
     "PlannerOutcome",
+    "RapidOcrProvider",
     "TextRegion",
+    "TextObservationProvider",
     "UiElement",
     "WaitReason",
 ]

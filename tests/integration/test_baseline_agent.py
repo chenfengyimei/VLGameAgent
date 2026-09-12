@@ -234,6 +234,12 @@ capability_level: 3
         model_config = Path(__file__).resolve().parents[2] / "configs" / "models.yaml"
         models = load_model_registry(model_config)
         self.assertEqual(models.get(ModelRole.MODE_ROUTER).provider, "rules")
+        self.assertEqual(
+            models.get(ModelRole.PERCEPTION_PRIMARY).model, "qwen3-vl-4b-instruct"
+        )
+        self.assertFalse(
+            models.get(ModelRole.ACTION_VERIFIER, require_enabled=False).enabled
+        )
 
     def test_task_graph_skill_planner_memory_and_recovery(self) -> None:
         root = TaskNode(

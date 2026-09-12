@@ -10,6 +10,18 @@ camera:
   type: absolute_pointer
 planner:
   prompt_strategy: android_quest
+perception:
+  ocr_enabled: true
+  ocr_languages: [ch, en]
+  mode_hints:
+    loading: [加载中, 正在加载, loading]
+    gui: [设置, 确定, 取消, 返回]
+    dead: [死亡, 重生, respawn]
+  recovery_safe_actions: [back]
+  critical_action_terms: [登录, 删除, 支付, 发送, 安装, login, delete, pay, send, install]
+  no_click_regions: []
+  page_stable_ms: 500
+  action_effect_timeout_ms: 3000
 controls:
   interact: {kind: mouse_button, code: "left", confirmed: true}
   menu: {kind: virtual_key, code: 27, confirmed: true}

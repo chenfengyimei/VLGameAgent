@@ -21,6 +21,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 WORKFLOWS_DIR = REPO_ROOT / ".github" / "workflows"
 CI_PATH = WORKFLOWS_DIR / "ci.yml"
 LOCK_PATH = REPO_ROOT / "requirements-lock.txt"
+VISION_LOCK_PATH = REPO_ROOT / "requirements-vision-lock.txt"
 PYPROJECT_PATH = REPO_ROOT / "pyproject.toml"
 SETUP_SCRIPT_PATH = REPO_ROOT / "scripts" / "setup_windows.ps1"
 BUILD_SCRIPT_PATH = REPO_ROOT / "scripts" / "build_release.ps1"
@@ -237,6 +238,23 @@ class DependencyLockTests(unittest.TestCase):
                 name, _, version = requirement.partition("==")
                 pattern = rf"(?mi)^{re.escape(name)}=={re.escape(version)}\s"
                 self.assertIsNotNone(re.search(pattern, lock_text))
+
+    def test_vision_extras_have_a_separate_exact_hash_lock(self) -> None:
+        project = tomllib.loads(PYPROJECT_PATH.read_text(encoding="utf-8"))
+        requirements = project["project"]["optional-dependencies"]["vision"]
+        lock_text = VISION_LOCK_PATH.read_text(encoding="utf-8")
+        for requirement in requirements:
+            with self.subTest(requirement=requirement):
+                self.assertIsNotNone(EXACT_REQUIREMENT.fullmatch(requirement))
+                name, _, version = requirement.partition("==")
+                normalized = re.escape(name).replace("\\-", "[-_]")
+                pattern = rf"(?mi)^{normalized}=={re.escape(version)}\s"
+                self.assertIsNotNone(re.search(pattern, lock_text))
+        requirement_lines = [
+            line for line in lock_text.splitlines() if LOCK_REQUIREMENT_LINE.match(line)
+        ]
+        hash_count = lock_text.count("--hash=sha256:")
+        self.assertGreaterEqual(hash_count, len(requirement_lines))
 
     def test_build_backend_is_pinned_and_covered_by_the_lock(self) -> None:
         project = tomllib.loads(PYPROJECT_PATH.read_text(encoding="utf-8"))

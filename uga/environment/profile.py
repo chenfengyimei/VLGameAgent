@@ -61,6 +61,51 @@ class GameCapabilities:
 
 
 @dataclass(frozen=True, slots=True)
+class PerceptionProfile:
+    ocr_enabled: bool = False
+    ocr_languages: tuple[str, ...] = ("ch", "en")
+    mode_hints: tuple[tuple[str, str], ...] = ()
+    recovery_safe_actions: frozenset[str] = frozenset()
+    critical_action_terms: tuple[str, ...] = (
+        "登录",
+        "删除",
+        "支付",
+        "发送",
+        "安装",
+        "login",
+        "delete",
+        "pay",
+        "send",
+        "install",
+    )
+    no_click_regions: tuple[tuple[float, float, float, float], ...] = ()
+    page_stable_ms: int = 500
+    action_effect_timeout_ms: int = 3000
+
+    def __post_init__(self) -> None:
+        if type(self.ocr_enabled) is not bool:
+            raise ContractViolation("perception OCR flag must be a boolean")
+        if not self.ocr_languages or any(not item.strip() for item in self.ocr_languages):
+            raise ContractViolation("perception OCR languages cannot be empty")
+        if any(not token.strip() or not mode.strip() for token, mode in self.mode_hints):
+            raise ContractViolation("perception mode hints cannot be blank")
+        if any(not item.strip() for item in self.recovery_safe_actions):
+            raise ContractViolation("recovery-safe action names cannot be blank")
+        if any(not item.strip() for item in self.critical_action_terms):
+            raise ContractViolation("critical action terms cannot be blank")
+        if self.page_stable_ms < 0 or self.action_effect_timeout_ms < 250:
+            raise ContractViolation("perception timing configuration is invalid")
+        for region in self.no_click_regions:
+            if len(region) != 4:
+                raise ContractViolation("no-click regions require four coordinates")
+            left, top, right, bottom = region
+            if not (
+                0.0 <= left < right <= 1.0 and 0.0 <= top < bottom <= 1.0
+            ):
+                raise ContractViolation("no-click regions must be normalized boxes")
+
+
+@dataclass(frozen=True, slots=True)
 class GameProfile(VersionedMixin):
     SCHEMA_NAME: ClassVar[str] = "uga.game_profile"
 
@@ -75,6 +120,7 @@ class GameProfile(VersionedMixin):
     capability_level: EnvironmentCapabilityLevel
     window_title_pattern: str | None = None
     planner_prompt_strategy: str = "generic"
+    perception: PerceptionProfile = PerceptionProfile()
 
     def __post_init__(self) -> None:
         self.validate()
@@ -134,6 +180,7 @@ def game_profile_from_dict(raw: dict[str, Any]) -> GameProfile:
     window = _mapping(raw.get("window", {}), "window")
     camera = _mapping(raw.get("camera", {}), "camera")
     planner = _mapping(raw.get("planner", {}), "planner")
+    perception = _mapping(raw.get("perception", {}), "perception")
     capabilities = _mapping(raw.get("capabilities", {}), "capabilities")
     controls_raw = _mapping(raw.get("controls", {}), "controls")
     bindings: list[ControlBinding] = []
@@ -167,6 +214,47 @@ def game_profile_from_dict(raw: dict[str, Any]) -> GameProfile:
             None if window.get("title_pattern") is None else str(window["title_pattern"])
         ),
         planner_prompt_strategy=str(planner.get("prompt_strategy", "generic")),
+        perception=_perception_profile(perception),
+    )
+
+
+def _perception_profile(raw: dict[str, Any]) -> PerceptionProfile:
+    mode_hints_raw = _mapping(raw.get("mode_hints", {}), "perception.mode_hints")
+    mode_hints: list[tuple[str, str]] = []
+    for mode, tokens in mode_hints_raw.items():
+        if not isinstance(tokens, list):
+            raise ContractViolation(f"perception.mode_hints.{mode} must be an array")
+        mode_hints.extend((str(token), str(mode)) for token in tokens)
+    regions_raw = raw.get("no_click_regions", [])
+    if not isinstance(regions_raw, list):
+        raise ContractViolation("perception.no_click_regions must be an array")
+    regions: list[tuple[float, float, float, float]] = []
+    for value in regions_raw:
+        if not isinstance(value, list) or len(value) != 4:
+            raise ContractViolation("perception no-click region must have four numbers")
+        left, top, right, bottom = (float(item) for item in value)
+        regions.append((left, top, right, bottom))
+    languages_raw = raw.get("ocr_languages", ["ch", "en"])
+    recovery_raw = raw.get("recovery_safe_actions", [])
+    critical_raw = raw.get("critical_action_terms")
+    if not isinstance(languages_raw, list) or not isinstance(recovery_raw, list):
+        raise ContractViolation("perception languages and recovery actions must be arrays")
+    if critical_raw is not None and not isinstance(critical_raw, list):
+        raise ContractViolation("perception critical action terms must be an array")
+    defaults = PerceptionProfile()
+    return PerceptionProfile(
+        ocr_enabled=_strict_bool(raw.get("ocr_enabled", False), "perception.ocr_enabled"),
+        ocr_languages=tuple(str(item) for item in languages_raw),
+        mode_hints=tuple(mode_hints),
+        recovery_safe_actions=frozenset(str(item) for item in recovery_raw),
+        critical_action_terms=(
+            defaults.critical_action_terms
+            if critical_raw is None
+            else tuple(str(item) for item in critical_raw)
+        ),
+        no_click_regions=tuple(regions),
+        page_stable_ms=int(raw.get("page_stable_ms", 500)),
+        action_effect_timeout_ms=int(raw.get("action_effect_timeout_ms", 3000)),
     )
 
 

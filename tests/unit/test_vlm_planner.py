@@ -345,6 +345,33 @@ class OpenAICompatibleVisionClientTests(unittest.TestCase):
         self.assertIn("决定", content[1]["text"])
         self.assertEqual(reply, '{"action":"wait"}')
 
+    def test_structured_output_schema_is_forwarded(self) -> None:
+        reply_body = json.dumps(
+            {"choices": [{"message": {"content": '{"kind":"wait"}'}}]}
+        ).encode("utf-8")
+
+        class _Response:
+            def read(self, size: int = -1) -> bytes:
+                return reply_body[:size]
+
+            def __enter__(self) -> _Response:
+                return self
+
+            def __exit__(self, *exc: object) -> bool:
+                return False
+
+        client = OpenAICompatibleVisionClient(
+            base_url="http://127.0.0.1:1234/v1", model="qwen3-vl-4b-instruct"
+        )
+        response_format = {"type": "json_schema", "json_schema": {"name": "decision"}}
+        with mock.patch("urllib.request.urlopen", return_value=_Response()) as urlopen:
+            client.decide(
+                images=[b"x"], instruction="go", response_format=response_format
+            )
+
+        payload = json.loads(urlopen.call_args.args[0].data.decode("utf-8"))
+        self.assertEqual(payload["response_format"], response_format)
+
     def test_endpoint_suffix_is_not_doubled(self) -> None:
         client = OpenAICompatibleVisionClient(
             base_url="https://api.example.com/v1/chat/completions",
