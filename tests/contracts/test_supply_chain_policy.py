@@ -198,6 +198,14 @@ class InstallHygienePolicyTests(unittest.TestCase):
                 with self.subTest(script=label, line=line.strip()):
                     self.assertIn("--locked", line)
 
+    def test_clean_wheel_environment_survives_until_bundle_launcher_smoke(self) -> None:
+        script = BUILD_SCRIPT_PATH.read_text(encoding="utf-8")
+        launcher = script.index("-ManifestSha256 $manifestDigest")
+        evidence = script.index("--launcher-smoke-passed")
+        cleanup = script.index("Remove-Item -LiteralPath $resolvedSmoke")
+        self.assertLess(launcher, evidence)
+        self.assertLess(evidence, cleanup)
+
 
 class DependencyLockTests(unittest.TestCase):
     def test_cargo_lock_is_committed(self) -> None:

@@ -31,6 +31,7 @@ if (Test-Path -LiteralPath $resolvedEvidenceRoot) {
 }
 
 $buildVenvRoot = $null
+$smokeRoot = $null
 
 Push-Location $projectRoot
 try {
@@ -86,8 +87,7 @@ try {
         --require-known
     if ($LASTEXITCODE -ne 0) { throw "Dependency inventory failed with exit code $LASTEXITCODE" }
     $smokeRoot = Join-Path $distRoot (".uga-install-smoke-" + [guid]::NewGuid().ToString("N"))
-    try {
-        & $Python -m venv $smokeRoot
+    & $Python -m venv $smokeRoot
         if ($LASTEXITCODE -ne 0) { throw "Clean venv creation failed with exit code $LASTEXITCODE" }
         $smokePython = Join-Path $smokeRoot "Scripts\python.exe"
         $wheel = Get-ChildItem -LiteralPath $bundleRoot -Filter "*.whl" -File
@@ -114,16 +114,6 @@ try {
             if ($LASTEXITCODE -ne 0) {
                 throw "$($command.Name) smoke failed with exit code $LASTEXITCODE"
             }
-        }
-    }
-    finally {
-        if (Test-Path -LiteralPath $smokeRoot) {
-            $resolvedSmoke = (Resolve-Path -LiteralPath $smokeRoot).Path
-            if ((Split-Path -Parent $resolvedSmoke) -ne $distRoot) {
-                throw "Refusing to remove unexpected smoke directory: $resolvedSmoke"
-            }
-            Remove-Item -LiteralPath $resolvedSmoke -Recurse -Force
-        }
     }
     & $buildPython -m apps.release_manifest $bundleRoot `
         --source-revision $sourceRevision `
@@ -159,6 +149,13 @@ try {
 }
 finally {
     Pop-Location
+    if ($smokeRoot -and (Test-Path -LiteralPath $smokeRoot)) {
+        $resolvedSmoke = (Resolve-Path -LiteralPath $smokeRoot).Path
+        if ((Split-Path -Parent $resolvedSmoke) -ne $distRoot) {
+            throw "Refusing to remove unexpected smoke directory: $resolvedSmoke"
+        }
+        Remove-Item -LiteralPath $resolvedSmoke -Recurse -Force
+    }
     if ($buildVenvRoot -and (Test-Path -LiteralPath $buildVenvRoot)) {
         $resolvedBuildVenv = (Resolve-Path -LiteralPath $buildVenvRoot).Path
         if ((Split-Path -Parent $resolvedBuildVenv) -ne $distRoot) {
