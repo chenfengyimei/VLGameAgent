@@ -45,7 +45,7 @@ from uga.environment.profile import GameProfile, load_game_profile
 from uga.observation.buffer import TemporalObservationBuffer
 from uga.observation.builder import ObservationBuilder, ObservationInputs
 from uga.policy.chunk_controller import ActionChunkController
-from uga.policy.decision_journal import DecisionJournal
+from uga.policy.decision_journal import DecisionJournal, DecisionRecord
 from uga.policy.scripted_tap import ScriptedTapPolicy
 from uga.policy.vlm_planner import (
     FrameHistorySampler,
@@ -73,6 +73,14 @@ def _best_effort_cleanup(*operations: Callable[[], object]) -> None:
     for operation in operations:
         with contextlib.suppress(BaseException):
             operation()
+
+
+def _persist_planner_decision(
+    recorder: EpisodeWriter,
+    clock: PerfCounterClock,
+    record: DecisionRecord,
+) -> None:
+    recorder.record_planner(uuid.uuid4().hex, clock.now(), record.to_row())
 
 
 def _capture_backend(
@@ -215,6 +223,7 @@ async def _run(args: argparse.Namespace) -> int:
     sampler: FrameHistorySampler | None = None
     sampler_backend: GDIFallbackCaptureBackend | None = None
     dashboard: DecisionDashboard | None = None
+    journal: DecisionJournal | None = None
 
     if args.policy == "vlm":
         try:
@@ -312,6 +321,10 @@ async def _run(args: argparse.Namespace) -> int:
                 ),
             )
             recorder.attach_video(PyAvVideoRecorder(recorder.video_path, fps=15))
+            if journal is not None:
+                journal.set_sink(
+                    lambda record: _persist_planner_decision(recorder, clock, record)
+                )
         except BaseException:
             _best_effort_cleanup(
                 *(value.abort for value in (recorder,) if value is not None),

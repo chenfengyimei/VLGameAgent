@@ -11,6 +11,7 @@ import json
 import threading
 import time
 from collections import deque
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -47,7 +48,13 @@ class DecisionRecord:
 class DecisionJournal:
     """Thread-safe decision log with an in-memory ring and JSONL sink."""
 
-    def __init__(self, path: Path | None = None, capacity: int = 512) -> None:
+    def __init__(
+        self,
+        path: Path | None = None,
+        capacity: int = 512,
+        *,
+        sink: Callable[[DecisionRecord], None] | None = None,
+    ) -> None:
         if capacity < 1:
             raise ValueError("decision journal capacity must be positive")
         self._path = path
@@ -55,6 +62,12 @@ class DecisionJournal:
         self._ring: deque[dict[str, Any]] = deque(maxlen=capacity)
         self._counters: dict[str, int] = {}
         self._latencies: deque[float] = deque(maxlen=64)
+        self._sink = sink
+
+    def set_sink(self, sink: Callable[[DecisionRecord], None] | None) -> None:
+        """Attach the durable run sink after its Episode writer is ready."""
+        with self._lock:
+            self._sink = sink
 
     def record(self, record: DecisionRecord) -> None:
         row = record.to_row()
@@ -71,6 +84,13 @@ class DecisionJournal:
                         handle.write(json.dumps(row, ensure_ascii=False) + "\n")
                 except OSError:
                     pass  # the dashboard is best-effort; never kill the run
+            sink = self._sink
+        # Episode persistence is part of the run evidence contract, so unlike
+        # the optional dashboard JSONL file its failures must reach the caller.
+        # Invoke outside the journal lock to avoid lock-order coupling with the
+        # recorder's own synchronization.
+        if sink is not None:
+            sink(record)
 
     def snapshot(self) -> dict[str, Any]:
         with self._lock:
