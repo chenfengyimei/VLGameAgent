@@ -34,6 +34,7 @@ class FixtureWorldTests(unittest.TestCase):
         profile = load_game_profile(root / "configs" / "games" / "uga-fixture-world.yaml")
         self.assertTrue(profile.matches_window_title("UGA Fixture World"))
         self.assertFalse(profile.matches_window_title("unrelated python window"))
+        self.assertEqual(profile.planner_prompt_strategy, "generic")
 
     def test_bundled_online_game_profile_is_not_automation_enabled(self) -> None:
         root = Path(__file__).resolve().parents[2]
@@ -43,6 +44,7 @@ class FixtureWorldTests(unittest.TestCase):
 
         self.assertFalse(decision.allowed)
         self.assertTrue(profile.safety.multiplayer)
+        self.assertEqual(profile.planner_prompt_strategy, "android_quest")
         self.assertEqual(decision.reason, PolicyReason.AUTOMATION_DISABLED)
 
     def test_each_scenario_has_distinct_identity_and_reachable_goal(self) -> None:

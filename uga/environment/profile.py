@@ -76,6 +76,7 @@ class GameProfile(VersionedMixin):
     safety: EnvironmentSafetyManifest
     capability_level: EnvironmentCapabilityLevel
     window_title_pattern: str | None = None
+    planner_prompt_strategy: str = "generic"
 
     def __post_init__(self) -> None:
         self.validate()
@@ -87,6 +88,8 @@ class GameProfile(VersionedMixin):
             raise ContractViolation("game profile requires executable names")
         if not self.preferred_capture.strip() or not self.camera_type.strip():
             raise ContractViolation("game profile capture and camera type cannot be blank")
+        if self.planner_prompt_strategy not in {"generic", "android_quest"}:
+            raise ContractViolation("game profile planner prompt strategy is unsupported")
         if not math.isfinite(self.camera_sensitivity) or self.camera_sensitivity <= 0:
             raise ContractViolation("camera sensitivity must be positive")
         if self.window_title_pattern is not None:
@@ -132,6 +135,7 @@ def game_profile_from_dict(raw: dict[str, Any]) -> GameProfile:
     process = _mapping(raw.get("process"), "process")
     window = _mapping(raw.get("window", {}), "window")
     camera = _mapping(raw.get("camera", {}), "camera")
+    planner = _mapping(raw.get("planner", {}), "planner")
     capabilities = _mapping(raw.get("capabilities", {}), "capabilities")
     safety = _mapping(raw.get("safety"), "safety")
     controls_raw = _mapping(raw.get("controls", {}), "controls")
@@ -172,6 +176,7 @@ def game_profile_from_dict(raw: dict[str, Any]) -> GameProfile:
         window_title_pattern=(
             None if window.get("title_pattern") is None else str(window["title_pattern"])
         ),
+        planner_prompt_strategy=str(planner.get("prompt_strategy", "generic")),
     )
 
 

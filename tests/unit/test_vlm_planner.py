@@ -20,6 +20,7 @@ from uga.policy.vlm_planner import (
     PlannerReplyError,
     VisionRateLimitedError,
     VlmPlannerPolicy,
+    build_android_quest_instruction,
     build_instruction,
     encode_frame_png,
     parse_planner_reply,
@@ -541,7 +542,7 @@ class VlmPlannerPolicyTests(unittest.TestCase):
 
 
 class BuildInstructionTests(unittest.TestCase):
-    def test_instruction_contains_goal_and_json_contract(self) -> None:
+    def test_generic_instruction_contains_goal_and_json_contract(self) -> None:
         instruction = build_instruction(
             "进入游戏",
             last_action="tap(0.5,0.5)",
@@ -552,8 +553,9 @@ class BuildInstructionTests(unittest.TestCase):
         self.assertIn("进入游戏", instruction)
         self.assertIn('"action":"tap"', instruction)
         self.assertIn("tap(0.5,0.5)", instruction)
-        self.assertIn("与桃夭对话", instruction)
         self.assertIn("没有变化", instruction)
+        self.assertNotIn("安卓", instruction)
+        self.assertNotIn("任务追踪面板", instruction)
 
     def test_instruction_describes_multi_frame_bundle(self) -> None:
         instruction = build_instruction("推进主线", None, None, None)
@@ -562,7 +564,7 @@ class BuildInstructionTests(unittest.TestCase):
         self.assertIn("最后一张是当前画面", instruction)
 
     def test_instruction_teaches_recognition_rules(self) -> None:
-        instruction = build_instruction("推进主线", None, None, None)
+        instruction = build_android_quest_instruction("推进主线", None, None, None)
 
         self.assertIn("NOT_VISIBLE", instruction)
         self.assertIn("公告", instruction)
@@ -580,6 +582,15 @@ class BuildInstructionTests(unittest.TestCase):
 
         calm = build_instruction("推进主线", None, None, None, wait_streak=5)
         self.assertNotIn("禁止再输出 wait", calm)
+
+    def test_android_quest_strategy_preserves_quest_memory(self) -> None:
+        instruction = build_android_quest_instruction(
+            "推进主线", "tap(0.5,0.5)", "与桃夭对话", True
+        )
+
+        self.assertIn("安卓游戏", instruction)
+        self.assertIn("任务追踪面板", instruction)
+        self.assertIn("与桃夭对话", instruction)
 
 
 def _sampler_frame(tag: int) -> Frame:

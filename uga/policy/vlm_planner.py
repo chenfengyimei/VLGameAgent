@@ -531,6 +531,39 @@ def _decode_payload(
     return "tap", x, y, reported, step
 
 
+def _shared_instruction_lines(
+    goal: str,
+    last_action: str | None,
+    screen_changed: bool | None,
+    stuck_count: int,
+    wait_streak: int,
+) -> tuple[str, str, str, str]:
+    history = (
+        ""
+        if last_action is None
+        else f"上一次动作是 {last_action}。如果画面因此没有变化，请仔细重新观察，尝试别的目标。\n"
+    )
+    changed_line = (
+        "上一次点击后画面没有变化——你点的位置无效，必须换不同的目标。\n"
+        if screen_changed is False
+        else ""
+    )
+    stuck_line = (
+        f"警告：你已连续 {stuck_count} 次点击同一位置且画面毫无反应——请重新定位目标，"
+        "或选择画面中完全不同的安全操作。\n"
+        if stuck_count >= 3
+        else ""
+    )
+    wait_line = (
+        f"警告：你已连续 {wait_streak} 次选择等待且画面毫无推进——禁止再输出 wait。"
+        "必须执行画面中可确认的具体动作，或在存在已确认绑定时输出 "
+        '{"action":"press","button":"back"}。\n'
+        if wait_streak >= WAIT_WARN_STREAK
+        else ""
+    )
+    return history, changed_line, stuck_line, wait_line
+
+
 def build_instruction(
     goal: str,
     last_action: str | None,
@@ -541,11 +574,48 @@ def build_instruction(
     quest_repeats: int = 0,
     wait_streak: int = 0,
 ) -> str:
-    """Compose the decision prompt; coordinates are always client fractions."""
-    history = (
-        ""
-        if last_action is None
-        else f"上一次动作是 {last_action}。如果画面因此没有变化，请仔细重新观察，尝试别的按钮。\n"
+    """Compose the environment-neutral decision prompt.
+
+    Quest parameters remain in the shared callback signature so a policy can
+    switch prompt strategies without changing its state machine. The generic
+    strategy intentionally ignores them: it must not assume a quest tracker,
+    a mobile UI, or a particular game economy.
+    """
+    del quest, quest_step, quest_repeats
+    history, changed_line, stuck_line, wait_line = _shared_instruction_lines(
+        goal, last_action, screen_changed, stuck_count, wait_streak
+    )
+    return (
+        "你是一个通用游戏视觉操作智能体。请仔细观察这组按时间先后排序的截图"
+        "（最后一张是当前画面，其余是历史画面，用于判断变化趋势）。\n"
+        "截图叠加了间隔为画面宽高 10% 的洋红色坐标网格。"
+        "输出坐标前先用网格校准，并只操作画面中确实可见的目标。\n"
+        f"当前任务目标：{goal}。\n"
+        f"{history}{changed_line}{stuck_line}{wait_line}"
+        "坐标使用客户区比例：x、y 都必须在 0.0 到 1.0 之间。\n"
+        "回复末尾必须包含一个 JSON 对象。单动作可使用：\n"
+        '{"action":"tap","x":0.5,"y":0.5}\n'
+        '{"action":"press","button":"confirm"}\n'
+        '{"action":"drag","x1":0.2,"y1":0.8,"x2":0.2,"y2":0.3}\n'
+        '{"action":"wait"}\n'
+        f"连续操作可用 actions 数组，但最多 {MAX_ACTION_SEQUENCE} 步。"
+        "不要编造不存在的元素，不确定或正在加载时选择 wait。\n"
+    )
+
+
+def build_android_quest_instruction(
+    goal: str,
+    last_action: str | None,
+    quest: str | None,
+    screen_changed: bool | None,
+    stuck_count: int = 0,
+    quest_step: str | None = None,
+    quest_repeats: int = 0,
+    wait_streak: int = 0,
+) -> str:
+    """Compose the Android quest-tracker prompt for an opted-in profile."""
+    history, changed_line, shared_stuck_line, wait_line = _shared_instruction_lines(
+        goal, last_action, screen_changed, stuck_count, wait_streak
     )
     if quest_repeats >= 6:
         # Anti-echo fallback: the model kept echoing the memorized quest back,
@@ -568,24 +638,12 @@ def build_instruction(
         if quest_step
         else ""
     )
-    changed_line = (
-        "上一次点击后画面没有变化——你点的位置无效，必须换不同的目标。\n"
-        if screen_changed is False
-        else ""
-    )
     stuck_line = (
         f"警告：你已连续 {stuck_count} 次点击同一位置且画面毫无反应——你的坐标定位很可能错了"
         "（系统已自动在附近偏移点击尝试）。请重新仔细观察按钮的实际位置（对照它旁边的文字、"
         "图标重新定位），或改点完全不同的目标（如左上角返回按钮、任务面板）。\n"
         if stuck_count >= 3
-        else ""
-    )
-    wait_line = (
-        f"警告：你已连续 {wait_streak} 次选择等待且画面毫无推进——这个画面很可能不会自动变化，"
-        "禁止再输出 wait。必须执行具体动作：按画面提示操作（如“点击空白区域关闭”、确定/关闭"
-        "按钮），或输出 {\"action\":\"press\",\"button\":\"back\"} 返回关闭当前界面。\n"
-        if wait_streak >= WAIT_WARN_STREAK
-        else ""
+        else shared_stuck_line
     )
     return (
         "你是一个安卓游戏自动操作智能体。请仔细观察这组按时间先后排序的游戏截图"
@@ -658,6 +716,9 @@ class VlmPlannerPolicy:
         available_buttons: frozenset[str] = frozenset(
             {"jump", "menu", "confirm", "back", "primary", "secondary"}
         ),
+        instruction_builder: Callable[
+            [str, str | None, str | None, bool | None, int, str | None, int, int], str
+        ] = build_instruction,
     ) -> None:
         if decision_interval_s <= 0.0 or failure_backoff_s <= 0.0:
             raise ContractViolation("vision planner cadence must be positive")
@@ -695,6 +756,7 @@ class VlmPlannerPolicy:
         self._stale_discards = 0
         self._journal = journal if journal is not None else NullJournal()
         self._available_buttons = available_buttons
+        self._instruction_builder = instruction_builder
         self._pending_actions: deque[
             tuple[str, float | None, float | None, str | None, str | None]
         ] = deque()
@@ -846,7 +908,7 @@ class VlmPlannerPolicy:
                 encode_frame_png_with_grid(frame, max_width=self._max_image_width)
                 for frame in self._bundle_frames(current_frame, boundary)
             ]
-            instruction = build_instruction(
+            instruction = self._instruction_builder(
                 self._goal,
                 self._last_action,
                 self._quest,
@@ -854,7 +916,7 @@ class VlmPlannerPolicy:
                 self._stuck_taps,
                 self._quest_step,
                 self._quest_repeats,
-                wait_streak=self._wait_streak,
+                self._wait_streak,
             )
             reply = self._client.decide(images=images, instruction=instruction)
             sequence = parse_planner_sequence(reply)

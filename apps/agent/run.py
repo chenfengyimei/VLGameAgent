@@ -51,6 +51,8 @@ from uga.policy.vlm_planner import (
     FrameHistorySampler,
     OpenAICompatibleVisionClient,
     VlmPlannerPolicy,
+    build_android_quest_instruction,
+    build_instruction,
 )
 from uga.recording.episode_writer import EpisodeWriter
 from uga.recording.schema import EpisodeMetadata, EpisodeResult
@@ -249,6 +251,11 @@ async def _run(args: argparse.Namespace) -> int:
                 if (binding := profile.binding(name)) is not None and binding.confirmed
             )
             assert vision_client is not None
+            instruction_builder = (
+                build_android_quest_instruction
+                if profile.planner_prompt_strategy == "android_quest"
+                else build_instruction
+            )
             policy: ScriptedTapPolicy | VlmPlannerPolicy = VlmPlannerPolicy(
                 client=vision_client,
                 frame_source=lambda: frames.snapshot()[-1].frame,
@@ -258,6 +265,7 @@ async def _run(args: argparse.Namespace) -> int:
                 sampler=sampler,
                 journal=journal,
                 available_buttons=available_buttons,
+                instruction_builder=instruction_builder,
             )
         except BaseException:
             _best_effort_cleanup(

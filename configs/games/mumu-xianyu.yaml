@@ -8,6 +8,8 @@ window:
   title_pattern: '^MuMu安卓设备-\d+$'
 camera:
   type: absolute_pointer
+planner:
+  prompt_strategy: android_quest
 controls:
   interact: {kind: mouse_button, code: "left", confirmed: true}
   menu: {kind: virtual_key, code: 27, confirmed: true}
