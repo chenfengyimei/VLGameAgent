@@ -310,7 +310,11 @@ powershell -ExecutionPolicy Bypass -File scripts/build_release.ps1
 ```
 
 产物：`dist/` 下的 wheel + 源码包，以及完整发布目录（含 `native\uga_capture.dll`、
-`run_uga.ps1` 启动器、`release-manifest.json` 清单、LICENSE、文档与配置）。
+`run_uga.ps1` 启动器、`release-manifest.json` 清单、LICENSE、文档与配置）。构建在
+最终清单生成后还会真实执行包内启动器，并在 `<bundle>.evidence\build-qualification.json`
+写出独立的源码绑定证据；其中逐项记录构建、测试、干净安装、命令入口、依赖清单、
+清单校验和启动器烟测，并哈希最终 wheel、源码包、DLL、启动器和清单。证据放在包外，
+避免发布清单与证据互相哈希形成循环。
 
 使用发布包：
 
@@ -356,5 +360,6 @@ python -m pip install <bundle里的wheel>
 | `uga-dashboard` | 仪表盘（离线 / 本地服务） |
 | `uga-release-manifest <bundle> [--verify-existing]` | 生成/校验发布清单 |
 | `uga-dependency-inventory` | 依赖许可清单 |
+| `uga-build-evidence` | 生成/复验源码绑定的构建资格证据 |
 
 许可证：**MIT**（见 [LICENSE](../LICENSE)）。

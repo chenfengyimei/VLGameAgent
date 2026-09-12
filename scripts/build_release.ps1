@@ -1,6 +1,7 @@
 param(
     [string]$Python = "python",
-    [string]$BundleName = "uga-0.1.0-dev-windows-x64"
+    [string]$BundleName = "uga-0.1.0-dev-windows-x64",
+    [string]$EvidenceRoot = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -8,6 +9,12 @@ $projectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $nativeRoot = Join-Path $projectRoot "native"
 $distRoot = Join-Path $projectRoot "dist"
 $bundleRoot = Join-Path $distRoot $BundleName
+$resolvedEvidenceRoot = if ($EvidenceRoot) {
+    [System.IO.Path]::GetFullPath((Join-Path $projectRoot $EvidenceRoot))
+}
+else {
+    Join-Path $distRoot ($BundleName + ".evidence")
+}
 $sourceRevision = (& git -C $projectRoot rev-parse HEAD).Trim()
 if ($LASTEXITCODE -ne 0 -or -not $sourceRevision) {
     throw "Unable to resolve the source Git revision"
@@ -18,6 +25,9 @@ if ($dirty) { throw "Release builds require a clean committed worktree" }
 
 if (Test-Path -LiteralPath $bundleRoot) {
     throw "Release bundle already exists: $bundleRoot"
+}
+if (Test-Path -LiteralPath $resolvedEvidenceRoot) {
+    throw "Build evidence directory already exists: $resolvedEvidenceRoot"
 }
 
 $buildVenvRoot = $null
@@ -72,7 +82,8 @@ try {
         --pyproject (Join-Path $projectRoot "pyproject.toml") `
         --cargo-manifest (Join-Path $nativeRoot "Cargo.toml") `
         --npm-lock (Join-Path $projectRoot "package-lock.json") `
-        --output (Join-Path $bundleRoot "third-party-inventory.json")
+        --output (Join-Path $bundleRoot "third-party-inventory.json") `
+        --require-known
     if ($LASTEXITCODE -ne 0) { throw "Dependency inventory failed with exit code $LASTEXITCODE" }
     $smokeRoot = Join-Path $distRoot (".uga-install-smoke-" + [guid]::NewGuid().ToString("N"))
     try {
@@ -95,6 +106,7 @@ try {
             @{ Name = "uga-dataset.exe"; Arguments = @("--help") },
             @{ Name = "uga-benchmark.exe"; Arguments = @("--help") },
             @{ Name = "uga-qualify.exe"; Arguments = @("--help") },
+            @{ Name = "uga-build-evidence.exe"; Arguments = @("--help") },
             @{ Name = "uga-train.exe"; Arguments = @("--help") }
         )) {
             $executable = Join-Path $smokeRoot ("Scripts\" + $command.Name)
@@ -119,13 +131,31 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "Release manifest failed with exit code $LASTEXITCODE" }
     & $buildPython -m apps.release_manifest $bundleRoot --verify-existing
     if ($LASTEXITCODE -ne 0) { throw "Bundle verification failed with exit code $LASTEXITCODE" }
+    $manifestPath = Join-Path $bundleRoot "release-manifest.json"
+    $manifestDigest = (Get-FileHash -Algorithm SHA256 -LiteralPath $manifestPath).Hash.ToLowerInvariant()
+    & powershell -NoProfile -ExecutionPolicy Bypass `
+        -File (Join-Path $bundleRoot "run_uga.ps1") `
+        -Python $smokePython `
+        -ManifestSha256 $manifestDigest
+    if ($LASTEXITCODE -ne 0) { throw "Bundled launcher smoke failed with exit code $LASTEXITCODE" }
     $finalRevision = (& git -C $projectRoot rev-parse HEAD).Trim()
     $finalDirty = & git -C $projectRoot status --porcelain
     if ($LASTEXITCODE -ne 0) { throw "Unable to re-inspect the source worktree" }
     if ($finalRevision -cne $sourceRevision -or $finalDirty) {
         throw "Source worktree changed while building the release bundle"
     }
+    New-Item -ItemType Directory -Path $resolvedEvidenceRoot | Out-Null
+    $buildEvidencePath = Join-Path $resolvedEvidenceRoot "build-qualification.json"
+    & $buildPython -m apps.build_evidence $bundleRoot `
+        --source-revision $sourceRevision `
+        --launcher-smoke-passed `
+        --output $buildEvidencePath
+    if ($LASTEXITCODE -ne 0) { throw "Build evidence generation failed with exit code $LASTEXITCODE" }
+    & $buildPython -m apps.build_evidence $bundleRoot `
+        --verify-existing $buildEvidencePath
+    if ($LASTEXITCODE -ne 0) { throw "Build evidence verification failed with exit code $LASTEXITCODE" }
     Write-Output $bundleRoot
+    Write-Output $buildEvidencePath
 }
 finally {
     Pop-Location

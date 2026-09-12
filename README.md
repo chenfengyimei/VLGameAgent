@@ -69,7 +69,9 @@ the bundled wheel, then use `run_uga.ps1` to point the runtime at the bundled
 native capture DLL. Direct native-capture development runs must also set
 `UGA_NATIVE_CAPTURE_SHA256` to the lowercase SHA-256 of that DLL; the digest is
 checked before any library code is loaded. Consult `release-manifest.json`
-before interpreting a bundle as qualified.
+before interpreting a bundle as qualified. A successful build also writes an
+external, source-bound `build-qualification.json` beside the bundle evidence
+directory after exercising the real bundled launcher.
 
 The developer-owned Fixture World provides a deterministic visual target for
 supervised Windows testing. See

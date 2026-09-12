@@ -52,3 +52,11 @@ execute tests or turn incomplete gates into passed gates.
 Each development bundle also hashes `third-party-inventory.json`, generated from
 the installed Python packages, locked Cargo graph, and locked npm UI build graph.
 Known license declarations are necessary but do not replace human legal review.
+The release build additionally runs the final `run_uga.ps1` launcher against the
+completed bundle and emits an external `build-qualification.json`. That report is
+bound to the full Git revision and hashes the final manifest, wheel, source
+archive, native DLL, launcher, and dependency inventory. It records every build,
+test, clean-install, installed-command, manifest, and launcher check separately.
+It remains outside the bundle to avoid a self-referential manifest hash and is
+the JSON evidence used for the automated-tests, package-build, and
+package-install-smoke ledger records.

@@ -36,6 +36,7 @@ uga-benchmark = "apps.benchmark.__main__:main"
 uga-example-game = "apps.example_game.__main__:main"
 uga-capture-probe = "apps.capture_probe.__main__:main"
 uga-dependency-inventory = "apps.dependency_inventory.__main__:main"
+uga-build-evidence = "apps.build_evidence.__main__:main"
 uga-train = "apps.training.__main__:main"
 
 [tool.hatch.build.targets.wheel]
