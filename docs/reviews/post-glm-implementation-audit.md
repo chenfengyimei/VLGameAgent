@@ -1,9 +1,9 @@
 # Post-GLM implementation audit
 
-Date: 2026-09-11  
+Date: 2026-09-12  
 Audit baseline: `60a51dc`  
 Remediation commits: `2c02d58`, `df1561c`, `bb9582e`, `d04d8e4`, `0a962b7`
-Continuation hardening: `9cee1f4` through `4541c92`
+Continuation hardening: `9cee1f4` through `6cd9ece`
 
 ## Verdict
 
@@ -13,12 +13,13 @@ the handoff baseline. It has not completed UGA-075 release qualification.
 
 The distinction is objective:
 
-- The automated source gates pass: Ruff, strict mypy over `uga` and `apps`, 309
-  pytest tests, 79 subtests, TypeScript typecheck/build, Cargo fmt, Clippy, tests,
-  and release compilation.
-- The opt-in owned-Fixture physical-input test passes at the current candidate
-  revision. It proves the basic SendInput/PID ownership path, but does not replace
-  the full supervised control fault matrix.
+- At `6cd9ece`, Ruff, strict mypy over `uga` and `apps`, 321 pytest tests, and 79
+  subtests pass; one physical-input test remains deliberately opt-in. TypeScript
+  and Cargo gates passed on the earlier source-bound build candidate and must be
+  rerun after source freeze.
+- The opt-in owned-Fixture physical-input test passed on an earlier candidate.
+  It proves the basic SendInput/PID ownership path, but is not current-revision
+  evidence and does not replace the full supervised control fault matrix.
 - Historical evidence includes a 30-minute owned Fixture WGC run, a 10-minute
   owned Fixture Recorder/Replay run, API/capture samples, and a four-scenario
   Fixture benchmark report with 100% recorded success.
@@ -30,7 +31,7 @@ The distinction is objective:
 - No qualification-volume production training artifact is present; the current
   artifact is explicitly a development smoke result.
 - The most recently rebuilt development bundle is internally hash-consistent and
-  records source revision `321bb98...` with `releasable: false`. Later source
+  records source revision `cf55e50...` with `releasable: false`. Later source
   hardening means it is again a diagnostic package rather than the final bundle.
 
 Therefore the current state is: implementation substantially complete,
@@ -92,9 +93,10 @@ gate.
 5. Collect at least five hours of licensed, quality-reviewed owned Fixture data
    with Train A/B/C and a locked held-out Fixture game. Verify every Episode and
    the Dataset Manifest.
-6. Train on a detected GPU and emit a verified training-artifact manifest binding
-   the exact source revision, Dataset Manifest, samples, config, checkpoint,
-   metrics, and license metadata. Run the staged offline and closed-loop metrics.
+6. Train all five required stages on detected GPU hardware. Emit typed stage
+   reports for motor, instruction, recovery, reasoning-gate, and DAgger, each
+   binding the exact source revision, Dataset Manifest, samples, config,
+   checkpoint, license metadata, and thresholded offline/closed-loop metrics.
 7. Re-run the four-scenario held-out benchmark using that artifact and record the
    required recovery/failure metrics, not only success rate.
 8. Initialize `qualification.json` with the frozen revision, record every gate with
@@ -120,6 +122,12 @@ Partial capture starts and Recorder setup now roll back their owned resources,
 including private Episode staging trees. The Fixture launcher uses the actual
 GUI-owner PID even from a Windows virtual environment, and Python/Rust Frame
 contracts reject undersized packed strides and CPU buffers before memory access.
+Build, control, automated-test, dataset, benchmark, and model gates now require
+typed source-bound evidence. Control qualification combines four genuinely
+exercised Fixture safety faults with a separate real Win32 UIPI rejection probe.
+Model qualification recursively verifies all five stage reports, metric
+thresholds, artifact manifests, and their inputs; final preflight requires that
+aggregate rather than accepting a single motor checkpoint.
 
 ## Release decision rule
 
