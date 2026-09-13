@@ -28,6 +28,7 @@ from uga.perception.schema import (
     NormalizedBox,
     PerceptionSnapshot,
     PlannerOutcome,
+    WaitReason,
 )
 from uga.time.clock import ClockBackend, UGATime
 
@@ -275,6 +276,8 @@ class ClosedLoopSupervisor:
         self._last_ineffective_key: str | None = None
         self._consecutive_same_ineffective = 0
         self._max_consecutive_same_ineffective = 0
+        self._no_safe_state_signature: str | None = None
+        self._no_safe_state_repeats = 0
         self._progress = ProgressTracker()
         self._loops = LoopDetector()
         self._max_recoveries = max_recoveries
@@ -329,6 +332,7 @@ class ClosedLoopSupervisor:
             "max_consecutive_same_ineffective_action": (
                 self._max_consecutive_same_ineffective
             ),
+            "no_safe_state_repeats": self._no_safe_state_repeats,
             "task_status": (
                 None
                 if self._task_graph is None or self._task_node_id is None
@@ -387,6 +391,7 @@ class ClosedLoopSupervisor:
             self._verified_effect_actions += 1
             self._last_ineffective_key = None
             self._consecutive_same_ineffective = 0
+            self._reset_no_safe_waits()
             self._uncertain_retries = 0
             finding = self._record_action_result(
                 pending,
@@ -454,6 +459,8 @@ class ClosedLoopSupervisor:
         recovering_high_resolution = recovery == RecoveryDirective.HIGH_RESOLUTION
         if recovering_high_resolution:
             self._pending_recovery = None
+        if outcome.kind != DecisionKind.WAIT or outcome.wait_reason != WaitReason.NO_SAFE_ACTION:
+            self._reset_no_safe_waits()
         if outcome.kind == DecisionKind.DONE:
             if self._goal.consider(outcome, fresh_snapshot):
                 self.status = TerminalStatus.SUCCEEDED
@@ -470,6 +477,33 @@ class ClosedLoopSupervisor:
             )
         if outcome.kind == DecisionKind.WAIT:
             self._goal.consider(outcome, fresh_snapshot)
+            if outcome.wait_reason == WaitReason.NO_SAFE_ACTION:
+                state = self._progress.state(fresh_snapshot).loop_signature
+                if state == self._no_safe_state_signature:
+                    self._no_safe_state_repeats += 1
+                else:
+                    self._no_safe_state_signature = state
+                    self._no_safe_state_repeats = 1
+                if recovering_high_resolution:
+                    return self._advance_loop_recovery(
+                        outcome,
+                        "high-resolution recovery still found no safe action",
+                    )
+                if self._no_safe_state_repeats >= 2:
+                    self._request_recovery(
+                        "same state returned no safe action twice"
+                    )
+                    if self.is_terminal:
+                        return SupervisedDecision(
+                            DecisionDisposition.BLOCK,
+                            self.termination_reason or "no safe recovery remains",
+                            outcome,
+                        )
+                    return SupervisedDecision(
+                        DecisionDisposition.REOBSERVE,
+                        "re-observing repeated no-safe-action state at high resolution",
+                        outcome,
+                    )
             return SupervisedDecision(
                 DecisionDisposition.WAIT,
                 f"planner wait: {outcome.wait_reason.value}",  # type: ignore[union-attr]
@@ -774,6 +808,10 @@ class ClosedLoopSupervisor:
             node = self._task_graph.get(self._task_node_id)
             if node.status in {TaskStatus.READY, TaskStatus.ACTIVE}:
                 self._task_graph.block(self._task_node_id)
+
+    def _reset_no_safe_waits(self) -> None:
+        self._no_safe_state_signature = None
+        self._no_safe_state_repeats = 0
 
     def _complete_task(self, *, success: bool) -> None:
         if self._task_graph is None or self._task_node_id is None:

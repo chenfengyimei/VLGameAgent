@@ -60,6 +60,7 @@ def outcome(
     label: str = "settings",
     risk: ActionRisk = ActionRisk.NORMAL,
     generation: int = 1,
+    wait: WaitReason | None = None,
 ) -> PlannerOutcome:
     action = None
     wait_reason = None
@@ -74,7 +75,7 @@ def outcome(
             risk,
         )
     elif kind == DecisionKind.WAIT:
-        wait_reason = WaitReason.LOADING
+        wait_reason = wait or WaitReason.LOADING
     elif kind == DecisionKind.DONE:
         status = GoalStatus.SUCCEEDED
     return PlannerOutcome(
@@ -143,6 +144,48 @@ class ClosedLoopSupervisorTests(unittest.TestCase):
 
         self.assertEqual(decision.disposition, DecisionDisposition.WAIT)
         self.assertIsNone(decision.outcome.action)
+
+    def test_repeated_no_safe_wait_uses_bounded_distinct_recoveries(self) -> None:
+        supervisor = ClosedLoopSupervisor(
+            self.clock,
+            PerceptionProfile(recovery_safe_actions=frozenset({"back"})),
+            max_recoveries=2,
+        )
+        first_snapshot = snapshot(1, 0)
+        second_snapshot = snapshot(2, 1)
+        third_snapshot = snapshot(3, 2)
+
+        first = supervisor.assess(
+            outcome(1, kind=DecisionKind.WAIT, wait=WaitReason.NO_SAFE_ACTION),
+            first_snapshot,
+            first_snapshot,
+            frame(1, 0),
+            frame(1, 0),
+            "open settings",
+        )
+        second = supervisor.assess(
+            outcome(2, kind=DecisionKind.WAIT, wait=WaitReason.NO_SAFE_ACTION),
+            second_snapshot,
+            second_snapshot,
+            frame(2, 1),
+            frame(2, 1),
+            "open settings",
+        )
+        third = supervisor.assess(
+            outcome(3, kind=DecisionKind.WAIT, wait=WaitReason.NO_SAFE_ACTION),
+            third_snapshot,
+            third_snapshot,
+            frame(3, 2),
+            frame(3, 2),
+            "open settings",
+        )
+
+        self.assertEqual(first.disposition, DecisionDisposition.WAIT)
+        self.assertEqual(second.disposition, DecisionDisposition.REOBSERVE)
+        self.assertTrue(supervisor.recovery_count <= 2)
+        self.assertEqual(third.disposition, DecisionDisposition.RECOVER)
+        self.assertEqual(third.recovery, RecoveryDirective.BACK)
+        self.assertEqual(supervisor.recovery_count, 2)
 
     def test_high_confidence_action_is_grounded_at_box_center(self) -> None:
         current = snapshot(1, 0)
