@@ -205,6 +205,16 @@ class ClosedLoopSupervisorTests(unittest.TestCase):
 
         self.assertEqual(decision.disposition, DecisionDisposition.REOBSERVE)
 
+        valid = self.supervisor.assess(
+            outcome(2),
+            snapshot(2, 2),
+            snapshot(2, 2),
+            frame(2, 2),
+            frame(2, 2),
+            "open settings",
+        )
+        self.assertEqual(valid.disposition, DecisionDisposition.EXECUTE)
+
     def test_action_effect_must_change_semantic_or_target_state(self) -> None:
         current = snapshot(1, 0)
         proposal = outcome(1)

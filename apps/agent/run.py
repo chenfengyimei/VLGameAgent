@@ -232,9 +232,15 @@ async def _run(args: argparse.Namespace) -> int:
     except BaseException:
         _best_effort_cleanup(backend.stop)
         raise
-    if not primed:
+    if not primed and args.policy != "vlm":
         backend.stop()
         raise SystemExit("target produced no capture frames within 5s of activation")
+    if not primed:
+        print(
+            f"[capture] {backend.backend_id} produced no priming frame; "
+            "starting the bounded GDI heartbeat before inference",
+            flush=True,
+        )
     clock = PerfCounterClock()
     events = EventBus(clock)
     leases = ControlLeaseManager(clock)

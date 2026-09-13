@@ -17,6 +17,8 @@ dependencies = [
 
 [project.optional-dependencies]
 vision = [
+  "antlr4-python3-runtime==4.9.3",
+  "omegaconf==2.3.0",
   "onnxruntime==1.30.0",
   "rapidocr==3.9.2",
 ]

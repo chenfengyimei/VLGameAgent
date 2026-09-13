@@ -501,6 +501,12 @@ class ClosedLoopSupervisor:
             secondary_verified=secondary_verified,
         )
         if not valid:
+            if reason == "decision generation became stale":
+                return SupervisedDecision(
+                    DecisionDisposition.REOBSERVE,
+                    "stale decision discarded; observing the current generation",
+                    outcome,
+                )
             if (
                 "OCR and model" in reason
                 and not secondary_verified

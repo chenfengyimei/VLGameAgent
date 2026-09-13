@@ -165,10 +165,14 @@ class GroundedAction:
         }
         if self.kind in pointer_kinds and self.target_box is None:
             raise ContractViolation("grounded pointer action requires a target box")
+        if self.kind in pointer_kinds and self.key is not None:
+            raise ContractViolation("grounded pointer action cannot carry a key")
         if self.kind in {GuiActionKind.WAIT, GuiActionKind.DONE}:
             raise ContractViolation("wait/done are decisions, not grounded actions")
         if self.kind in {GuiActionKind.KEY, GuiActionKind.HOTKEY} and not self.key:
             raise ContractViolation("grounded key action requires a key name")
+        if self.kind in {GuiActionKind.KEY, GuiActionKind.HOTKEY} and self.target_box is not None:
+            raise ContractViolation("grounded key action cannot carry a target box")
 
 
 @dataclass(frozen=True, slots=True)
@@ -212,4 +216,3 @@ class PlannerOutcome(VersionedMixin):
             raise ContractViolation("only WAIT outcomes may carry a wait reason")
         if self.kind == DecisionKind.DONE and self.goal_status != GoalStatus.SUCCEEDED:
             raise ContractViolation("DONE outcome must report a succeeded goal")
-

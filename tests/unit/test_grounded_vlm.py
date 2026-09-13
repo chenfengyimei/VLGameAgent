@@ -84,6 +84,11 @@ def _reply(kind: str = "act") -> str:
 
 
 class GroundedVlmTests(unittest.TestCase):
+    def test_schema_constrains_every_bbox_coordinate_to_normalized_range(self) -> None:
+        encoded = json.dumps(GROUNDING_RESPONSE_FORMAT)
+        self.assertIn('"minimum": 0', encoded)
+        self.assertIn('"maximum": 1', encoded)
+
     def test_uses_clean_overview_and_grounded_target_crop(self) -> None:
         client = _Client([_reply()])
         snapshot = _snapshot()
@@ -120,6 +125,21 @@ class GroundedVlmTests(unittest.TestCase):
         self.assertEqual(len(client.calls), 2)
         self.assertEqual(outcome.kind, DecisionKind.ABSTAIN)
         self.assertEqual(outcome.goal_status, GoalStatus.UNKNOWN)
+
+    def test_repair_prompt_includes_the_cross_field_validation_error(self) -> None:
+        invalid = json.loads(_reply())
+        invalid["wait_reason"] = "no_safe_action"
+        client = _Client([json.dumps(invalid), _reply()])
+
+        outcome = GroundedVlmPlanner(client).decide(
+            snapshot=_snapshot(), frames=(_large_frame(100),), goal="打开设置"
+        )
+
+        self.assertEqual(outcome.kind, DecisionKind.ACT)
+        self.assertIn(
+            "only WAIT outcomes may carry a wait reason",
+            str(client.calls[1]["instruction"]),
+        )
 
     def test_unsupported_schema_is_probed_once_and_falls_back(self) -> None:
         client = _Client(

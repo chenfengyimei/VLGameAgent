@@ -72,13 +72,16 @@ class CaptureHubTests(unittest.IsolatedAsyncioTestCase):
         stop = asyncio.Event()
         task = asyncio.create_task(hub.run(stop))
 
+        started = time.monotonic()
         item = await hub.capture_once()
+        elapsed = time.monotonic() - started
         stop.set()
         await task
 
         self.assertTrue(item.frame.frame_id.startswith("source-"))
         self.assertEqual(hub.stats().primary_frames, 0)
         self.assertGreaterEqual(hub.stats().fallback_frames, 1)
+        self.assertLess(elapsed, 0.15)
 
 
 if __name__ == "__main__":

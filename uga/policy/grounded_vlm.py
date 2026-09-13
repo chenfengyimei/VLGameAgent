@@ -83,7 +83,11 @@ GROUNDING_RESPONSE_FORMAT: dict[str, Any] = {
                                         {"type": "null"},
                                         {
                                             "type": "array",
-                                            "items": {"type": "number"},
+                                            "items": {
+                                                "type": "number",
+                                                "minimum": 0,
+                                                "maximum": 1,
+                                            },
                                             "minItems": 4,
                                             "maxItems": 4,
                                         },
@@ -209,7 +213,9 @@ class GroundedVlmPlanner:
         if not frames or frames[-1].frame_id != snapshot.frame_id:
             raise ContractViolation("grounded planner frames must end at the snapshot frame")
         images = self._images(frames[-1], snapshot, goal, high_resolution_retry)
-        instruction = self._instruction(snapshot, goal, repair_reply=None)
+        instruction = self._instruction(
+            snapshot, goal, repair_reply=None, repair_error=None
+        )
         response_format = (
             GROUNDING_RESPONSE_FORMAT
             if self._structured_output and self._schema_supported is not False
@@ -234,10 +240,15 @@ class GroundedVlmPlanner:
         self.last_raw_reply = reply
         try:
             outcome = self._parse(reply, snapshot)
-        except PlannerReplyError:
+        except PlannerReplyError as exc:
             repair = self._client.decide(
                 images=images,
-                instruction=self._instruction(snapshot, goal, repair_reply=reply),
+                instruction=self._instruction(
+                    snapshot,
+                    goal,
+                    repair_reply=reply,
+                    repair_error=str(exc),
+                ),
                 response_format=(
                     GROUNDING_RESPONSE_FORMAT if self._schema_supported is True else None
                 ),
@@ -294,7 +305,10 @@ class GroundedVlmPlanner:
 
     @staticmethod
     def _instruction(
-        snapshot: PerceptionSnapshot, goal: str, repair_reply: str | None
+        snapshot: PerceptionSnapshot,
+        goal: str,
+        repair_reply: str | None,
+        repair_error: str | None,
     ) -> str:
         ocr = "\n".join(
             f"- {region.text!r} bbox="
@@ -305,6 +319,7 @@ class GroundedVlmPlanner:
         ) or "- OCR 未识别到可靠文本"
         repair = (
             "\n上一次回复未通过 Schema。只输出一个修正后的 JSON 对象，不得解释。"
+            f"\n校验错误：{repair_error}"
             f"\n错误回复：{repair_reply[:1000]}"
             if repair_reply is not None
             else ""
@@ -313,8 +328,17 @@ class GroundedVlmPlanner:
             "你是像素 GUI 闭环规划器。目标：" + goal + "\n"
             "只能返回一个符合 JSON Schema 的决策。每次最多一个动作。"
             "不要返回自由点击坐标；点击必须给出所见控件的 normalized target_bbox。"
+            "同时检查文字和常见视觉图标；即使 OCR 没有标签，清晰可辨且与目标直接对应的"
+            "图标（例如齿轮代表设置）也可以作为低风险目标，并为图标本体给出 bbox。"
+            "目标要求打开某应用且对应图标已可见时，应输出 act，不要仅因图标无文字而 wait。"
             "加载时输出 wait，目标已完成时输出 done，不确定时输出 abstain。"
+            "no_safe_action 只用于仔细检查全屏文字和图标后仍没有目标相关候选的情况。"
             "action 仅允许 click/key/hotkey；拖拽和多步序列由其他控制路径处理。"
+            "kind=act 时 wait_reason 必须为 null 且 action 必须非 null；"
+            "kind=wait 时 action 必须为 null；其他非 act 决策的 action 和 wait_reason "
+            "都必须为 null。"
+            "click 的 target_bbox 必须是四个归一化数且 key 必须为 null；"
+            "key/hotkey 的 target_bbox 必须为 null 且 key 必须是已知语义键名。"
             "expected_effect 必须描述下一帧可验证的界面或文本变化。"
             "登录、删除、支付、发送、安装标记为 critical。\n"
             "当前 OCR：\n" + ocr + repair

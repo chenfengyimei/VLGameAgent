@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import math
 import time
 from collections import Counter
@@ -123,11 +124,29 @@ class CaptureHub:
 
     async def _capture_fallback(self, stop: asyncio.Event) -> None:
         assert self._fallback is not None
+        started = time.monotonic()
+        last_attempt: float | None = None
         while not stop.is_set():
-            await asyncio.sleep(self._fallback_period_s)
+            now = time.monotonic()
+            last = self._last_publish_monotonic
+            timeline_due = (last if last is not None else started) + self._fallback_after_s
+            rate_due = (
+                last_attempt + self._fallback_period_s
+                if last_attempt is not None
+                else timeline_due
+            )
+            delay = max(timeline_due, rate_due) - now
+            if delay > 0:
+                with contextlib.suppress(TimeoutError):
+                    await asyncio.wait_for(stop.wait(), timeout=delay)
+                continue
+
+            # The primary may have published while this task was waking. Recheck
+            # the shared timeline before spending a fallback capture.
             last = self._last_publish_monotonic
             if last is not None and time.monotonic() - last < self._fallback_after_s:
                 continue
+            last_attempt = time.monotonic()
             try:
                 frame = await asyncio.to_thread(self._fallback.capture)
             except CaptureTimeoutError:
@@ -153,4 +172,3 @@ class CaptureHub:
                 self._last_publish_monotonic = now
                 self._accepted += 1
                 self._sources[source] += 1
-
