@@ -155,11 +155,14 @@ function Get-SettingsSetupSnapshot {
 
     $focus = (& $Adb -s $Serial shell dumpsys window |
         Select-String "mCurrentFocus" | Select-Object -First 1).Line
-    & $Adb -s $Serial shell uiautomator dump /sdcard/uga_setup.xml | Out-Null
-    if ($LASTEXITCODE -ne 0) {
-        return [pscustomobject]@{ focus = $focus; hierarchy = "" }
-    }
+    # MuMu Android 15 can return 139 after successfully writing the hierarchy.
+    # Delete the prior file first, then trust only the newly read XML payload.
+    & $Adb -s $Serial shell rm -f /sdcard/uga_setup.xml | Out-Null
+    & $Adb -s $Serial shell uiautomator dump /sdcard/uga_setup.xml 2>$null | Out-Null
     $hierarchy = (& $Adb -s $Serial shell cat /sdcard/uga_setup.xml) -join ""
+    if ($hierarchy -notmatch "<hierarchy") {
+        $hierarchy = ""
+    }
     [pscustomobject]@{ focus = $focus; hierarchy = $hierarchy }
 }
 
