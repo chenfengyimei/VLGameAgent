@@ -212,9 +212,16 @@ class GroundedVlmPlanner:
         started = time.monotonic()
         if not frames or frames[-1].frame_id != snapshot.frame_id:
             raise ContractViolation("grounded planner frames must end at the snapshot frame")
-        images = self._images(frames[-1], snapshot, goal, high_resolution_retry)
+        images, temporal_count, crop_count = self._images(
+            frames, snapshot, goal, high_resolution_retry
+        )
         instruction = self._instruction(
-            snapshot, goal, repair_reply=None, repair_error=None
+            snapshot,
+            goal,
+            repair_reply=None,
+            repair_error=None,
+            temporal_count=temporal_count,
+            crop_count=crop_count,
         )
         response_format = (
             GROUNDING_RESPONSE_FORMAT
@@ -248,6 +255,8 @@ class GroundedVlmPlanner:
                     goal,
                     repair_reply=reply,
                     repair_error=str(exc),
+                    temporal_count=temporal_count,
+                    crop_count=crop_count,
                 ),
                 response_format=(
                     GROUNDING_RESPONSE_FORMAT if self._schema_supported is True else None
@@ -291,17 +300,33 @@ class GroundedVlmPlanner:
 
     def _images(
         self,
-        frame: Frame,
+        frames: Sequence[Frame],
         snapshot: PerceptionSnapshot,
         goal: str,
         high_resolution_retry: bool,
-    ) -> list[bytes]:
-        overview_width = frame.width if high_resolution_retry else self._max_image_width
-        images = [encode_frame_png(frame, max_width=overview_width)]
+    ) -> tuple[list[bytes], int, int]:
+        latest = frames[-1]
+        temporal = frames[-3:]
+        images = [
+            encode_frame_png(
+                frame,
+                max_width=(
+                    frame.width
+                    if high_resolution_retry and frame is latest
+                    else self._max_image_width
+                    if frame is latest
+                    else min(self._max_image_width, 768)
+                ),
+            )
+            for frame in temporal
+        ]
+        temporal_count = len(images)
+        crop_count = 0
         for box in select_target_regions(snapshot, goal, limit=2):
-            crop = crop_frame(frame, box, padding=0.04 if high_resolution_retry else 0.02)
+            crop = crop_frame(latest, box, padding=0.04 if high_resolution_retry else 0.02)
             images.append(encode_frame_png(crop, max_width=max(crop.width, 32)))
-        return images[:3]
+            crop_count += 1
+        return images, temporal_count, crop_count
 
     @staticmethod
     def _instruction(
@@ -309,6 +334,8 @@ class GroundedVlmPlanner:
         goal: str,
         repair_reply: str | None,
         repair_error: str | None,
+        temporal_count: int,
+        crop_count: int,
     ) -> str:
         ocr = "\n".join(
             f"- {region.text!r} bbox="
@@ -326,6 +353,8 @@ class GroundedVlmPlanner:
         )
         return (
             "你是像素 GUI 闭环规划器。目标：" + goal + "\n"
+            f"输入先给出 {temporal_count} 张按时间先后排列的干净全景图（最后一张最新），"
+            f"随后给出 {crop_count} 张来自最新帧的 OCR/目标原分辨率裁剪。"
             "只能返回一个符合 JSON Schema 的决策。每次最多一个动作。"
             "不要返回自由点击坐标；点击必须给出所见控件的 normalized target_bbox。"
             "同时检查文字和常见视觉图标；即使 OCR 没有标签，清晰可辨且与目标直接对应的"

@@ -115,6 +115,18 @@ class GroundedVlmTests(unittest.TestCase):
         self.assertEqual(outcome.wait_reason, WaitReason.LOADING)
         self.assertIsNone(outcome.action)
 
+    def test_temporal_overviews_are_chronological_and_capped_at_three(self) -> None:
+        client = _Client([_reply()])
+
+        GroundedVlmPlanner(client).decide(
+            snapshot=_snapshot(),
+            frames=tuple(_large_frame(value) for value in (1, 2, 3, 100)),
+            goal="打开设置",
+        )
+
+        self.assertEqual(len(client.calls[0]["images"]), 4)  # type: ignore[arg-type]
+        self.assertIn("3 张按时间先后", str(client.calls[0]["instruction"]))
+
     def test_invalid_reply_gets_one_repair_then_abstains(self) -> None:
         client = _Client(["not json", "still not json"])
 

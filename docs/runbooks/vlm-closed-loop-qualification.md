@@ -109,6 +109,20 @@ more than two recoveries, or capture gaps above the limits.
 
 ### Offline report
 
+Generate the reproducible owned baseline corpus (320 rendered temporal frames,
+200 annotations) with:
+
+```powershell
+uga-benchmark grounding-fixtures `
+  --output-root runs/qualification-vlm/offline-v1
+```
+
+The renderer uses deterministic UI geometry instead of generated imagery so
+target boxes, disabled/forbidden regions, OCR truth, temporal ordering, and
+frame hashes are exact. Add separately licensed real screenshots as additional
+samples when measuring broader visual-domain generalization; do not relabel
+generated or unlicensed images as owned Fixture evidence.
+
 Each annotation JSONL row must include `sample_id`, one of the four categories,
 the goal, one to three hash-verified relative frame references, `ocr_truth`,
 `expected_kind`, `expected_action_kind`, normalized `expected_bbox`, expected

@@ -11,6 +11,7 @@ from uga.benchmark.io import load_benchmark_runs, write_benchmark_report, write_
 from uga.benchmark.runner import BenchmarkRunner
 from uga.benchmark.schema import load_benchmark_tasks
 from uga.core.errors import ContractViolation
+from uga.evaluation.grounding_fixture_corpus import build_grounding_fixture_corpus
 from uga.evaluation.grounding_qualification import build_grounding_qualification_report
 from uga.evaluation.grounding_runner import (
     default_perception_builder,
@@ -107,6 +108,10 @@ def _grounding_run(args: argparse.Namespace) -> None:
     print(output)
 
 
+def _grounding_fixtures(args: argparse.Namespace) -> None:
+    print(build_grounding_fixture_corpus(args.output_root))
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Validate and summarize UGA-Bench runs")
     subparsers = parser.add_subparsers(required=True)
@@ -157,6 +162,13 @@ def main() -> None:
     grounding_run.add_argument("--no-thinking", action="store_true")
     grounding_run.add_argument("--project-root", type=Path, default=Path("."))
     grounding_run.set_defaults(handler=_grounding_run)
+
+    grounding_fixtures = subparsers.add_parser(
+        "grounding-fixtures",
+        help="render the deterministic owned 80/40/40/40 grounding corpus",
+    )
+    grounding_fixtures.add_argument("--output-root", type=Path, required=True)
+    grounding_fixtures.set_defaults(handler=_grounding_fixtures)
 
     args = parser.parse_args()
     args.handler(args)
