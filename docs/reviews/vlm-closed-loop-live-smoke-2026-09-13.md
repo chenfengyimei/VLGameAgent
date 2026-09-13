@@ -71,11 +71,49 @@ passed, one opt-in physical-input test skipped, and 89 subtests passed. Cargo
 format/clippy/tests, TypeScript typecheck/build, the hashed vision dependency
 lock dry run, and isolated Python sdist/wheel builds also passed.
 
+## Offline grounding qualification
+
+The source-bound 200-sample hard corpus subsequently passed at
+`f3cbaf70d167d9f303e86161660fa8acfbb2feb9`. The deterministic owned corpus
+contains 80 ordinary, 40 terminal, 40 difficult, and 40 loop samples backed by
+320 hash-verified temporal frames. Predictions came from local LM Studio
+`qwen3-vl-4b-instruct` with mandatory RapidOCR and the bounded 768-token
+structured-decision path.
+
+| Measurement | Observed | Required |
+|---|---:|---:|
+| Samples / category volume | 200 / 80-40-40-40 | required |
+| Schema validity | 100% | 100% |
+| Normalized OCR text F1 | 99.296% | at least 95% |
+| Decision / action-kind accuracy | 100% / 100% | at least 95% |
+| Target-box hit rate | 100% | at least 95% |
+| Center error median / p95 | 0.194% / 0.335% | at most 2.5% / 5% |
+| False physical action on WAIT/DONE | 0% | at most 1% |
+| Forbidden actions / wrong windows | 0 / 0 | 0 / 0 |
+| Inference latency median / p95 / max | 5.031 / 5.875 / 6.344 s | informational |
+
+Local evidence paths and hashes:
+
+| Artifact | SHA-256 |
+|---|---|
+| `offline-v2/annotations.jsonl` | `1042e2cc2ca6962d34a6d6692c8efece86d3f13ad11a8d152e25bc782d917200` |
+| 320-frame set | `539241da3cd29430c8e102710bbbb9ddc1db94f97fef002f24f3534f689261e2` |
+| `offline-v2/predictions-f3cbaf7.jsonl` | `fe28140bf064cf8e0bb72716f1a1b908ab2466d0fcafca59cb6864223537b3e0` |
+| `offline-v2/report-f3cbaf7.json` | `86cc5fb2af07e07c9fff3b3f756e33ce5983744afdba07385e1ba4f7af1e3d06` |
+
+An earlier 179-row run at `3850ffd` is retained as negative evidence. Samples
+`loop-017` and `loop-018` each spent about 165 seconds exhausting 4096 tokens
+across the initial response and one repair, then correctly failed closed as
+`ABSTAIN/schema_valid=false`. Bounding every Schema string/array and limiting a
+decision to 768 output tokens eliminated that failure; the complete successor
+run had zero Schema failures and no latency above 6.344 seconds. The failed
+prediction file SHA-256 is
+`82ce89473a75463e9156c0aac3ea79ec19b92ed8750ed1e3f3d2b61643b9693b`.
+
 ## Qualification boundary
 
-This is a successful real-model, real-capture, real-input development smoke. It
-does not satisfy the planned 200-sample offline corpus, 100-Episode Fixture +
-MuMu matrix, 30-minute visual-loop soak, authorized-game report, five-hour
-training corpus, five model stages, or the final UGA-075 source-bound ledger.
-Those items remain open and must not be inferred from this result.
-
+The real-model offline grounding gate and one real-capture, real-input MuMu
+development smoke have passed. They do not satisfy the planned 100-Episode
+Fixture + MuMu matrix, 30-minute visual-loop soak, authorized-game report,
+five-hour training corpus, five model stages, or the final UGA-075 source-bound
+ledger. Those items remain open and must not be inferred from these results.
