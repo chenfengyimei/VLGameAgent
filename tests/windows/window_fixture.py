@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ctypes
 import os
+import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
 
@@ -47,6 +48,18 @@ if os.name == "nt":
     _user32.SetWindowTextW.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR]
     _user32.SetWindowTextW.restype = wintypes.BOOL
     _user32.UpdateWindow.argtypes = [ctypes.c_void_p]
+    _user32.PeekMessageW.argtypes = [
+        ctypes.POINTER(wintypes.MSG),
+        ctypes.c_void_p,
+        wintypes.UINT,
+        wintypes.UINT,
+        wintypes.UINT,
+    ]
+    _user32.PeekMessageW.restype = wintypes.BOOL
+    _user32.TranslateMessage.argtypes = [ctypes.POINTER(wintypes.MSG)]
+    _user32.TranslateMessage.restype = wintypes.BOOL
+    _user32.DispatchMessageW.argtypes = [ctypes.POINTER(wintypes.MSG)]
+    _user32.DispatchMessageW.restype = ctypes.c_ssize_t
     _user32.GetSystemMetrics.argtypes = [ctypes.c_int]
     _user32.GetSystemMetrics.restype = ctypes.c_int
     _user32.MonitorFromWindow.argtypes = [ctypes.c_void_p, wintypes.DWORD]
@@ -70,39 +83,74 @@ def capture_test_window(
 ) -> Iterator[tuple[int, WindowIdentity]]:
     if os.name != "nt":
         raise RuntimeError("Windows-only fixture")
-    style = 0x00CF0000 | 0x10000000  # WS_OVERLAPPEDWINDOW | WS_VISIBLE
-    # A STATIC-class window hit-tests transparent, which makes
-    # WindowFromPoint (and anything built on it, such as click-point
-    # ownership checks) see straight through it to the desktop; BUTTON
-    # hit-tests normally while behaving identically for capture purposes.
-    hwnd = _user32.CreateWindowExW(
-        0,
-        "BUTTON",
-        "UGA Native Capture Fixture",
-        style,
-        100,
-        100,
-        320,
-        240,
-        None,
-        None,
-        _kernel32.GetModuleHandleW(None),
-        None,
-    )
-    if not hwnd:
-        raise ctypes.WinError(ctypes.get_last_error())
-    try:
-        _user32.ShowWindow(hwnd, 5)
-        _user32.UpdateWindow(hwnd)
-        dc = _user32.GetDC(hwnd)
-        brush = _gdi32.CreateSolidBrush(0x0020A0E0)
+    ready = threading.Event()
+    stop = threading.Event()
+    handles: list[int] = []
+    failures: list[BaseException] = []
+
+    def run_window() -> None:
         try:
-            rect = wintypes.RECT(0, 0, 320, 240)
-            _user32.FillRect(dc, ctypes.byref(rect), brush)
+            style = 0x00CF0000 | 0x10000000  # WS_OVERLAPPEDWINDOW | WS_VISIBLE
+            # A STATIC-class window hit-tests transparent, which makes
+            # WindowFromPoint see through it. BUTTON owns its visible points.
+            hwnd = _user32.CreateWindowExW(
+                0,
+                "BUTTON",
+                "UGA Native Capture Fixture",
+                style,
+                100,
+                100,
+                320,
+                240,
+                None,
+                None,
+                _kernel32.GetModuleHandleW(None),
+                None,
+            )
+            if not hwnd:
+                raise ctypes.WinError(ctypes.get_last_error())
+            handles.append(int(hwnd))
+            _user32.ShowWindow(hwnd, 5)
+            _user32.UpdateWindow(hwnd)
+            dc = _user32.GetDC(hwnd)
+            brush = _gdi32.CreateSolidBrush(0x0020A0E0)
+            try:
+                rect = wintypes.RECT(0, 0, 320, 240)
+                _user32.FillRect(dc, ctypes.byref(rect), brush)
+            finally:
+                _gdi32.DeleteObject(brush)
+                _user32.ReleaseDC(hwnd, dc)
+            ready.set()
+            message = wintypes.MSG()
+            while not stop.wait(0.01):
+                while _user32.PeekMessageW(
+                    ctypes.byref(message), None, 0, 0, 0x0001
+                ):
+                    _user32.TranslateMessage(ctypes.byref(message))
+                    _user32.DispatchMessageW(ctypes.byref(message))
+        except BaseException as exc:  # noqa: BLE001 - propagate fixture startup
+            failures.append(exc)
+            ready.set()
         finally:
-            _gdi32.DeleteObject(brush)
-            _user32.ReleaseDC(hwnd, dc)
-        hwnd_value = int(hwnd)
+            if handles:
+                _user32.DestroyWindow(ctypes.c_void_p(handles[0]))
+
+    window_thread = threading.Thread(
+        target=run_window,
+        name="uga-capture-test-window",
+        daemon=True,
+    )
+    window_thread.start()
+    if not ready.wait(5.0):
+        stop.set()
+        window_thread.join(5.0)
+        raise RuntimeError("capture test window did not start within five seconds")
+    if failures:
+        stop.set()
+        window_thread.join(5.0)
+        raise failures[0]
+    hwnd_value = handles[0]
+    try:
         identity = (
             windows.snapshot(hwnd_value).identity
             if windows is not None
@@ -116,7 +164,10 @@ def capture_test_window(
         )
         yield hwnd_value, identity
     finally:
-        _user32.DestroyWindow(hwnd)
+        stop.set()
+        window_thread.join(5.0)
+        if window_thread.is_alive():
+            raise RuntimeError("capture test window thread did not stop")
 
 
 _SW_MINIMIZE = 6
