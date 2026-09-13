@@ -43,8 +43,12 @@ GROUNDING_RESPONSE_FORMAT: dict[str, Any] = {
             ],
             "properties": {
                 "kind": {"enum": [item.value for item in DecisionKind]},
-                "scene_summary": {"type": "string"},
-                "visible_text": {"type": "array", "items": {"type": "string"}},
+                "scene_summary": {"type": "string", "maxLength": 160},
+                "visible_text": {
+                    "type": "array",
+                    "items": {"type": "string", "maxLength": 80},
+                    "maxItems": 16,
+                },
                 "goal_status": {"enum": [item.value for item in GoalStatus]},
                 "confidence": {"type": "number", "minimum": 0, "maximum": 1},
                 "wait_reason": {
@@ -53,7 +57,7 @@ GROUNDING_RESPONSE_FORMAT: dict[str, Any] = {
                         {"type": "null"},
                     ]
                 },
-                "explanation": {"type": "string"},
+                "explanation": {"type": "string", "maxLength": 240},
                 "action": {
                     "anyOf": [
                         {"type": "null"},
@@ -77,7 +81,7 @@ GROUNDING_RESPONSE_FORMAT: dict[str, Any] = {
                                         GuiActionKind.HOTKEY.value,
                                     ]
                                 },
-                                "target_label": {"type": "string"},
+                                "target_label": {"type": "string", "maxLength": 80},
                                 "target_bbox": {
                                     "anyOf": [
                                         {"type": "null"},
@@ -93,14 +97,19 @@ GROUNDING_RESPONSE_FORMAT: dict[str, Any] = {
                                         },
                                     ]
                                 },
-                                "expected_effect": {"type": "string"},
+                                "expected_effect": {"type": "string", "maxLength": 160},
                                 "confidence": {
                                     "type": "number",
                                     "minimum": 0,
                                     "maximum": 1,
                                 },
                                 "risk": {"enum": [item.value for item in ActionRisk]},
-                                "key": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+                                "key": {
+                                    "anyOf": [
+                                        {"type": "string", "maxLength": 32},
+                                        {"type": "null"},
+                                    ]
+                                },
                             },
                         },
                     ]

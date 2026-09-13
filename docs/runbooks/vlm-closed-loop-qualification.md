@@ -38,6 +38,7 @@ python -m apps.agent run `
   --vlm-no-thinking `
   --vlm-decision-interval 1 `
   --vlm-timeout-seconds 60 `
+  --vlm-max-output-tokens 768 `
   --vision-mode local `
   --ocr auto `
   --max-recoveries 2 `
@@ -141,6 +142,7 @@ uga-benchmark grounding-run `
   --output runs/qualification-vlm/offline/predictions.jsonl `
   --base-url http://127.0.0.1:1234/v1 `
   --model qwen3-vl-4b-instruct `
+  --max-output-tokens 768 `
   --no-thinking `
   --project-root .
 ```
@@ -150,6 +152,11 @@ source revision, model id, Schema result, OCR text, grounded action and bbox,
 latency, and a digest of the raw model reply. Infrastructure failures stop the
 run without discarding completed rows. After the cohort completes, build the
 report:
+
+The 768-token bound is intentionally generous for one structured decision but
+prevents an unconstrained model string from occupying the only inference slot
+for thousands of tokens. The JSON Schema also bounds every free-text field;
+format repair remains limited to one attempt.
 
 ```powershell
 uga-benchmark grounding-report `

@@ -92,6 +92,7 @@ def _grounding_run(args: argparse.Namespace) -> None:
         model=args.model,
         api_key=os.environ.get(args.api_key_env, ""),
         timeout_s=args.timeout_seconds,
+        max_output_tokens=args.max_output_tokens,
         disable_thinking=args.no_thinking,
     )
     output = run_grounding_predictions(
@@ -159,6 +160,7 @@ def main() -> None:
     grounding_run.add_argument("--model", default="qwen3-vl-4b-instruct")
     grounding_run.add_argument("--api-key-env", default="UGA_VLM_API_KEY")
     grounding_run.add_argument("--timeout-seconds", type=float, default=60.0)
+    grounding_run.add_argument("--max-output-tokens", type=int, default=768)
     grounding_run.add_argument("--no-thinking", action="store_true")
     grounding_run.add_argument("--project-root", type=Path, default=Path("."))
     grounding_run.set_defaults(handler=_grounding_run)

@@ -177,6 +177,7 @@ async def _run(args: argparse.Namespace) -> int:
         or args.vlm_decision_interval <= 0
         or not math.isfinite(args.vlm_timeout_seconds)
         or args.vlm_timeout_seconds <= 0
+        or not 64 <= args.vlm_max_output_tokens <= 16_384
     ):
         raise SystemExit("vision planner intervals and timeouts must be positive")
     if args.policy == "vlm" and not 0 <= args.max_recoveries <= 2:
@@ -199,6 +200,7 @@ async def _run(args: argparse.Namespace) -> int:
             model=args.vlm_model,
             api_key=os.environ.get(args.vlm_api_key_env, ""),
             timeout_s=args.vlm_timeout_seconds,
+            max_output_tokens=args.vlm_max_output_tokens,
             disable_thinking=args.vlm_no_thinking,
             extra_body=extra_body,
         )
@@ -213,6 +215,7 @@ async def _run(args: argparse.Namespace) -> int:
                 model=args.verifier_model,
                 api_key=os.environ.get(args.verifier_api_key_env, ""),
                 timeout_s=args.vlm_timeout_seconds,
+                max_output_tokens=args.vlm_max_output_tokens,
             )
             outcome_verifier = GroundedOutcomeVerifier(verifier_client)
     profile = load_game_profile(args.profile)
@@ -725,6 +728,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=30.0,
         help="vision request timeout",
+    )
+    parser.add_argument(
+        "--vlm-max-output-tokens",
+        type=int,
+        default=768,
+        help="maximum generated tokens for one structured vision decision",
     )
     parser.add_argument(
         "--vlm-no-thinking",

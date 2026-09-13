@@ -336,6 +336,7 @@ class OpenAICompatibleVisionClientTests(unittest.TestCase):
         self.assertEqual(request.headers.get("Authorization"), "Bearer secret")
         payload = json.loads(request.data.decode("utf-8"))
         self.assertEqual(payload["model"], "gemma-3-4b-it")
+        self.assertEqual(payload["max_tokens"], 768)
         content = payload["messages"][0]["content"]
         self.assertEqual(content[0]["type"], "image_url")
         self.assertTrue(
@@ -344,6 +345,40 @@ class OpenAICompatibleVisionClientTests(unittest.TestCase):
         self.assertEqual(content[1]["type"], "text")
         self.assertIn("决定", content[1]["text"])
         self.assertEqual(reply, '{"action":"wait"}')
+
+    def test_custom_output_budget_is_forwarded(self) -> None:
+        reply_body = json.dumps(
+            {"choices": [{"message": {"content": '{"action":"wait"}'}}]}
+        ).encode("utf-8")
+
+        class _Response:
+            def read(self, size: int = -1) -> bytes:
+                return reply_body[:size]
+
+            def __enter__(self) -> _Response:
+                return self
+
+            def __exit__(self, *exc: object) -> bool:
+                return False
+
+        client = OpenAICompatibleVisionClient(
+            base_url="http://127.0.0.1:1234/v1",
+            model="qwen3-vl-4b-instruct",
+            max_output_tokens=512,
+        )
+        with mock.patch("urllib.request.urlopen", return_value=_Response()) as urlopen:
+            client.decide(images=[b"x"], instruction="go")
+
+        payload = json.loads(urlopen.call_args.args[0].data.decode("utf-8"))
+        self.assertEqual(payload["max_tokens"], 512)
+
+    def test_invalid_output_budget_is_rejected(self) -> None:
+        with self.assertRaisesRegex(ContractViolation, "output budget"):
+            OpenAICompatibleVisionClient(
+                base_url="http://127.0.0.1:1234/v1",
+                model="qwen3-vl-4b-instruct",
+                max_output_tokens=63,
+            )
 
     def test_structured_output_schema_is_forwarded(self) -> None:
         reply_body = json.dumps(

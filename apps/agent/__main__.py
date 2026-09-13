@@ -126,6 +126,12 @@ def cli() -> None:
         help="vision request timeout",
     )
     run_parser.add_argument(
+        "--vlm-max-output-tokens",
+        type=int,
+        default=768,
+        help="maximum generated tokens for one structured vision decision",
+    )
+    run_parser.add_argument(
         "--vlm-no-thinking",
         action="store_true",
         help="ask thinking-style models (GLM-4.xV) to answer without a reasoning pass",

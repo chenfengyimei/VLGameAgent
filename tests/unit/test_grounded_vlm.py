@@ -89,6 +89,13 @@ class GroundedVlmTests(unittest.TestCase):
         self.assertIn('"minimum": 0', encoded)
         self.assertIn('"maximum": 1', encoded)
 
+    def test_schema_bounds_free_text_generation(self) -> None:
+        schema = GROUNDING_RESPONSE_FORMAT["json_schema"]["schema"]
+        properties = schema["properties"]
+        self.assertEqual(properties["scene_summary"]["maxLength"], 160)
+        self.assertEqual(properties["visible_text"]["maxItems"], 16)
+        self.assertEqual(properties["explanation"]["maxLength"], 240)
+
     def test_uses_clean_overview_and_grounded_target_crop(self) -> None:
         client = _Client([_reply()])
         snapshot = _snapshot()

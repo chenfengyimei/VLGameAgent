@@ -2,10 +2,12 @@ models:
   perception_primary:
     provider: lm_studio
     model: qwen3-vl-4b-instruct
+    max_output_tokens: 768
     enabled: true
   action_verifier:
     provider: openai_compatible
     model: configure-an-optional-larger-vision-model
+    max_output_tokens: 768
     enabled: false
   planner:
     provider: qwen

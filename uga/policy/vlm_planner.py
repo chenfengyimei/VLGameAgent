@@ -43,6 +43,7 @@ MAX_STATIC_HOLDS = 10
 MAX_WAIT_INTERVAL_S = 15.0
 MAX_VISION_RESPONSE_BYTES = 4 * 1024 * 1024
 MAX_VISION_ERROR_DETAIL_BYTES = 4096
+DEFAULT_VISION_MAX_OUTPUT_TOKENS = 768
 DEFAULT_FRAME_HISTORY_BYTES = 128 * 1024 * 1024
 WAIT_WARN_STREAK = 6
 _SUPPORTED_FORMATS = (PixelFormat.BGRA8, PixelFormat.RGBA8)
@@ -167,6 +168,7 @@ class OpenAICompatibleVisionClient:
         model: str,
         api_key: str = "",
         timeout_s: float = 30.0,
+        max_output_tokens: int = DEFAULT_VISION_MAX_OUTPUT_TOKENS,
         disable_thinking: bool = False,
         extra_body: dict[str, Any] | None = None,
     ) -> None:
@@ -174,6 +176,14 @@ class OpenAICompatibleVisionClient:
             raise ContractViolation("vision client requires a base URL and a model name")
         if not isinstance(timeout_s, (int, float)) or not 0 < timeout_s < float("inf"):
             raise ContractViolation("vision client timeout must be positive")
+        if (
+            isinstance(max_output_tokens, bool)
+            or not isinstance(max_output_tokens, int)
+            or not 64 <= max_output_tokens <= 16_384
+        ):
+            raise ContractViolation(
+                "vision client output budget must be an integer within [64, 16384]"
+            )
         root = base_url.rstrip("/")
         if not root.endswith("/chat/completions"):
             root = root + "/chat/completions"
@@ -181,6 +191,7 @@ class OpenAICompatibleVisionClient:
         self._model = model
         self._api_key = api_key
         self._timeout_s = timeout_s
+        self._max_output_tokens = max_output_tokens
         self._disable_thinking = disable_thinking
         self._extra_body = dict(extra_body) if extra_body else None
 
@@ -214,9 +225,9 @@ class OpenAICompatibleVisionClient:
                 }
             ],
             "temperature": 0.0,
-            # Thinking-style models (e.g. GLM-4.xV) spend tokens on reasoning
-            # before the answer; a small budget yields an empty content field.
-            "max_tokens": 4096,
+            # A grounded decision is compact. Bounding generation prevents a
+            # malformed string field from monopolising the single inference slot.
+            "max_tokens": self._max_output_tokens,
         }
         if self._disable_thinking:
             # Zhipu-style switch: answer directly without a reasoning pass.
