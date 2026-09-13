@@ -44,6 +44,8 @@ if os.name == "nt":
     _user32.SetWindowPos.restype = wintypes.BOOL
     _user32.ShowWindow.argtypes = [ctypes.c_void_p, ctypes.c_int]
     _user32.ShowWindow.restype = wintypes.BOOL
+    _user32.SetWindowTextW.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR]
+    _user32.SetWindowTextW.restype = wintypes.BOOL
     _user32.UpdateWindow.argtypes = [ctypes.c_void_p]
     _user32.GetSystemMetrics.argtypes = [ctypes.c_int]
     _user32.GetSystemMetrics.restype = ctypes.c_int
@@ -143,6 +145,17 @@ def resize_window(hwnd: int, width: int, height: int) -> None:
     )
     if not ok:
         raise ctypes.WinError(ctypes.get_last_error())
+
+
+def refresh_window(hwnd: int, sequence: int = 0) -> None:
+    """Forces a new compositor frame after a capture session attaches."""
+    ok = _user32.SetWindowTextW(
+        ctypes.c_void_p(hwnd),
+        f"UGA Native Capture Fixture {sequence}",
+    )
+    if not ok:
+        raise ctypes.WinError(ctypes.get_last_error())
+    _user32.UpdateWindow(ctypes.c_void_p(hwnd))
 
 
 def move_window(hwnd: int, x: int, y: int) -> None:

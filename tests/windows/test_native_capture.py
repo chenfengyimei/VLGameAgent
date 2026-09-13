@@ -5,7 +5,7 @@ import os
 import unittest
 from unittest.mock import patch
 
-from tests.windows.window_fixture import capture_test_window
+from tests.windows.window_fixture import capture_test_window, refresh_window
 from uga.capture.native_ctypes import (
     CtypesNativeCaptureDriver,
     NativeBackendId,
@@ -44,7 +44,7 @@ class NativeCaptureTests(unittest.TestCase):
             self.library.create(NativeBackendId.WGC, 0)
 
     def test_wgc_captures_owned_fixture_when_desktop_supports_it(self) -> None:
-        with capture_test_window(self.windows) as (_, target):
+        with capture_test_window(self.windows) as (hwnd, target):
             driver = CtypesNativeCaptureDriver(
                 NativeBackendId.WGC,
                 self.library,
@@ -54,6 +54,9 @@ class NativeCaptureTests(unittest.TestCase):
             try:
                 driver.start(target)
                 for attempt in range(3):
+                    # WGC may attach after the fixture's initial presentation.
+                    # Publish a fresh compositor frame for every bounded attempt.
+                    refresh_window(hwnd, attempt)
                     try:
                         frame = driver.capture()
                         break
