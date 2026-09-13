@@ -116,7 +116,11 @@ Every goal also supplies one or more repeated `--goal-evidence` values. The
 planner sees those mandatory facts, and `GoalVerifier` accepts `DONE` only when
 all of them occur in fresh local OCR on both confirmation frames; text claimed
 only by the model cannot satisfy completion. Without OCR, evidence-bound goals
-fail closed rather than lowering the threshold.
+fail closed rather than lowering the threshold. Single-step tasks additionally
+provide `--goal-action-target`; when its literal label is present while required
+completion evidence is absent, the constrained prompt requires the model to
+ground that visible row as its one action. The model must still return the bbox,
+and normal OCR, freshness, focus, and action-effect validation still apply.
 Review every Episode's video, planner decisions, grounded bbox, action effect,
 terminal status, and Replay result before changing `reviewed` or the three
 error findings in the final plan. Add the separately recorded injected-loop

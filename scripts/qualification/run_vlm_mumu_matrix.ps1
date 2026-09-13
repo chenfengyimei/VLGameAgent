@@ -19,6 +19,7 @@ $tasks = @(
         intent = "android.settings.WIRELESS_SETTINGS"
         setup_markers = @("互联网", "SIM 卡")
         goal_evidence = @("添加网络")
+        action_target = "互联网"
         goal = "Open 互联网. Complete only when the 互联网 page and 添加网络 are visible; then output DONE."
     },
     [pscustomobject]@{
@@ -26,6 +27,7 @@ $tasks = @(
         intent = "android.settings.WIRELESS_SETTINGS"
         setup_markers = @("互联网", "SIM 卡")
         goal_evidence = @("移动数据")
+        action_target = "SIM 卡"
         goal = "Open SIM 卡. Complete only when the China Mobile GSM page and 移动数据 are visible; then output DONE."
     },
     [pscustomobject]@{
@@ -33,6 +35,7 @@ $tasks = @(
         intent = "android.settings.WIRELESS_SETTINGS"
         setup_markers = @("互联网", "热点和网络共享")
         goal_evidence = @("WLAN 热点")
+        action_target = "热点和网络共享"
         goal = "Open 热点和网络共享. Complete only when that page and WLAN 热点 are visible; then output DONE. Do not toggle anything."
     },
     [pscustomobject]@{
@@ -40,6 +43,7 @@ $tasks = @(
         intent = "android.settings.WIFI_SETTINGS"
         setup_markers = @("添加网络", "网络偏好设置")
         goal_evidence = @("自动开启 WLAN")
+        action_target = "网络偏好设置"
         goal = "Open 网络偏好设置. Complete only when that page and 自动开启 WLAN are visible; then output DONE. Do not toggle anything."
     },
     [pscustomobject]@{
@@ -47,6 +51,7 @@ $tasks = @(
         intent = "android.settings.BATTERY_SAVER_SETTINGS"
         setup_markers = @("使用省电模式", "设置时间表")
         goal_evidence = @("根据电量百分比")
+        action_target = "设置时间表"
         goal = "Open 设置时间表. Complete only when 没有时间表 and 根据电量百分比 are visible; then output DONE. Do not select a schedule."
     },
     [pscustomobject]@{
@@ -54,6 +59,7 @@ $tasks = @(
         intent = "android.settings.INTERNAL_STORAGE_SETTINGS"
         setup_markers = @("存储空间管理器", "游戏")
         goal_evidence = @("仙遇")
+        action_target = "游戏"
         goal = "Open 游戏. Complete only when the 游戏 storage page lists 仙遇 and its storage size; then output DONE. Do not open the app entry."
     },
     [pscustomobject]@{
@@ -61,6 +67,7 @@ $tasks = @(
         intent = "android.settings.ACCESSIBILITY_SETTINGS"
         setup_markers = @("显示大小和文字", "放大功能")
         goal_evidence = @("预览", "字体大小")
+        action_target = "显示大小和文字"
         goal = "Open 显示大小和文字. Complete only when 预览 and 字体大小 are visible; then output DONE. Do not change any slider."
     },
     [pscustomobject]@{
@@ -68,6 +75,7 @@ $tasks = @(
         intent = "android.settings.ACCESSIBILITY_SETTINGS"
         setup_markers = @("显示大小和文字", "放大功能")
         goal_evidence = @("快速放大屏幕", "放大功能快捷方式")
+        action_target = "放大功能"
         goal = "Open 放大功能. Complete only when 快速放大屏幕 and 放大功能快捷方式 are visible; then output DONE. Do not toggle anything."
     },
     [pscustomobject]@{
@@ -75,6 +83,7 @@ $tasks = @(
         intent = "android.settings.LOCATION_SOURCE_SETTINGS"
         setup_markers = @("应用位置信息权限", "位置信息服务")
         goal_evidence = @("一律允许", "仅在使用时允许")
+        action_target = "应用位置信息权限"
         goal = "Open 应用位置信息权限. Complete only when 一律允许 and 仅在使用时允许 are visible; then output DONE. Do not change permissions."
     },
     [pscustomobject]@{
@@ -82,6 +91,7 @@ $tasks = @(
         intent = "android.settings.LOCATION_SOURCE_SETTINGS"
         setup_markers = @("应用位置信息权限", "位置信息服务")
         goal_evidence = @("WLAN 扫描", "蓝牙扫描")
+        action_target = "位置信息服务"
         goal = "Open 位置信息服务. Complete only when WLAN 扫描 and 蓝牙扫描 are visible; then output DONE. Do not toggle anything."
     },
     [pscustomobject]@{
@@ -161,6 +171,9 @@ if ($tasks.Count -ne 20 -or @($tasks.id | Sort-Object -Unique).Count -ne 20) {
 }
 if (@($tasks | Where-Object { $_.goal_evidence.Count -lt 1 }).Count -ne 0) {
     throw "every MuMu qualification goal must declare fresh OCR completion evidence"
+}
+if (@($tasks | Where-Object { $_.id -notlike "observe-*" -and -not $_.action_target }).Count -ne 0) {
+    throw "every MuMu navigation goal must declare its single-step action target"
 }
 
 if ($DryRun) {
@@ -331,6 +344,9 @@ try {
             )
             foreach ($requiredEvidence in $task.goal_evidence) {
                 $arguments += @("--goal-evidence", $requiredEvidence)
+            }
+            if ($null -ne $task.action_target) {
+                $arguments += @("--goal-action-target", $task.action_target)
             }
             Write-Host "[run] $($task.id) repetition=$repetition"
             & $PythonExecutable @arguments 2>&1 |

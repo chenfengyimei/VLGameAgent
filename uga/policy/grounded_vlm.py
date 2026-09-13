@@ -196,17 +196,22 @@ class GroundedVlmPlanner:
         max_image_width: int = 1280,
         journal: DecisionJournal | None = None,
         required_goal_evidence: Sequence[str] = (),
+        preferred_action_target: str | None = None,
     ) -> None:
         if max_image_width < 320:
             raise ContractViolation("grounded planner image width must be at least 320")
         evidence = tuple(value.strip() for value in required_goal_evidence)
         if any(not value for value in evidence) or len(evidence) != len(set(evidence)):
             raise ContractViolation("required goal evidence must be unique and non-empty")
+        action_target = None if preferred_action_target is None else preferred_action_target.strip()
+        if preferred_action_target is not None and not action_target:
+            raise ContractViolation("preferred action target cannot be blank")
         self._client = client
         self._structured_output = structured_output
         self._max_image_width = max_image_width
         self._journal = journal or NullJournal()
         self._required_goal_evidence = evidence
+        self._preferred_action_target = action_target
         self._schema_supported: bool | None = None
         self.last_raw_reply: str | None = None
         self.last_schema_valid = False
@@ -237,6 +242,7 @@ class GroundedVlmPlanner:
             temporal_count=temporal_count,
             crop_count=crop_count,
             required_goal_evidence=self._required_goal_evidence,
+            preferred_action_target=self._preferred_action_target,
         )
         response_format = (
             GROUNDING_RESPONSE_FORMAT
@@ -273,6 +279,7 @@ class GroundedVlmPlanner:
                     temporal_count=temporal_count,
                     crop_count=crop_count,
                     required_goal_evidence=self._required_goal_evidence,
+                    preferred_action_target=self._preferred_action_target,
                 ),
                 response_format=(
                     GROUNDING_RESPONSE_FORMAT if self._schema_supported is True else None
@@ -353,6 +360,7 @@ class GroundedVlmPlanner:
         temporal_count: int,
         crop_count: int,
         required_goal_evidence: Sequence[str] = (),
+        preferred_action_target: str | None = None,
     ) -> str:
         ocr = "\n".join(
             f"- {region.text!r} bbox="
@@ -368,12 +376,45 @@ class GroundedVlmPlanner:
             if repair_reply is not None
             else ""
         )
-        required = (
-            "\n显式完成证据（每一项都必须在最新帧真实可见，否则禁止 DONE）：\n"
-            + "\n".join(f"- {value}" for value in required_goal_evidence)
-            if required_goal_evidence
-            else ""
+        normalized_ocr = tuple(
+            normalize_visible_text(region.text) for region in snapshot.visible_text
         )
+        missing_evidence = tuple(
+            value
+            for value in required_goal_evidence
+            if not any(normalize_visible_text(value) in item for item in normalized_ocr)
+        )
+        required = ""
+        if required_goal_evidence:
+            required = (
+                "\n显式完成证据（指最新 OCR 中的字面文字，不接受语义近似或推断）：\n"
+                + "\n".join(f"- {value}" for value in required_goal_evidence)
+                + "\n当前缺失证据："
+                + (", ".join(missing_evidence) if missing_evidence else "无")
+                + (
+                    "。因此当前帧绝对禁止 DONE。"
+                    if missing_evidence
+                    else "。因此可以结合图像判断 DONE。"
+                )
+            )
+        target_visible = bool(
+            preferred_action_target
+            and any(
+                normalize_visible_text(preferred_action_target) in item
+                for item in normalized_ocr
+            )
+        )
+        action_target = ""
+        if preferred_action_target is not None:
+            action_target = (
+                f"\n本任务的单步导航目标是：{preferred_action_target}。"
+                + (
+                    "该目标文字已在最新 OCR 中出现且完成证据仍缺失；当前帧必须输出 "
+                    "ACT，target_label 使用该文字，bbox 对准它所在的整行可点击区域。"
+                    if target_visible and missing_evidence
+                    else "仅在它真实可见且完成证据缺失时点击。"
+                )
+            )
         return (
             "你是像素 GUI 闭环规划器。目标：" + goal + "\n"
             f"输入先给出 {temporal_count} 张按时间先后排列的干净全景图（最后一张最新），"
@@ -400,7 +441,7 @@ class GroundedVlmPlanner:
             "key/hotkey 的 target_bbox 必须为 null 且 key 必须是已知语义键名。"
             "expected_effect 必须描述下一帧可验证的界面或文本变化。"
             "登录、删除、支付、发送、安装标记为 critical。\n"
-            "当前 OCR：\n" + ocr + required + repair
+            "当前 OCR：\n" + ocr + required + action_target + repair
         )
 
     @staticmethod

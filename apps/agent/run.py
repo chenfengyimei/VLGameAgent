@@ -164,6 +164,11 @@ async def _run(args: argparse.Namespace) -> int:
     if any(not value.strip() for value in raw_goal_evidence):
         raise SystemExit("--goal-evidence values cannot be blank")
     goal_evidence = tuple(dict.fromkeys(value.strip() for value in raw_goal_evidence))
+    goal_action_target = getattr(args, "goal_action_target", None)
+    if goal_action_target is not None:
+        goal_action_target = goal_action_target.strip()
+        if not goal_action_target:
+            raise SystemExit("--goal-action-target cannot be blank")
     if qualification_root is not None and not args.record:
         raise SystemExit("--qualification-project-root requires --record")
     if not math.isfinite(args.duration_seconds) or args.duration_seconds < 0:
@@ -304,6 +309,7 @@ async def _run(args: argparse.Namespace) -> int:
                 max_image_width=1280,
                 journal=journal,
                 required_goal_evidence=goal_evidence,
+                preferred_action_target=goal_action_target,
             )
             policy: ScriptedTapPolicy | None = None
         except BaseException:
@@ -677,6 +683,10 @@ def build_parser() -> argparse.ArgumentParser:
             "text that must be present in fresh OCR before DONE can be accepted; "
             "repeat for multiple required facts"
         ),
+    )
+    parser.add_argument(
+        "--goal-action-target",
+        help="preferred visible label for the next single-step navigation action",
     )
     parser.add_argument(
         "--policy",

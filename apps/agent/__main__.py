@@ -68,6 +68,10 @@ def cli() -> None:
         ),
     )
     run_parser.add_argument(
+        "--goal-action-target",
+        help="preferred visible label for the next single-step navigation action",
+    )
+    run_parser.add_argument(
         "--policy",
         choices=["scripted", "vlm"],
         default="scripted",
