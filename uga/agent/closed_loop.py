@@ -268,6 +268,13 @@ class ClosedLoopSupervisor:
         self._pending: _PendingAction | None = None
         self._uncertain_retries = 0
         self._ineffective: dict[str, int] = {}
+        self._logical_actions_issued = 0
+        self._verified_effect_actions = 0
+        self._ineffective_actions = 0
+        self._stale_results_discarded = 0
+        self._last_ineffective_key: str | None = None
+        self._consecutive_same_ineffective = 0
+        self._max_consecutive_same_ineffective = 0
         self._progress = ProgressTracker()
         self._loops = LoopDetector()
         self._max_recoveries = max_recoveries
@@ -314,6 +321,14 @@ class ClosedLoopSupervisor:
             "goal_confidence": self.goal_confidence,
             "recovery_count": self._recovery_count,
             "last_effect_observed": self.last_effect_observed,
+            "logical_actions_issued": self._logical_actions_issued,
+            "verified_effect_actions": self._verified_effect_actions,
+            "ineffective_actions": self._ineffective_actions,
+            "pending_action": self._pending is not None,
+            "stale_results_discarded": self._stale_results_discarded,
+            "max_consecutive_same_ineffective_action": (
+                self._max_consecutive_same_ineffective
+            ),
             "task_status": (
                 None
                 if self._task_graph is None or self._task_node_id is None
@@ -369,6 +384,9 @@ class ClosedLoopSupervisor:
         if changed:
             self._pending = None
             self.last_effect_observed = True
+            self._verified_effect_actions += 1
+            self._last_ineffective_key = None
+            self._consecutive_same_ineffective = 0
             self._uncertain_retries = 0
             finding = self._record_action_result(
                 pending,
@@ -390,6 +408,16 @@ class ClosedLoopSupervisor:
             return EffectObservation(True, None, "waiting for the expected visual effect")
         key = self._action_key(pending.action)
         self._ineffective[key] = self._ineffective.get(key, 0) + 1
+        self._ineffective_actions += 1
+        if key == self._last_ineffective_key:
+            self._consecutive_same_ineffective += 1
+        else:
+            self._last_ineffective_key = key
+            self._consecutive_same_ineffective = 1
+        self._max_consecutive_same_ineffective = max(
+            self._max_consecutive_same_ineffective,
+            self._consecutive_same_ineffective,
+        )
         self._pending = None
         self.last_effect_observed = False
         finding = self._record_action_result(
@@ -502,6 +530,7 @@ class ClosedLoopSupervisor:
         )
         if not valid:
             if reason == "decision generation became stale":
+                self._stale_results_discarded += 1
                 return SupervisedDecision(
                     DecisionDisposition.REOBSERVE,
                     "stale decision discarded; observing the current generation",
@@ -544,7 +573,36 @@ class ClosedLoopSupervisor:
     ) -> None:
         if outcome.action is None:
             raise ContractViolation("cannot verify an outcome without an action")
+        self._logical_actions_issued += 1
         self._pending = self._pending_action(outcome.action, snapshot, frame)
+
+    def validate_execution_frame(
+        self,
+        outcome: PlannerOutcome,
+        validated_frame: Frame,
+        execution_frame: Frame,
+    ) -> tuple[bool, str]:
+        """Recheck the target immediately before submission to the scheduler."""
+        action = outcome.action
+        if action is None:
+            raise ContractViolation("execution freshness requires an ACT outcome")
+        if (
+            execution_frame.capture_timestamp < validated_frame.capture_timestamp
+            or execution_frame.window_identity != validated_frame.window_identity
+            or execution_frame.width != validated_frame.width
+            or execution_frame.height != validated_frame.height
+            or execution_frame.client_rect != validated_frame.client_rect
+            or execution_frame.physical_rect != validated_frame.physical_rect
+        ):
+            self._stale_results_discarded += 1
+            return False, "execution frame generation or geometry changed"
+        if execution_frame.frame_id == validated_frame.frame_id:
+            return True, "execution frame is the validated frame"
+        region = action.target_box or NormalizedBox(0.0, 0.0, 1.0, 1.0)
+        if ActionValidator._target_changed(region, validated_frame, execution_frame):
+            self._stale_results_discarded += 1
+            return False, "target changed after validation and before execution"
+        return True, "target remained stable through the execution frame"
 
     def to_recovery_gui_action(
         self, directive: RecoveryDirective, key_resolver: KeyResolver
@@ -574,6 +632,7 @@ class ClosedLoopSupervisor:
             1.0,
             key="back",
         )
+        self._logical_actions_issued += 1
         self._pending = self._pending_action(action, snapshot, frame)
 
     def to_gui_action(

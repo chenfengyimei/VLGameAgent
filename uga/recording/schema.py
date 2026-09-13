@@ -8,6 +8,7 @@ from uga.control.lifetime import ActionLifetime
 from uga.control.physical import PhysicalAction
 from uga.core.errors import ContractViolation
 from uga.core.schema import VersionedMixin
+from uga.release.revision import is_traceable_source_revision
 from uga.time.clock import UGATime
 
 
@@ -53,6 +54,9 @@ class EpisodeMetadata(VersionedMixin):
     end_monotonic_ns: int | None = None
     termination_reason: str | None = None
     goal_confidence: float | None = None
+    source_revision: str | None = None
+    source_tree_clean: bool | None = None
+    model_id: str | None = None
 
     def __post_init__(self) -> None:
         self.validate()
@@ -80,6 +84,16 @@ class EpisodeMetadata(VersionedMixin):
             raise ContractViolation("episode termination reason cannot be blank")
         if self.goal_confidence is not None and not 0.0 <= self.goal_confidence <= 1.0:
             raise ContractViolation("episode goal confidence must be in [0, 1]")
+        if (self.source_revision is None) != (self.source_tree_clean is None):
+            raise ContractViolation("episode source revision and clean state must be paired")
+        if self.source_revision is not None and not is_traceable_source_revision(
+            self.source_revision
+        ):
+            raise ContractViolation("episode source revision must be a full Git revision")
+        if self.source_tree_clean is not None and type(self.source_tree_clean) is not bool:
+            raise ContractViolation("episode source clean state must be a boolean")
+        if self.model_id is not None and not self.model_id.strip():
+            raise ContractViolation("episode model id cannot be blank")
 
 
 @dataclass(frozen=True, slots=True)

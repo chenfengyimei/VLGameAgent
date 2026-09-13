@@ -313,6 +313,22 @@ class RealtimeAgentLoop:
                 latest_after_inference.frame,
                 observation.user_goal,
             )
+            execution_item = latest_after_inference
+            if supervised.disposition == DecisionDisposition.EXECUTE:
+                current_item = self._frames.latest() or latest_after_inference
+                execution_fresh, execution_reason = closed_loop.validate_execution_frame(
+                    outcome,
+                    latest_after_inference.frame,
+                    current_item.frame,
+                )
+                if not execution_fresh:
+                    supervised = SupervisedDecision(
+                        DecisionDisposition.REOBSERVE,
+                        execution_reason,
+                        outcome,
+                    )
+                else:
+                    execution_item = current_item
             supervision = supervised
             await self._events.publish(
                 EventType.POLICY_INFERENCE_COMPLETED,
@@ -336,7 +352,7 @@ class RealtimeAgentLoop:
                         "supervision_reason": supervised.reason,
                         "source_frame_age_ns": max(
                             0,
-                            fresh_perception.captured_at.value_ns
+                            execution_item.frame.capture_timestamp.value_ns
                             - perception.captured_at.value_ns,
                         ),
                         "effect_observed": closed_loop.last_effect_observed,
@@ -376,11 +392,11 @@ class RealtimeAgentLoop:
                     confidence=gui_action.confidence,
                     reason=f"grounded GUI decision {outcome.decision_id}",
                 )
-                transform = self._coordinate_transform(latest_after_inference.frame)
+                transform = self._coordinate_transform(execution_item.frame)
                 gui_submission = self._gui_controller.submit(
                     gui_action,
                     transform,
-                    latest_after_inference.frame.window_identity,
+                    execution_item.frame.window_identity,
                     gui_lease,
                     observation_id=observation.observation_id,
                     policy_version=grounded_planner.policy_version,
@@ -391,7 +407,7 @@ class RealtimeAgentLoop:
                         closed_loop.start_action(
                             outcome,
                             fresh_perception,
-                            latest_after_inference.frame,
+                            execution_item.frame,
                         )
                     else:
                         closed_loop.fail("grounded GUI proposal was rejected")

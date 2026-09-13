@@ -23,6 +23,7 @@ from uga.release.qualification import (
     hash_evidence,
 )
 from uga.release.revision import require_clean_source_revision
+from uga.release.vlm_live_qualification import build_vlm_live_qualification_report
 
 _LEDGER_NAME = "qualification.json"
 
@@ -174,6 +175,19 @@ def _control_report(args: argparse.Namespace) -> None:
     )
 
 
+def _vlm_live_report(args: argparse.Namespace) -> None:
+    report = build_vlm_live_qualification_report(
+        plan_path=args.plan,
+        episodes_root=args.episodes,
+        output_path=args.output,
+        source_revision=require_clean_source_revision(args.project_root),
+    )
+    payload = json.loads(report.read_text(encoding="utf-8"))
+    print(report)
+    if payload.get("passed") is not True:
+        raise ContractViolation("VLM live qualification thresholds did not pass")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Manage UGA V1 qualification evidence")
     subparsers = parser.add_subparsers(required=True)
@@ -287,6 +301,16 @@ def main() -> None:
     control_report.add_argument("--project-root", type=Path, default=Path("."))
     control_report.add_argument("--output", type=Path, required=True)
     control_report.set_defaults(handler=_control_report)
+
+    vlm_live = subparsers.add_parser(
+        "vlm-live-report",
+        help="verify the source-bound 100-Episode Fixture/MuMu visual-loop matrix",
+    )
+    vlm_live.add_argument("--plan", type=Path, required=True)
+    vlm_live.add_argument("--episodes", type=Path, required=True)
+    vlm_live.add_argument("--project-root", type=Path, default=Path("."))
+    vlm_live.add_argument("--output", type=Path, required=True)
+    vlm_live.set_defaults(handler=_vlm_live_report)
 
     args = parser.parse_args()
     args.handler(args)

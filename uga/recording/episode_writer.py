@@ -497,6 +497,9 @@ class EpisodeWriter:
                 "policy_version": metadata.policy_version,
                 "termination_reason": metadata.termination_reason,
                 "goal_confidence": metadata.goal_confidence,
+                "source_revision": metadata.source_revision,
+                "source_tree_clean": metadata.source_tree_clean,
+                "model_id": metadata.model_id,
             },
         )
         self._write_jsonl(self._staging_path / "events.jsonl", self._events)

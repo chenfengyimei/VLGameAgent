@@ -43,7 +43,8 @@ python -m apps.agent run `
   --max-recoveries 2 `
   --duration-seconds 60 `
   --observation-hz 5 `
-  --record runs/qualification-vlm/episodes
+  --record runs/qualification-vlm/episodes `
+  --qualification-project-root .
 ```
 
 Accept the smoke only when `run.json` reports `success` and
@@ -51,6 +52,11 @@ Accept the smoke only when `run.json` reports `success` and
 and every scheduled physical event executed. A logical click normally records
 three physical scheduler events: pointer move, button down, and button up.
 `WAIT`, `DONE`, and `ABSTAIN` must schedule none.
+
+`--qualification-project-root` refuses a dirty checkout and writes the full Git
+HEAD, clean-tree flag, and model id into both Episode metadata and `run.json`.
+Omit it for ordinary development runs; Episodes without this binding are never
+accepted by the hard live report.
 
 For capture decoupling, require `capture_gap_p95_ns <= 350000000` and
 `capture_gap_max_ns <= 500000000` while the local model is in flight. Inspect
@@ -80,6 +86,26 @@ Store raw Episodes outside Git under `runs/`. Hash the Episode `run.json`,
 `metrics.json`, `planner.jsonl`, video, and checksum manifest. The current
 release ledger accepts only its typed source-bound artifacts; a prose smoke
 report or copied hash is diagnostic evidence and cannot promote UGA-075.
+
+Create a `uga.vlm_live_plan` v1.1 JSON document beside an `episodes/` directory.
+It binds the same `source_revision` and lists each Episode's `episode_id`,
+`goal_id`, zero-based repetition, `task` or injected-`loop` role, manual review
+status, wrong-window/target/critical-error findings, and loop detection rounds.
+Then aggregate the matrix:
+
+```powershell
+uga-qualify vlm-live-report `
+  --plan runs/qualification-vlm/live/plan.json `
+  --episodes runs/qualification-vlm/live/episodes `
+  --output runs/qualification-vlm/live/report.json `
+  --project-root .
+```
+
+The verifier re-hashes every required Episode file, runs deterministic Replay
+validation, checks the terminal planner diagnostics and action-effect counters,
+and rejects incomplete cohorts, stale source bindings, pending/unaccounted
+actions, non-action physical input, more than two repeated ineffective actions,
+more than two recoveries, or capture gaps above the limits.
 
 ### Offline report
 

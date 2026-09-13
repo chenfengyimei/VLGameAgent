@@ -46,6 +46,37 @@ class EpisodeContractTests(unittest.TestCase):
         )
         self.assertEqual(provenance.action_id, action.action_id)
 
+    def test_qualification_source_binding_requires_full_paired_revision(self) -> None:
+        values = dict(
+            episode_id="episode-1",
+            game_id="game",
+            game_version="1",
+            window_size=(1280, 720),
+            capture_backend="wgc",
+            start_monotonic_ns=100,
+            task="task",
+            result=EpisodeResult.IN_PROGRESS,
+            agent_version="agent",
+            policy_version="policy",
+            human_controlled=False,
+        )
+        with self.assertRaisesRegex(ContractViolation, "paired"):
+            EpisodeMetadata(**values, source_revision="a" * 40)
+        with self.assertRaisesRegex(ContractViolation, "full Git"):
+            EpisodeMetadata(
+                **values,
+                source_revision="abbreviated",
+                source_tree_clean=True,
+            )
+
+        metadata = EpisodeMetadata(
+            **values,
+            source_revision="a" * 40,
+            source_tree_clean=True,
+            model_id="qwen3-vl-4b-instruct",
+        )
+        self.assertTrue(metadata.source_tree_clean)
+
 
 if __name__ == "__main__":
     unittest.main()

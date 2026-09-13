@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import json
 import sys
+from pathlib import Path
 
 from uga.core.errors import ContractViolation
 from uga.core.runtime import AgentRuntime
@@ -92,6 +93,11 @@ def cli() -> None:
     )
     run_parser.add_argument("--observation-hz", type=float, default=2.0)
     run_parser.add_argument("--record", help="optional episode recording root directory")
+    run_parser.add_argument(
+        "--qualification-project-root",
+        type=Path,
+        help="require a clean Git checkout and bind recorded evidence to its full HEAD",
+    )
     run_parser.add_argument(
         "--vlm-base-url",
         default="http://127.0.0.1:1234/v1",

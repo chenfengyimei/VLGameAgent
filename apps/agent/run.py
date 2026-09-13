@@ -59,6 +59,7 @@ from uga.recording.episode_writer import EpisodeWriter
 from uga.recording.schema import EpisodeMetadata, EpisodeResult
 from uga.recording.video import PyAvVideoRecorder
 from uga.release.fixture_qualification import _activate
+from uga.release.revision import require_clean_source_revision
 from uga.safety.emergency_stop import Win32EmergencyHotkey
 from uga.safety.focus_guard import AgentEnableState, FocusGuard
 from uga.time.clock import PerfCounterClock
@@ -68,6 +69,11 @@ from uga.windows.integrity import Win32IntegrityProvider
 
 _TAP_FRACTION_DEFAULT = (0.5, 0.79)
 _CAPTURE_STALL_BUDGET_S = 10.0
+
+
+def _diagnostic_integer(values: dict[str, object], name: str) -> int:
+    value = values.get(name)
+    return value if isinstance(value, int) and not isinstance(value, bool) else 0
 
 
 def _best_effort_cleanup(*operations: Callable[[], object]) -> None:
@@ -153,6 +159,9 @@ def _current_target_client_rect(
 
 
 async def _run(args: argparse.Namespace) -> int:
+    qualification_root = getattr(args, "qualification_project_root", None)
+    if qualification_root is not None and not args.record:
+        raise SystemExit("--qualification-project-root requires --record")
     if not math.isfinite(args.duration_seconds) or args.duration_seconds < 0:
         raise SystemExit("--duration-seconds must be >= 0 (0 = run until stopped)")
     if not math.isfinite(args.tap_delay) or args.tap_delay < 0:
@@ -320,6 +329,11 @@ async def _run(args: argparse.Namespace) -> int:
     episode_id = f"{profile.game_id}-{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:8]}"
     if args.record:
         try:
+            source_revision = (
+                require_clean_source_revision(qualification_root)
+                if qualification_root is not None
+                else None
+            )
             policy_version = (
                 grounded_planner.policy_version
                 if grounded_planner is not None
@@ -339,6 +353,9 @@ async def _run(args: argparse.Namespace) -> int:
                     "0.1.0",
                     policy_version,
                     False,
+                    source_revision=source_revision,
+                    source_tree_clean=True if source_revision is not None else None,
+                    model_id=args.vlm_model if grounded_planner is not None else None,
                 ),
             )
             recorder.attach_video(PyAvVideoRecorder(recorder.video_path, fps=15))
@@ -563,6 +580,7 @@ async def _run(args: argparse.Namespace) -> int:
             loop.fail_closed_loop("timeout")
     if recorder is not None:
         stats = scheduler.stats()
+        diagnostics = loop.closed_loop_diagnostics or {}
         recorder.set_metrics(
             {
                 "capture_frames": capture_source.stats().accepted_frames,
@@ -578,6 +596,25 @@ async def _run(args: argparse.Namespace) -> int:
                 "action_execution_ratio": (
                     stats.executed / stats.scheduled if stats.scheduled else 0.0
                 ),
+                "logical_actions_issued": _diagnostic_integer(
+                    diagnostics, "logical_actions_issued"
+                ),
+                "verified_effect_actions": _diagnostic_integer(
+                    diagnostics, "verified_effect_actions"
+                ),
+                "ineffective_actions": _diagnostic_integer(
+                    diagnostics, "ineffective_actions"
+                ),
+                "pending_action_at_termination": int(
+                    bool(diagnostics.get("pending_action", False))
+                ),
+                "stale_results_discarded": _diagnostic_integer(
+                    diagnostics, "stale_results_discarded"
+                ),
+                "max_consecutive_same_ineffective_action": _diagnostic_integer(
+                    diagnostics, "max_consecutive_same_ineffective_action"
+                ),
+                "recovery_count": _diagnostic_integer(diagnostics, "recovery_count"),
             }
         )
         result, termination_reason = _episode_outcome(

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from dataclasses import replace
 
 from tests.helpers import frame, identity
 from uga.agent.closed_loop import (
@@ -215,6 +216,27 @@ class ClosedLoopSupervisorTests(unittest.TestCase):
         )
         self.assertEqual(valid.disposition, DecisionDisposition.EXECUTE)
 
+    def test_target_is_rechecked_on_the_last_frame_before_execution(self) -> None:
+        proposal = outcome(1)
+        validated = frame(1, 0)
+        unchanged = replace(
+            validated,
+            frame_id="frame-2",
+            capture_timestamp=UGATime(1),
+        )
+
+        safe, _ = self.supervisor.validate_execution_frame(
+            proposal, validated, unchanged
+        )
+        stale, reason = self.supervisor.validate_execution_frame(
+            proposal, validated, frame(2, 2)
+        )
+
+        self.assertTrue(safe)
+        self.assertFalse(stale)
+        self.assertIn("before execution", reason)
+        self.assertEqual(self.supervisor.diagnostics()["stale_results_discarded"], 1)
+
     def test_action_effect_must_change_semantic_or_target_state(self) -> None:
         current = snapshot(1, 0)
         proposal = outcome(1)
@@ -228,6 +250,8 @@ class ClosedLoopSupervisorTests(unittest.TestCase):
 
         self.assertTrue(waiting.pending)
         self.assertTrue(changed.effect_observed)
+        self.assertEqual(self.supervisor.diagnostics()["logical_actions_issued"], 1)
+        self.assertEqual(self.supervisor.diagnostics()["verified_effect_actions"], 1)
 
     def test_full_screen_signature_noise_alone_is_not_action_effect(self) -> None:
         current = snapshot(1, 0)
