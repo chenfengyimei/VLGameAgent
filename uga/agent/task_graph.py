@@ -115,6 +115,15 @@ class TaskGraph:
         self._nodes[node_id] = updated
         return updated
 
+    def block(self, node_id: str) -> TaskNode:
+        node = self._nodes[node_id]
+        if node.status not in {TaskStatus.READY, TaskStatus.ACTIVE}:
+            raise ContractViolation("only ready or active tasks can be blocked")
+        updated = replace(node, status=TaskStatus.BLOCKED)
+        self._nodes[node_id] = updated
+        self.refresh_ready()
+        return updated
+
     def _validate_references(self) -> None:
         for node in self._nodes.values():
             references = (*node.child_ids, *node.prerequisite_ids)

@@ -44,12 +44,7 @@ MAX_WAIT_INTERVAL_S = 15.0
 MAX_VISION_RESPONSE_BYTES = 4 * 1024 * 1024
 MAX_VISION_ERROR_DETAIL_BYTES = 4096
 DEFAULT_FRAME_HISTORY_BYTES = 128 * 1024 * 1024
-# A wait streak on a screen that never advances by itself (a reward popup
-# that only closes on a blank-area tap) is a soft deadlock: escalation only
-# slows the burn. Warn the model first; if it still refuses to act, press
-# the bound back button once mechanically.
 WAIT_WARN_STREAK = 6
-WAIT_FORCE_BACK_STREAK = 10
 _SUPPORTED_FORMATS = (PixelFormat.BGRA8, PixelFormat.RGBA8)
 # Live GLM failure shape: {"action":"tap","x":0.622,0.415,...} — both
 # fractions packed into the x slot with the "y" key dropped. The decode
@@ -758,11 +753,8 @@ class VlmPlannerPolicy:
         self._quest_step: str | None = None
         self._quest_repeats = 0
         self._last_action_changed: bool | None = None
-        self._stuck_taps = 0
         self._last_tap_point: tuple[int, int] | None = None
         self._last_tap_ref: tuple[float, float, bytes] | None = None
-        self._recent_taps: deque[tuple[int, int]] = deque(maxlen=3)
-        self._perturb_rounds = 0
         self._wait_streak = 0
         self._last_decision_started_mono: float | None = None
         self._sampler = sampler
@@ -771,9 +763,6 @@ class VlmPlannerPolicy:
         self._journal = journal if journal is not None else NullJournal()
         self._available_buttons = available_buttons
         self._instruction_builder = instruction_builder
-        self._pending_actions: deque[
-            tuple[str, float | None, float | None, str | None, str | None]
-        ] = deque()
         self._static_holds = 0
 
     @property
@@ -881,8 +870,7 @@ class VlmPlannerPolicy:
         self._last_action_changed = screen_changed or region_effect
         self._last_tap_ref = None
         if (
-            not self._pending_actions
-            and self._last_decision_digest is not None
+            self._last_decision_digest is not None
             and digest == self._last_decision_digest
             # Static holds extend a WAITING state only. After an ineffective
             # tap the loop must re-decide (or probe nearby), never nap — a
@@ -909,11 +897,6 @@ class VlmPlannerPolicy:
             return self._hold_chunk(context, duration=self._decision_interval_s)
         if digest != self._last_decision_digest:
             self._static_holds = 0
-        # --- queued multi-action sequence (action chunking): replay the
-        # remaining steps without paying for another inference round-trip.
-        if self._pending_actions:
-            queued = self._pending_actions.popleft()
-            return self._execute_action(context, current_frame, queued, queued_reply=True)
         # The bundle must cover the WHOLE gap since the previous decision
         # STARTED — inference itself takes tens of seconds and those frames
         # (what happened while the model was thinking) are exactly the
@@ -934,7 +917,7 @@ class VlmPlannerPolicy:
                 self._last_action,
                 self._quest,
                 self._last_action_changed,
-                self._stuck_taps,
+                0,
                 self._quest_step,
                 self._quest_repeats,
                 self._wait_streak,
@@ -996,9 +979,7 @@ class VlmPlannerPolicy:
         self._rate_limit_backoff_s = 30.0
         self._next_decision_at = time.monotonic() + self._decision_interval_s
         self._last_decision_digest = self._frame_digest(current_frame)
-        head, *tail = sequence
-        for step in reversed(tail):
-            self._pending_actions.append(step)
+        head = sequence[0]
         self._journal.record(
             DecisionRecord(
                 timestamp=time.time(),
@@ -1077,42 +1058,6 @@ class VlmPlannerPolicy:
                 # should not burn a ~9s inference every 3 seconds. Any real
                 # action resets the streak.
                 self._wait_streak += 1
-                if (
-                    self._wait_streak >= WAIT_FORCE_BACK_STREAK
-                    and "back" in self._available_buttons
-                ):
-                    # Mechanical escape: the model has waited many times on
-                    # a screen that will not advance by itself (e.g. a
-                    # reward popup that only closes on a blank-area tap).
-                    # Prompt warnings cannot cure passive waiting — press the
-                    # bound back button once and let the model re-observe.
-                    print(
-                        f"[vlm] wait x{self._wait_streak}; forcing back press "
-                        "to dismiss a stuck overlay",
-                        flush=True,
-                    )
-                    self._journal.record(
-                        DecisionRecord(
-                            timestamp=time.time(),
-                            kind="action",
-                            latency_s=None,
-                            action="press(back) forced by wait streak",
-                            detail=(
-                                f"{self._wait_streak} consecutive waits on an "
-                                "unchanged screen; system pressed back"
-                            ),
-                            quest=self._quest,
-                            quest_step=self._quest_step,
-                            images=None,
-                            reply_head=None,
-                        )
-                    )
-                    self._wait_streak = 0
-                    self._last_action = 'press(back)（连续等待过久，系统强制返回）'
-                    self._next_decision_at = (
-                        time.monotonic() + self._decision_interval_s
-                    )
-                    return self._press_chunk(context, "back")
                 escalated = min(
                     self._decision_interval_s * (2 ** self._wait_streak),
                     MAX_WAIT_INTERVAL_S,
@@ -1178,7 +1123,6 @@ class VlmPlannerPolicy:
             raise PlannerReplyError(f"vision {action} reply lacks tap coordinates")
         if self._tap_target_stale(decision_frame, self._frame_source(), x, y):
             self._stale_discards += 1
-            self._pending_actions.clear()
             print(
                 "[vlm] tap target stale (screen changed during inference);"
                 " re-deciding on the fresh frame",
@@ -1204,80 +1148,6 @@ class VlmPlannerPolicy:
         tap_y = round(rect.top + rect.height * y)
         self._last_point = (tap_x, tap_y)
         self._last_action = f"tap({x:.3f},{y:.3f})"
-        # Cluster-based ineffective-tap detection: the model can be confident
-        # about a button it keeps MISSING (wrong grounding); a prompt warning
-        # alone does not fix its coordinates. Count taps that land within a
-        # small radius of each other while the screen shows no effect.
-        if not queued_reply:
-            radius_x = rect.width * 0.03
-            radius_y = rect.height * 0.03
-            clustered = len(self._recent_taps) >= 2 and all(
-                abs(px - tap_x) <= radius_x and abs(py - tap_y) <= radius_y
-                for px, py in self._recent_taps
-            )
-            if clustered and self._last_action_changed is False:
-                self._stuck_taps += 1
-            else:
-                self._stuck_taps = 0
-                self._perturb_rounds = 0
-            self._recent_taps.append((tap_x, tap_y))
-            # Auto-probe (the human 'wiggle the mouse' fix): after repeated
-            # ineffective taps on one spot, the system itself taps a ring of
-            # nearby offsets — the model's intent stays, its aim gets a
-            # mechanical second chance. Bounded to two probe rounds per
-            # cluster so a permanently wrong target still escalates to the
-            # 'switch target' prompt warning.
-            if self._stuck_taps >= 3 and self._perturb_rounds < 2:
-                self._perturb_rounds += 1
-                offsets = (
-                    (0.03, 0.0), (-0.03, 0.0), (0.0, 0.03), (0.0, -0.03),
-                    (0.021, 0.021), (-0.021, 0.021), (0.021, -0.021), (-0.021, -0.021),
-                )
-                for dx, dy in offsets:
-                    probe_x = min(max(x + dx, 0.0), 1.0)
-                    probe_y = min(max(y + dy, 0.0), 1.0)
-                    self._pending_actions.append(("tap", probe_x, probe_y, None, None))
-                print(
-                    f"[vlm] tap ineffective x{self._stuck_taps} at ({x:.3f},{y:.3f});"
-                    " auto-probing 8 nearby offsets",
-                    flush=True,
-                )
-            elif (
-                self._stuck_taps >= 6
-                and self._perturb_rounds >= 2
-                and "back" in self._available_buttons
-            ):
-                # Both probe rounds are spent and the model is STILL tapping
-                # the same dead spot — the human fix at this point is
-                # pressing back to close the topmost UI and re-observe.
-                # Prompt warnings cannot cure confident-but-wrong grounding;
-                # the wait path has the same escape for passive waiting.
-                print(
-                    f"[vlm] tap ineffective x{self._stuck_taps} at "
-                    f"({x:.3f},{y:.3f}); pressing back to dismiss the stuck UI",
-                    flush=True,
-                )
-                self._journal.record(
-                    DecisionRecord(
-                        timestamp=time.time(),
-                        kind="action",
-                        latency_s=None,
-                        action="press(back) forced by ineffective taps",
-                        detail=(
-                            f"{self._stuck_taps} clustered ineffective taps with"
-                            " probe rounds exhausted; system pressed back"
-                        ),
-                        quest=self._quest,
-                        quest_step=self._quest_step,
-                        images=None,
-                        reply_head=None,
-                    )
-                )
-                self._pending_actions.clear()
-                self._stuck_taps = 0
-                self._perturb_rounds = 0
-                self._last_action = "press(back)（连续无效点击，系统强制返回）"
-                return self._press_chunk(context, "back")
         self._last_tap_point = (tap_x, tap_y)
         # Region reference for the next decision's effect check: was the
         # tapped box visibly different after the tap (highlight/dialog)?

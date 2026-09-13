@@ -166,6 +166,14 @@ class RealtimeAgentLoop:
     def goal_confidence(self) -> float | None:
         return None if self._closed_loop is None else self._closed_loop.goal_confidence
 
+    @property
+    def closed_loop_diagnostics(self) -> dict[str, object] | None:
+        return None if self._closed_loop is None else self._closed_loop.diagnostics()
+
+    def fail_closed_loop(self, reason: str) -> None:
+        if self._closed_loop is not None and not self._closed_loop.is_terminal:
+            self._closed_loop.fail(reason)
+
     async def step(self) -> AgentLoopStep:
         item = await self._capture.capture_once()
         latest_item = self._frames.latest()
@@ -254,10 +262,14 @@ class RealtimeAgentLoop:
         planner_outcome: PlannerOutcome | None = None
         gui_submission: GuiActionSubmission | None = None
         supervision: SupervisedDecision | None = None
+        grounded_planner = self._grounded_planner
+        closed_loop = self._closed_loop
         if (
-            self._grounded_planner is not None
+            grounded_planner is not None
+            and closed_loop is not None
             and perception is not None
             and not effect_pending
+            and not closed_loop.is_terminal
             and transition is None
             and self._clock.now().value_ns >= self._next_grounded_inference_ns
         ):
@@ -266,12 +278,14 @@ class RealtimeAgentLoop:
                 "agent.loop",
                 {"observation_id": observation.observation_id, "policy": "grounded_vlm"},
             )
-            planner_outcome = await asyncio.to_thread(
-                self._grounded_planner.decide,
+            outcome = await asyncio.to_thread(
+                grounded_planner.decide,
                 snapshot=perception,
                 frames=history[-3:],
                 goal=observation.user_goal,
+                high_resolution_retry=closed_loop.high_resolution_retry,
             )
+            planner_outcome = outcome
             self._next_grounded_inference_ns = (
                 self._clock.now().value_ns + self._grounded_decision_interval_ns
             )
@@ -290,57 +304,77 @@ class RealtimeAgentLoop:
                     geometry_generation=geometry_generation,
                     task_generation=self._task_generation,
                 )
-            assert self._closed_loop is not None
-            supervision = await asyncio.to_thread(
-                self._closed_loop.assess,
-                planner_outcome,
+            supervised = await asyncio.to_thread(
+                closed_loop.assess,
+                outcome,
                 perception,
                 fresh_perception,
                 pending.frame,
                 latest_after_inference.frame,
                 observation.user_goal,
             )
+            supervision = supervised
             await self._events.publish(
                 EventType.POLICY_INFERENCE_COMPLETED,
                 "agent.loop",
                 {
                     "observation_id": observation.observation_id,
-                    "decision_id": planner_outcome.decision_id,
-                    "kind": planner_outcome.kind.value,
-                    "confidence": planner_outcome.confidence,
-                    "disposition": supervision.disposition.value,
-                    "reason": supervision.reason,
+                    "decision_id": outcome.decision_id,
+                    "kind": outcome.kind.value,
+                    "confidence": outcome.confidence,
+                    "disposition": supervised.disposition.value,
+                    "reason": supervised.reason,
                 },
             )
             if self._recorder is not None:
                 self._recorder.record_planner(
-                    planner_outcome.decision_id,
+                    outcome.decision_id,
                     self._clock.now(),
                     {
-                        "outcome": planner_outcome.to_envelope(),
-                        "disposition": supervision.disposition.value,
-                        "supervision_reason": supervision.reason,
+                        "outcome": outcome.to_envelope(),
+                        "disposition": supervised.disposition.value,
+                        "supervision_reason": supervised.reason,
                         "source_frame_age_ns": max(
                             0,
                             fresh_perception.captured_at.value_ns
                             - perception.captured_at.value_ns,
                         ),
-                        "effect_observed": self._closed_loop.last_effect_observed,
+                        "effect_observed": closed_loop.last_effect_observed,
+                        "expected_effect": (
+                            None
+                            if outcome.action is None
+                            else outcome.action.expected_effect
+                        ),
+                        "schema_valid": getattr(
+                            grounded_planner, "last_schema_valid", None
+                        ),
+                        "model_raw_output": getattr(
+                            grounded_planner, "last_raw_reply", None
+                        ),
+                        "verifier_conclusion": supervised.reason,
+                        "recovery_count": closed_loop.recovery_count,
+                        "loop_signature": (
+                            None
+                            if closed_loop.last_loop_finding is None
+                            else {
+                                "kind": closed_loop.last_loop_finding.kind.value,
+                                "cycle_length": closed_loop.last_loop_finding.cycle_length,
+                                "detail": closed_loop.last_loop_finding.detail,
+                            }
+                        ),
                     },
                 )
-            if supervision.disposition == DecisionDisposition.EXECUTE:
+            if supervised.disposition == DecisionDisposition.EXECUTE:
                 assert self._gui_controller is not None
                 assert self._key_resolver is not None
-                gui_action = self._closed_loop.to_gui_action(
-                    planner_outcome, self._key_resolver
-                )
+                gui_action = closed_loop.to_gui_action(outcome, self._key_resolver)
                 now = self._clock.now()
                 gui_lease = self._leases.grant(
                     ControlOwner.GUI_AGENT,
                     ControlMode.GUI,
                     gui_action.lifetime.expires_at.value_ns - now.value_ns,
                     confidence=gui_action.confidence,
-                    reason=f"grounded GUI decision {planner_outcome.decision_id}",
+                    reason=f"grounded GUI decision {outcome.decision_id}",
                 )
                 transform = self._coordinate_transform(latest_after_inference.frame)
                 gui_submission = self._gui_controller.submit(
@@ -349,16 +383,49 @@ class RealtimeAgentLoop:
                     latest_after_inference.frame.window_identity,
                     gui_lease,
                     observation_id=observation.observation_id,
-                    policy_version=self._grounded_planner.policy_version,
+                    policy_version=grounded_planner.policy_version,
                 )
                 if gui_submission.decision is not None:
                     await self._publish_decision(gui_submission.decision)
                     if gui_submission.decision.accepted:
-                        self._closed_loop.start_action(
-                            planner_outcome,
+                        closed_loop.start_action(
+                            outcome,
                             fresh_perception,
                             latest_after_inference.frame,
                         )
+                    else:
+                        closed_loop.fail("grounded GUI proposal was rejected")
+            elif supervised.disposition == DecisionDisposition.RECOVER:
+                assert supervised.recovery is not None
+                assert self._gui_controller is not None
+                assert self._key_resolver is not None
+                recovery_action = closed_loop.to_recovery_gui_action(
+                    supervised.recovery, self._key_resolver
+                )
+                now = self._clock.now()
+                recovery_lease = self._leases.grant(
+                    ControlOwner.GUI_AGENT,
+                    ControlMode.GUI,
+                    recovery_action.lifetime.expires_at.value_ns - now.value_ns,
+                    confidence=recovery_action.confidence,
+                    reason=f"closed-loop recovery {supervised.recovery.value}",
+                )
+                gui_submission = self._gui_controller.submit(
+                    recovery_action,
+                    self._coordinate_transform(latest_after_inference.frame),
+                    latest_after_inference.frame.window_identity,
+                    recovery_lease,
+                    observation_id=observation.observation_id,
+                    policy_version="closed-loop-recovery-1.0.0",
+                )
+                if gui_submission.decision is not None:
+                    await self._publish_decision(gui_submission.decision)
+                    if gui_submission.decision.accepted:
+                        closed_loop.start_recovery_action(
+                            fresh_perception, latest_after_inference.frame
+                        )
+                    else:
+                        closed_loop.fail("recovery GUI proposal was rejected")
             stats = self._scheduler.tick()
             return AgentLoopStep(
                 observation,

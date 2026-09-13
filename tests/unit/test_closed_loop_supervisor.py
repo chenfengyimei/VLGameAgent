@@ -7,8 +7,10 @@ from uga.agent.closed_loop import (
     ClosedLoopSupervisor,
     DecisionDisposition,
     GoalVerifier,
+    RecoveryDirective,
     TerminalStatus,
 )
+from uga.agent.task_graph import RetryPolicy, TaskGraph, TaskNode, TaskStatus
 from uga.control.lease import ControlMode
 from uga.environment.profile import PerceptionProfile
 from uga.gui.schema import GuiActionKind
@@ -266,6 +268,166 @@ class ClosedLoopSupervisorTests(unittest.TestCase):
         self.assertEqual(pending.disposition, DecisionDisposition.REOBSERVE)
         self.assertEqual(completed.disposition, DecisionDisposition.TERMINATE)
         self.assertEqual(self.supervisor.status, TerminalStatus.SUCCEEDED)
+
+    def test_loop_uses_distinct_high_resolution_then_safe_back_recovery(self) -> None:
+        supervisor = ClosedLoopSupervisor(
+            self.clock,
+            PerceptionProfile(
+                recovery_safe_actions=frozenset({"back"}),
+                action_effect_timeout_ms=1000,
+            ),
+            max_recoveries=2,
+        )
+        for number in (1, 2):
+            current = snapshot(number, number * 1_000_000_000)
+            proposal = outcome(number)
+            accepted = supervisor.assess(
+                proposal,
+                current,
+                current,
+                frame(number, current.captured_at.value_ns),
+                frame(number, current.captured_at.value_ns),
+                "open settings",
+            )
+            self.assertEqual(accepted.disposition, DecisionDisposition.EXECUTE)
+            supervisor.start_action(
+                proposal, current, frame(number, current.captured_at.value_ns)
+            )
+            supervisor.observe(
+                snapshot(number + 1, current.captured_at.value_ns + 1_000_000_000),
+                frame(number, current.captured_at.value_ns + 1_000_000_000),
+            )
+
+        self.assertTrue(supervisor.high_resolution_retry)
+        self.assertEqual(supervisor.recovery_count, 1)
+        retry_snapshot = snapshot(3, 3_000_000_000)
+        recovery = supervisor.assess(
+            outcome(3),
+            retry_snapshot,
+            retry_snapshot,
+            frame(3, 3_000_000_000),
+            frame(3, 3_000_000_000),
+            "open settings",
+        )
+
+        self.assertEqual(recovery.disposition, DecisionDisposition.RECOVER)
+        self.assertEqual(recovery.recovery, RecoveryDirective.BACK)
+        self.assertEqual(supervisor.recovery_count, 2)
+        back = supervisor.to_recovery_gui_action(
+            RecoveryDirective.BACK, lambda name: (27,) if name == "back" else None
+        )
+        self.assertEqual(back.key_codes, (27,))
+        supervisor.start_recovery_action(retry_snapshot, frame(3, 3_000_000_000))
+        supervisor.observe(snapshot(4, 4_000_000_000), frame(3, 4_000_000_000))
+        self.assertEqual(supervisor.status, TerminalStatus.BLOCKED)
+        self.assertEqual(supervisor.recovery_count, 2)
+
+    def test_recovery_stops_when_profile_does_not_allow_back(self) -> None:
+        supervisor = ClosedLoopSupervisor(
+            self.clock,
+            PerceptionProfile(action_effect_timeout_ms=1000),
+            max_recoveries=2,
+        )
+        for number in (1, 2):
+            current = snapshot(number, number * 1_000_000_000)
+            proposal = outcome(number)
+            supervisor.start_action(
+                proposal, current, frame(number, current.captured_at.value_ns)
+            )
+            supervisor.observe(
+                snapshot(number + 1, current.captured_at.value_ns + 1_000_000_000),
+                frame(number, current.captured_at.value_ns + 1_000_000_000),
+            )
+        retry_snapshot = snapshot(3, 3_000_000_000)
+
+        stopped = supervisor.assess(
+            outcome(3),
+            retry_snapshot,
+            retry_snapshot,
+            frame(3, 3_000_000_000),
+            frame(3, 3_000_000_000),
+            "open settings",
+        )
+
+        self.assertEqual(stopped.disposition, DecisionDisposition.BLOCK)
+        self.assertEqual(supervisor.status, TerminalStatus.BLOCKED)
+
+    def test_blocked_supervisor_updates_the_bound_task_graph(self) -> None:
+        graph = TaskGraph(
+            (
+                TaskNode(
+                    "goal",
+                    "open settings",
+                    None,
+                    (),
+                    TaskStatus.PENDING,
+                    (),
+                    None,
+                    "goal confirmed",
+                    "closed loop blocked",
+                    10_000_000_000,
+                    RetryPolicy(),
+                ),
+            )
+        )
+        supervisor = ClosedLoopSupervisor(
+            self.clock,
+            PerceptionProfile(action_effect_timeout_ms=1000),
+            max_recoveries=0,
+            task_graph=graph,
+            task_node_id="goal",
+        )
+        for number in (1, 2):
+            current = snapshot(number, number * 1_000_000_000)
+            proposal = outcome(number)
+            supervisor.start_action(
+                proposal, current, frame(number, current.captured_at.value_ns)
+            )
+            supervisor.observe(
+                snapshot(number + 1, current.captured_at.value_ns + 1_000_000_000),
+                frame(number, current.captured_at.value_ns + 1_000_000_000),
+            )
+
+        self.assertEqual(supervisor.status, TerminalStatus.BLOCKED)
+        self.assertEqual(graph.get("goal").status, TaskStatus.BLOCKED)
+
+    def test_two_step_visual_ring_requests_recovery_after_two_rounds(self) -> None:
+        supervisor = ClosedLoopSupervisor(
+            self.clock,
+            PerceptionProfile(
+                recovery_safe_actions=frozenset({"back"}),
+                action_effect_timeout_ms=1000,
+            ),
+        )
+        transitions = (
+            ("state-a", "next", 1, "state-b", 2),
+            ("state-b", "previous", 2, "state-a", 1),
+            ("state-a", "next", 1, "state-b", 2),
+            ("state-b", "previous", 2, "state-a", 1),
+        )
+        for index, (before_sig, label, before_frame, after_sig, after_frame) in enumerate(
+            transitions, start=1
+        ):
+            proposal = outcome(index, label=label)
+            before = snapshot(index, index * 1_000_000_000, signature=before_sig)
+            supervisor.start_action(
+                proposal, before, frame(before_frame, before.captured_at.value_ns)
+            )
+            supervisor.observe(
+                snapshot(
+                    index + 1,
+                    index * 1_000_000_000 + 250_000_000,
+                    signature=after_sig,
+                ),
+                frame(
+                    after_frame,
+                    index * 1_000_000_000 + 250_000_000,
+                ),
+            )
+
+        self.assertIsNotNone(supervisor.last_loop_finding)
+        self.assertEqual(supervisor.recovery_count, 1)
+        self.assertTrue(supervisor.high_resolution_retry)
 
 
 if __name__ == "__main__":

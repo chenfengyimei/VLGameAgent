@@ -883,10 +883,7 @@ class HybridThinkingTests(unittest.TestCase):
         self.assertEqual(policy._wait_streak, 0)
         self.assertLessEqual(policy._next_decision_at - time.monotonic(), 3.5)
 
-    def test_wait_streak_forces_back_press(self) -> None:
-        # A popup that only closes on a blank-area tap never advances by
-        # itself; at the streak cap the system must press back instead of
-        # waiting forever.
+    def test_wait_streak_never_synthesizes_a_back_press(self) -> None:
         client = _FakeClient(['{"action":"wait"}'] * 10)
         policy = _policy(client)
         policy._available_buttons = frozenset({"back"})
@@ -903,9 +900,9 @@ class HybridThinkingTests(unittest.TestCase):
         policy._next_decision_at = 0.0
         output = policy.infer(PolicyContext("obs-final", UGATime(200), (), None))
 
-        self.assertEqual(output.chunk.buttons, (int(ActionButton.BACK),))
-        self.assertEqual(policy._wait_streak, 0)
-        self.assertLessEqual(policy._next_decision_at - time.monotonic(), 3.5)
+        self.assertTrue(all(button == 0 for button in output.chunk.buttons))
+        self.assertEqual(policy._wait_streak, 10)
+        self.assertLessEqual(policy._next_decision_at - time.monotonic(), 15.5)
 
     def test_wait_streak_without_back_binding_keeps_waiting(self) -> None:
         client = _FakeClient(['{"action":"wait"}'] * 11)
@@ -995,107 +992,35 @@ class ActionSequenceQueueTests(unittest.TestCase):
             ),
         )
 
-    def test_clustered_ineffective_taps_trigger_auto_probe(self) -> None:
-        # The model confidently taps one spot but keeps missing the button:
-        # after three clustered no-effect taps the system probes a ring of
-        # nearby offsets via the pending queue (no extra inference).
+    def test_repeated_taps_never_generate_neighbor_probe_actions(self) -> None:
         client = _FakeClient(['{"action":"tap","x":0.50,"y":0.50}'] * 8)
         policy = _policy(client)
         policy._decision_interval_s = 60.0
         policy._frame_source = lambda: _frame()  # identical, static screen
 
+        outputs = []
         for index in range(6):
             policy._next_decision_at = 0.0
-            policy.infer(PolicyContext(f"obs-{index}", UGATime(100), (), None))
-
-        self.assertGreaterEqual(policy._stuck_taps, 3)
-        self.assertGreaterEqual(len(policy._pending_actions), 7)  # probe ring
-        self.assertEqual(policy._perturb_rounds, 1)
-
-    def test_effective_tap_resets_stuck_cluster(self) -> None:
-        client = _FakeClient(['{"action":"tap","x":0.50,"y":0.50}'] * 3)
-        policy = _policy(client)
-        policy._decision_interval_s = 60.0
-        calls = {"n": 0}
-
-        def frame_source() -> Frame:
-            calls["n"] += 1
-            # Two identical frames (decision + freshness probe), then the
-            # world visibly changes — the first tap registered an effect.
-            if calls["n"] <= 2:
-                return _frame()
-            return self._varied_frame(7)
-
-        policy._frame_source = frame_source
-
-        policy._next_decision_at = 0.0
-        policy.infer(PolicyContext("obs-1", UGATime(100), (), None))
-        policy._next_decision_at = 0.0
-        policy.infer(PolicyContext("obs-2", UGATime(200), (), None))
-
-        self.assertEqual(policy._stuck_taps, 0)
-        self.assertFalse(policy._pending_actions)
-
-    def test_probe_rounds_bounded_per_cluster(self) -> None:
-        client = _FakeClient(['{"action":"tap","x":0.50,"y":0.50}'] * 16)
-        policy = _policy(client)
-        policy._decision_interval_s = 60.0
-        policy._frame_source = lambda: _frame()  # static screen throughout
-
-        for index in range(14):
-            policy._next_decision_at = 0.0
-            policy.infer(PolicyContext(f"obs-{index}", UGATime(100), (), None))
-
-        self.assertLessEqual(policy._perturb_rounds, 2)
-
-    def test_probe_exhaustion_presses_back_to_escape(self) -> None:
-        # Both probe rounds spent and the model still hammers the same dead
-        # spot: the system swaps the useless tap for a bound back press so
-        # the topmost UI closes and the next decision sees a fresh screen.
-        client = _FakeClient(['{"action":"tap","x":0.50,"y":0.50}'] * 30)
-        policy = _policy(client)
-        policy._decision_interval_s = 60.0
-        policy._frame_source = lambda: _frame()  # static screen throughout
-
-        output = None
-        for index in range(24):
-            policy._next_decision_at = 0.0
-            output = policy.infer(
-                PolicyContext(f"obs-{index}", UGATime(100), (), None)
+            outputs.append(
+                policy.infer(
+                    PolicyContext(f"obs-{index}", UGATime(100), (), None)
+                )
             )
 
-        assert output is not None
-        self.assertEqual(output.chunk.buttons, (int(ActionButton.BACK),))
-        self.assertEqual(policy._stuck_taps, 0)
-        self.assertEqual(policy._perturb_rounds, 0)
-        self.assertFalse(policy._pending_actions)
-        self.assertIn("press(back)", str(policy._last_action))
-
-    def test_probe_exhaustion_without_back_keeps_tapping(self) -> None:
-        # No bound back button → the escape cannot fire; the model's tap
-        # must still execute (never an empty chunk) and the counters keep
-        # climbing so the prompt warning stays truthful.
-        client = _FakeClient(['{"action":"tap","x":0.50,"y":0.50}'] * 30)
-        policy = _policy(client)
-        policy._decision_interval_s = 60.0
-        policy._frame_source = lambda: _frame()  # static screen throughout
-        policy._available_buttons = frozenset()
-
-        output = None
-        for index in range(24):
-            policy._next_decision_at = 0.0
-            output = policy.infer(
-                PolicyContext(f"obs-{index}", UGATime(100), (), None)
+        self.assertEqual(client.calls, 6)
+        self.assertTrue(
+            all(
+                output.chunk.buttons == (int(ActionButton.INTERACT),)
+                for output in outputs
             )
+        )
 
-        assert output is not None
-        self.assertEqual(output.chunk.buttons, (int(ActionButton.INTERACT),))
-        self.assertGreaterEqual(policy._stuck_taps, 6)
-
-
-    def test_sequence_executes_without_extra_inference(self) -> None:
+    def test_sequence_executes_only_first_action_then_reobserves(self) -> None:
         client = _FakeClient(
-            ['{"actions":[{"action":"tap","x":0.3,"y":0.4},{"action":"tap","x":0.5,"y":0.6}]}']
+            [
+                '{"actions":[{"action":"tap","x":0.3,"y":0.4},{"action":"tap","x":0.5,"y":0.6}]}',
+                '{"action":"tap","x":0.2,"y":0.3}',
+            ]
         )
         policy = _policy(client)
         policy._decision_interval_s = 0.05
@@ -1103,15 +1028,13 @@ class ActionSequenceQueueTests(unittest.TestCase):
 
         first = policy.infer(PolicyContext("obs-1", UGATime(100), (), None))
         self.assertEqual(first.chunk.buttons, (int(ActionButton.INTERACT),))
-        self.assertEqual(len(policy._pending_actions), 1)
 
         policy._next_decision_at = 0.0
         second = policy.infer(PolicyContext("obs-2", UGATime(200), (), None))
 
-        self.assertEqual(client.calls, 1)  # second action: no new inference
-        self.assertEqual(second.chunk.pointer_x, 100.0 + 1000 * 0.5)
-        self.assertEqual(second.chunk.pointer_y, 200.0 + 1120 * 0.6)
-        self.assertFalse(policy._pending_actions)
+        self.assertEqual(client.calls, 2)
+        self.assertEqual(second.chunk.pointer_x, 100.0 + 1000 * 0.2)
+        self.assertEqual(second.chunk.pointer_y, 200.0 + 1120 * 0.3)
 
     def test_stale_guard_clears_pending_queue(self) -> None:
         client = _FakeClient(
@@ -1123,10 +1046,10 @@ class ActionSequenceQueueTests(unittest.TestCase):
         policy._next_decision_at = 0.0
         policy._frame_source = lambda: frames.pop(0)
 
-        policy.infer(PolicyContext("obs-1", UGATime(100), (), None))
+        output = policy.infer(PolicyContext("obs-1", UGATime(100), (), None))
 
         self.assertEqual(policy._stale_discards, 1)
-        self.assertFalse(policy._pending_actions)
+        self.assertTrue(all(button == 0 for button in output.chunk.buttons))
 
 
 class QuestSentinelTests(unittest.TestCase):

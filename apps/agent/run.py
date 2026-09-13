@@ -27,6 +27,7 @@ from types import FrameType
 from apps.agent.dashboard import DecisionDashboard
 from uga.agent.closed_loop import ClosedLoopSupervisor, TerminalStatus
 from uga.agent.mode_router import ModeRouter, RuleModeClassifier
+from uga.agent.task_graph import RetryPolicy, TaskGraph, TaskNode, TaskStatus
 from uga.capture.dxgi import DXGIDuplicationBackend
 from uga.capture.fallback import GDIFallbackCaptureBackend
 from uga.capture.hub import CaptureHub
@@ -357,6 +358,8 @@ async def _run(args: argparse.Namespace) -> int:
     perception_builder: PerceptionBuilder | None = None
     closed_loop: ClosedLoopSupervisor | None = None
     gui_controller: GuiActionController | None = None
+    task_graph: TaskGraph | None = None
+    task_node_id = "episode-goal"
     if args.policy == "vlm":
         text_provider: TextObservationProvider = NullTextProvider()
         if args.ocr == "auto" and profile.perception.ocr_enabled:
@@ -369,12 +372,45 @@ async def _run(args: argparse.Namespace) -> int:
                     flush=True,
                 )
         perception_builder = PerceptionBuilder(text_provider)
+        timeout_ns = max(
+            1,
+            round(
+                (args.duration_seconds if args.duration_seconds > 0 else 86_400.0)
+                * 1_000_000_000
+            ),
+        )
+        task_graph = TaskGraph(
+            (
+                TaskNode(
+                    task_node_id,
+                    args.goal,
+                    None,
+                    (),
+                    TaskStatus.PENDING,
+                    (),
+                    None,
+                    "goal verifier confirms success on two fresh frames",
+                    "closed loop blocks, times out, or fails",
+                    timeout_ns,
+                    RetryPolicy(max_attempts=1),
+                ),
+            )
+        )
         closed_loop = ClosedLoopSupervisor(
             clock,
             profile.perception,
             verifier=outcome_verifier,
+            max_recoveries=args.max_recoveries,
+            task_graph=task_graph,
+            task_node_id=task_node_id,
         )
         gui_controller = GuiActionController(arbiter, scheduler, recorder)
+        if recorder is not None:
+            recorder.record_task(
+                task_node_id,
+                clock.now(),
+                task_graph.get(task_node_id).to_envelope(),
+            )
 
     def _resolve_key(name: str) -> tuple[int, ...] | None:
         binding = profile.binding(name)
@@ -514,6 +550,11 @@ async def _run(args: argparse.Namespace) -> int:
         cleanup(hotkey.close)
         if previous_handler is not None:
             cleanup(lambda: signal.signal(signal.SIGINT, previous_handler))
+    if not stop_state["user"]:
+        if run_error is not None:
+            loop.fail_closed_loop("runtime_error")
+        elif duration_expired:
+            loop.fail_closed_loop("timeout")
     if recorder is not None:
         stats = scheduler.stats()
         recorder.set_metrics(
@@ -540,6 +581,22 @@ async def _run(args: argparse.Namespace) -> int:
             terminal_reason=loop.termination_reason,
             duration_expired=duration_expired,
         )
+        recorder.record_planner(
+            f"terminal-{uuid.uuid4().hex[:12]}",
+            clock.now(),
+            {
+                "kind": "terminal",
+                "termination_reason": termination_reason,
+                "goal_confidence": loop.goal_confidence,
+                "closed_loop": loop.closed_loop_diagnostics,
+            },
+        )
+        if task_graph is not None:
+            recorder.record_task(
+                f"{task_node_id}-terminal",
+                clock.now(),
+                task_graph.get(task_node_id).to_envelope(),
+            )
         recorder.set_terminal_context(termination_reason, loop.goal_confidence)
         episode_path = recorder.finalize(result, clock.now())
         print(f"episode: {episode_path}")
