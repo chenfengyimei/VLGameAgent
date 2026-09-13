@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import re
 import uuid
+from collections.abc import Iterable
 
 from uga.capture.frame import BufferKind, Frame, PixelFormat
 from uga.capture.ring_buffer import SequencedFrame
@@ -16,6 +17,18 @@ _TEXT_NORMALIZER = re.compile(r"\W+", re.UNICODE)
 
 def normalize_visible_text(value: str) -> str:
     return _TEXT_NORMALIZER.sub("", value.casefold())
+
+
+def stable_visible_tokens(values: Iterable[str]) -> tuple[str, ...]:
+    """Normalize OCR for state tracking while dropping common transient speckle."""
+    normalized = {
+        token
+        for value in values
+        if (token := normalize_visible_text(value))
+        and len(token) >= 2
+        and not token.isdecimal()
+    }
+    return tuple(sorted(normalized))
 
 
 def perceptual_signature(
@@ -48,7 +61,7 @@ def perceptual_signature(
             bits.hex(),
             mode.value,
             str(task_generation),
-            *(normalize_visible_text(region.text) for region in text),
+            *stable_visible_tokens(region.text for region in text),
         )
     )
     return hashlib.sha256(semantic.encode("utf-8")).hexdigest()
@@ -90,4 +103,3 @@ class PerceptionBuilder:
             perceptual_signature(item.frame, regions, mode, task_generation),
             confidence,
         )
-

@@ -19,6 +19,23 @@ class ProgressTrackerTests(unittest.TestCase):
             )
         )
 
+    def test_clock_and_single_character_ocr_speckle_are_not_progress(self) -> None:
+        before = ProgressTracker.state(
+            snapshot(1, 0, visible_text=("settings", "07:18"))
+        )
+        after = ProgressTracker.state(
+            snapshot(2, 1, visible_text=("settings", "目", "07:19"))
+        )
+
+        self.assertEqual(before.semantic_signature, after.semantic_signature)
+        self.assertFalse(
+            ProgressTracker.progressed(
+                before,
+                after,
+                target_effect_observed=False,
+            )
+        )
+
 
 class LoopDetectorTests(unittest.TestCase):
     def test_same_ineffective_action_is_detected_on_third_record(self) -> None:

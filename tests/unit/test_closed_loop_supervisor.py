@@ -392,13 +392,39 @@ class ClosedLoopSupervisorTests(unittest.TestCase):
         self.assertFalse(timed_out.pending)
         self.assertFalse(timed_out.effect_observed)
 
+    def test_ocr_speckle_and_persistent_hover_are_not_an_action_effect(self) -> None:
+        target_box = NormalizedBox(0.1, 0.1, 0.9, 0.2)
+        proposal = replace(
+            outcome(1),
+            action=replace(outcome(1).action, target_box=target_box),
+        )
+        current = snapshot(1, 0, visible_text=("settings",))
+        self.supervisor.start_action(proposal, current, frame(1, 0))
+        noisy = snapshot(2, 300_000_000, visible_text=("settings", "artifact"))
+
+        first = self.supervisor.observe(noisy, frame(2, 300_000_000))
+        second = self.supervisor.observe(
+            replace(noisy, captured_at=UGATime(600_000_000)),
+            frame(2, 600_000_000),
+        )
+        timed_out = self.supervisor.observe(
+            replace(noisy, captured_at=UGATime(1_000_000_000)),
+            frame(2, 1_000_000_000),
+        )
+
+        self.assertTrue(first.pending)
+        self.assertTrue(second.pending)
+        self.assertFalse(timed_out.pending)
+        self.assertFalse(timed_out.effect_observed)
+        self.assertEqual(self.supervisor.diagnostics()["verified_effect_actions"], 0)
+
     def test_effective_single_step_target_cannot_be_clicked_again(self) -> None:
         supervisor = ClosedLoopSupervisor(
             self.clock,
             self.profile,
             goal_action_target="settings",
         )
-        initial = snapshot(1, 0)
+        initial = snapshot(1, 0, visible_text=("settings",))
         proposal = outcome(1)
         supervisor.start_action(proposal, initial, frame(1, 0))
         effect = supervisor.observe(

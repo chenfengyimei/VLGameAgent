@@ -5,7 +5,7 @@ from collections import deque
 from dataclasses import dataclass
 from enum import StrEnum
 
-from uga.perception.builder import normalize_visible_text
+from uga.perception.builder import normalize_visible_text, stable_visible_tokens
 from uga.perception.schema import PerceptionSnapshot
 
 
@@ -26,7 +26,7 @@ class ProgressTracker:
             (
                 snapshot.mode.value,
                 str(snapshot.task_generation),
-                *(normalize_visible_text(value) for value in snapshot.text),
+                *stable_visible_tokens(snapshot.text),
                 *(f"{key}={value}" for key, value in snapshot.goal_facts),
                 *(
                     f"{normalize_visible_text(item.label)}:{item.enabled}:{item.selected}"

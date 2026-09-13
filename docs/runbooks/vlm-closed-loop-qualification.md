@@ -129,6 +129,11 @@ same grounded bbox on the fresh pre-execution snapshot. A label that moved to
 a page heading or disappeared from that region makes the model result stale;
 the result is discarded even when the normalized click coordinates still fall
 inside the window.
+Persistent target pixels alone also do not prove a click worked while OCR still
+grounds the same label in the same bbox; this excludes the mouse cursor and row
+hover highlight. State and loop signatures deduplicate and sort normalized OCR,
+and omit pure clock digits and isolated one-character speckle so those changes
+cannot reset the loop detector.
 Review every Episode's video, planner decisions, grounded bbox, action effect,
 terminal status, and Replay result before changing `reviewed` or the three
 error findings in the final plan. Add the separately recorded injected-loop

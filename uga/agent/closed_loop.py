@@ -19,7 +19,7 @@ from uga.control.lease import ControlMode
 from uga.core.errors import ContractViolation
 from uga.environment.profile import PerceptionProfile
 from uga.gui.schema import GuiAction, GuiActionKind
-from uga.perception.builder import normalize_visible_text
+from uga.perception.builder import normalize_visible_text, stable_visible_tokens
 from uga.perception.schema import (
     ActionRisk,
     DecisionKind,
@@ -421,19 +421,18 @@ class ClosedLoopSupervisor:
         elapsed_ns = snapshot.captured_at.value_ns - pending.issued_at.value_ns
         minimum_ns = 250_000_000
         timeout_ns = self._profile.action_effect_timeout_ms * 1_000_000
-        semantic_text = frozenset(
-            normalize_visible_text(value)
-            for value in snapshot.text
-            if normalize_visible_text(value)
-        )
+        semantic_text = frozenset(stable_visible_tokens(snapshot.text))
         ui_state = tuple(
             (normalize_visible_text(element.label), element.enabled, element.selected)
             for element in snapshot.ui_elements
         )
         semantic_state = self._progress.state(snapshot)
+        semantic_text_changed = _meaningful_text_change(
+            pending.visible_text, semantic_text
+        )
         semantic_changed = (
             snapshot.mode != pending.mode
-            or semantic_text != pending.visible_text
+            or semantic_text_changed
             or snapshot.goal_facts != pending.goal_facts
             or ui_state != pending.ui_state
         )
@@ -445,7 +444,10 @@ class ClosedLoopSupervisor:
         if elapsed_ns < minimum_ns:
             return EffectObservation(True, None, "waiting for the minimum action effect window")
         persistent_target_change = False
-        if target_changed and not semantic_changed:
+        target_still_grounded = (
+            ActionValidator._ocr_target_grounding(pending.action, snapshot) == "match"
+        )
+        if target_changed and not semantic_changed and not target_still_grounded:
             if pending.pixel_change_candidate_at is None:
                 pending.pixel_change_candidate_at = snapshot.captured_at
                 pending.pixel_change_candidate_digest = current_digest
@@ -463,7 +465,7 @@ class ClosedLoopSupervisor:
             persistent_target_change = stable_ns >= minimum_ns
             if not persistent_target_change:
                 return EffectObservation(True, None, "waiting for target pixel change to persist")
-        elif not target_changed:
+        elif not target_changed or target_still_grounded:
             pending.pixel_change_candidate_at = None
             pending.pixel_change_candidate_digest = b""
         changed = semantic_changed or persistent_target_change
@@ -889,11 +891,7 @@ class ClosedLoopSupervisor:
         return _PendingAction(
             action,
             snapshot.mode,
-            frozenset(
-                normalize_visible_text(value)
-                for value in snapshot.text
-                if normalize_visible_text(value)
-            ),
+            frozenset(stable_visible_tokens(snapshot.text)),
             snapshot.goal_facts,
             tuple(
                 (normalize_visible_text(element.label), element.enabled, element.selected)
@@ -948,3 +946,15 @@ def _digest_difference(before: bytes, after: bytes) -> float:
     if not before or len(before) != len(after):
         return 1.0
     return sum(a != b for a, b in zip(before, after, strict=True)) / len(before)
+
+
+def _meaningful_text_change(before: frozenset[str], after: frozenset[str]) -> bool:
+    """Reject OCR speckle while retaining page-scale semantic transitions."""
+    if not before or not after or before == after:
+        return False
+    changed = before ^ after
+    if len(changed) < 2:
+        return False
+    union = before | after
+    similarity = len(before & after) / len(union)
+    return similarity < 0.75

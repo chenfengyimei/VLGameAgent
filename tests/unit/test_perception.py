@@ -69,6 +69,24 @@ class PerceptionTests(unittest.TestCase):
 
         self.assertEqual(first, second)
 
+    def test_signature_ignores_ocr_order_clock_and_single_character_speckle(self) -> None:
+        source = _large_frame()
+        box = NormalizedBox(0.1, 0.2, 0.3, 0.4)
+        first_text = (
+            TextRegion("设置", box, 0.99),
+            TextRegion("07:18", box, 0.99),
+        )
+        second_text = (
+            TextRegion("目", box, 0.99),
+            TextRegion("07:19", box, 0.99),
+            TextRegion("设置", box, 0.99),
+        )
+
+        first = perceptual_signature(source, first_text, ControlMode.GUI, 1)
+        second = perceptual_signature(source, second_text, ControlMode.GUI, 1)
+
+        self.assertEqual(first, second)
+
     def test_builder_fuses_ocr_into_snapshot(self) -> None:
         snapshot = PerceptionBuilder(_TextProvider()).build(
             SequencedFrame(4, frame(100)),
