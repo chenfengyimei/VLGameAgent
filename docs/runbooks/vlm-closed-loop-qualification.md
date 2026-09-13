@@ -118,7 +118,24 @@ revision, model id, Schema validity, decision/action kind, visible text,
 normalized target bbox, and wrong-window flag.
 
 Place the annotations, predictions, and referenced frames below one evidence
-directory, then run from a clean committed checkout:
+directory. Generate predictions from a clean committed checkout; the command is
+append-only and resumes after the last durable sample if interrupted:
+
+```powershell
+uga-benchmark grounding-run `
+  --annotations runs/qualification-vlm/offline/annotations.jsonl `
+  --output runs/qualification-vlm/offline/predictions.jsonl `
+  --base-url http://127.0.0.1:1234/v1 `
+  --model qwen3-vl-4b-instruct `
+  --no-thinking `
+  --project-root .
+```
+
+RapidOCR is mandatory for this hard run. Every prediction records the exact
+source revision, model id, Schema result, OCR text, grounded action and bbox,
+latency, and a digest of the raw model reply. Infrastructure failures stop the
+run without discarding completed rows. After the cohort completes, build the
+report:
 
 ```powershell
 uga-benchmark grounding-report `

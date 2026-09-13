@@ -53,6 +53,14 @@ class GroundingCorpus:
     sample_ids: tuple[str, ...]
     categories: tuple[tuple[str, int], ...]
     frame_set_sha256: str
+    items: tuple[GroundingCorpusItem, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class GroundingCorpusItem:
+    sample: GroundingSample
+    goal: str
+    frame_paths: tuple[Path, ...]
 
 
 def _box(value: object, label: str) -> NormalizedBox:
@@ -95,10 +103,11 @@ def _rows(path: Path, label: str) -> tuple[dict[str, Any], ...]:
     return tuple(rows)
 
 
-def _frame_digest(root: Path, frames: object) -> tuple[str, ...]:
+def _frame_references(root: Path, frames: object) -> tuple[tuple[str, ...], tuple[Path, ...]]:
     if not isinstance(frames, list) or not 1 <= len(frames) <= 3:
         raise ContractViolation("grounding sample requires one to three frame references")
     digests: list[str] = []
+    paths: list[Path] = []
     for frame in frames:
         if not isinstance(frame, dict):
             raise ContractViolation("grounding frame reference must be an object")
@@ -120,7 +129,8 @@ def _frame_digest(root: Path, frames: object) -> tuple[str, ...]:
         if observed != expected:
             raise ContractViolation(f"grounding frame digest mismatch: {relative}")
         digests.append(f"{relative}:{observed}")
-    return tuple(digests)
+        paths.append(candidate)
+    return tuple(digests), tuple(paths)
 
 
 def load_grounding_corpus(
@@ -131,6 +141,7 @@ def load_grounding_corpus(
     ids: set[str] = set()
     categories: Counter[str] = Counter()
     frame_records: set[str] = set()
+    items: list[GroundingCorpusItem] = []
     for row in _rows(source, "grounding annotations JSONL"):
         sample_id = row.get("sample_id")
         category = row.get("category")
@@ -186,7 +197,8 @@ def load_grounding_corpus(
             raise ContractViolation("non-ACT annotation cannot carry an action or bbox")
         if (expected_kind == DecisionKind.DONE) != (goal_status == GoalStatus.SUCCEEDED):
             raise ContractViolation("only DONE annotations may report a succeeded goal")
-        frame_records.update(_frame_digest(source.parent, row.get("frames")))
+        frame_digests, frame_paths = _frame_references(source.parent, row.get("frames"))
+        frame_records.update(frame_digests)
         sample = GroundingSample(
             sample_id,
             expected_kind,
@@ -199,6 +211,8 @@ def load_grounding_corpus(
             forbidden_boxes,
         )
         samples.append(sample)
+        assert isinstance(goal, str)
+        items.append(GroundingCorpusItem(sample, goal, frame_paths))
         categories[category] += 1
     if require_qualification_volume:
         if len(samples) < sum(GROUNDING_CATEGORY_MINIMUMS.values()):
@@ -214,6 +228,7 @@ def load_grounding_corpus(
         tuple(sample.sample_id for sample in samples),
         tuple(sorted(categories.items())),
         frame_set,
+        tuple(items),
     )
 
 
