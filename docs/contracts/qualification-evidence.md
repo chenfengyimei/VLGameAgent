@@ -45,6 +45,14 @@ across the four developer-owned Fixture scenarios (V1 claim scope; real-game
 generalization with licensed data is deferred to V2), and repository
 licensing/governance.
 
+Grounded VLM reliability is qualified in layers described by
+`docs/runbooks/vlm-closed-loop-qualification.md`. A single MuMu success is only
+a development smoke. The offline 200-sample corpus, 100-Episode Fixture/MuMu
+matrix, injected-loop results, and 30-minute soak must be retained as typed,
+source-bound evidence before the visual-loop claim can be promoted. The
+authorized-game report is separate supplemental evidence and cannot replace the
+owned Fixture/MuMu matrix or any existing model/dataset promotion gate.
+
 Typical ledger operations:
 
 ```powershell

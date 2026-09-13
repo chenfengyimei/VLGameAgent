@@ -6,6 +6,12 @@ when every gate below has recorded evidence.
 ## Development package evidence
 
 - [x] Ruff, strict mypy, pytest, and Rust release compilation pass.
+- [x] Local Qwen3-VL grounded-loop development smoke reaches Android Settings
+  through one MuMu click and terminates on two-frame goal confirmation; capture
+  p95/max gaps meet the 350/500 ms development limits.
+- [ ] Grounded-loop reliability qualification includes the annotated 200-sample
+  offline corpus, 100 Fixture/MuMu Episodes, injected loops, and 30-minute soak
+  at the documented thresholds.
 - [ ] Current audited revision builds wheel and source distribution in isolated
   PEP 517 environments.
 - [ ] Current audited wheel installs into a clean virtual environment without dependency
