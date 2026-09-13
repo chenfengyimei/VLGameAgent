@@ -441,6 +441,7 @@ async def _run(args: argparse.Namespace) -> int:
             task_graph=task_graph,
             task_node_id=task_node_id,
             goal_evidence=goal_evidence,
+            goal_action_target=goal_action_target,
         )
         gui_controller = GuiActionController(arbiter, scheduler, recorder)
         if recorder is not None:

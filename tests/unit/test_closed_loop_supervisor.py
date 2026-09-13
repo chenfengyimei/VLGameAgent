@@ -317,12 +317,17 @@ class ClosedLoopSupervisorTests(unittest.TestCase):
         self.supervisor.start_action(proposal, current, frame(1, 0))
 
         waiting = self.supervisor.observe(snapshot(2, 250_000_000), frame(1, 250_000_000))
-        changed = self.supervisor.observe(
+        candidate = self.supervisor.observe(
             snapshot(3, 300_000_000, signature="new-state"),
             frame(2, 300_000_000),
         )
+        changed = self.supervisor.observe(
+            snapshot(4, 600_000_000, signature="new-state"),
+            frame(2, 600_000_000),
+        )
 
         self.assertTrue(waiting.pending)
+        self.assertTrue(candidate.pending)
         self.assertTrue(changed.effect_observed)
         self.assertEqual(self.supervisor.diagnostics()["logical_actions_issued"], 1)
         self.assertEqual(self.supervisor.diagnostics()["verified_effect_actions"], 1)
@@ -339,6 +344,59 @@ class ClosedLoopSupervisorTests(unittest.TestCase):
 
         self.assertTrue(noisy.pending)
         self.assertIsNone(noisy.effect_observed)
+
+    def test_transient_target_pixel_change_is_not_an_action_effect(self) -> None:
+        current = snapshot(1, 0)
+        proposal = outcome(1)
+        self.supervisor.start_action(proposal, current, frame(1, 0))
+
+        ripple = self.supervisor.observe(snapshot(2, 300_000_000), frame(2, 300_000_000))
+        cleared = self.supervisor.observe(snapshot(3, 600_000_000), frame(1, 600_000_000))
+        timed_out = self.supervisor.observe(
+            snapshot(4, 1_000_000_000), frame(1, 1_000_000_000)
+        )
+
+        self.assertTrue(ripple.pending)
+        self.assertTrue(cleared.pending)
+        self.assertFalse(timed_out.pending)
+        self.assertFalse(timed_out.effect_observed)
+
+    def test_effective_single_step_target_cannot_be_clicked_again(self) -> None:
+        supervisor = ClosedLoopSupervisor(
+            self.clock,
+            self.profile,
+            goal_action_target="settings",
+        )
+        initial = snapshot(1, 0)
+        proposal = outcome(1)
+        supervisor.start_action(proposal, initial, frame(1, 0))
+        effect = supervisor.observe(
+            snapshot(2, 300_000_000, visible_text=("destination",)),
+            frame(1, 300_000_000),
+        )
+
+        self.assertTrue(effect.effect_observed)
+        self.assertFalse(supervisor.preferred_action_available)
+        first = supervisor.assess(
+            outcome(2),
+            snapshot(2, 400_000_000),
+            snapshot(2, 400_000_000),
+            frame(1, 400_000_000),
+            frame(1, 400_000_000),
+            "open settings",
+        )
+        second = supervisor.assess(
+            outcome(3),
+            snapshot(3, 500_000_000),
+            snapshot(3, 500_000_000),
+            frame(1, 500_000_000),
+            frame(1, 500_000_000),
+            "open settings",
+        )
+
+        self.assertEqual(first.disposition, DecisionDisposition.REOBSERVE)
+        self.assertEqual(second.disposition, DecisionDisposition.BLOCK)
+        self.assertEqual(supervisor.diagnostics()["logical_actions_issued"], 1)
 
     def test_unchanged_action_is_recorded_as_ineffective_after_timeout(self) -> None:
         current = snapshot(1, 0)

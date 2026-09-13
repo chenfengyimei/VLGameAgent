@@ -121,6 +121,10 @@ provide `--goal-action-target`; when its literal label is present while required
 completion evidence is absent, the constrained prompt requires the model to
 ground that visible row as its one action. The model must still return the bbox,
 and normal OCR, freshness, focus, and action-effect validation still apply.
+Once that target produces a verified semantic effect it is consumed and cannot
+be clicked again. Target-only pixel changes must remain stable for two samples
+at least 250 ms apart, preventing Android click ripples from masquerading as
+progress.
 Review every Episode's video, planner decisions, grounded bbox, action effect,
 terminal status, and Replay result before changing `reviewed` or the three
 error findings in the final plan. Add the separately recorded injected-loop

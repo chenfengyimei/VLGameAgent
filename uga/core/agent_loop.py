@@ -58,6 +58,7 @@ class GroundedPlanner(Protocol):
         frames: tuple[Frame, ...],
         goal: str,
         high_resolution_retry: bool = False,
+        preferred_action_available: bool = True,
     ) -> PlannerOutcome: ...
 
 
@@ -284,6 +285,7 @@ class RealtimeAgentLoop:
                 frames=history[-3:],
                 goal=observation.user_goal,
                 high_resolution_retry=closed_loop.high_resolution_retry,
+                preferred_action_available=closed_loop.preferred_action_available,
             )
             planner_outcome = outcome
             self._next_grounded_inference_ns = (

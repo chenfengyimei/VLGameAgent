@@ -135,6 +135,21 @@ class GroundedVlmTests(unittest.TestCase):
         self.assertEqual(outcome.wait_reason, WaitReason.LOADING)
         self.assertIsNone(outcome.action)
 
+    def test_consumed_single_step_target_is_explicitly_forbidden(self) -> None:
+        client = _Client([_reply("wait")])
+        planner = GroundedVlmPlanner(client, preferred_action_target="设置")
+
+        planner.decide(
+            snapshot=_snapshot(),
+            frames=(_large_frame(100),),
+            goal="打开设置",
+            preferred_action_available=False,
+        )
+
+        instruction = str(client.calls[0]["instruction"])
+        self.assertIn("已执行且已观测到界面效果", instruction)
+        self.assertIn("禁止再次点击", instruction)
+
     def test_temporal_overviews_are_chronological_and_capped_at_three(self) -> None:
         client = _Client([_reply()])
 

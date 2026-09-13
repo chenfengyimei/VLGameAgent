@@ -227,6 +227,7 @@ class GroundedVlmPlanner:
         frames: Sequence[Frame],
         goal: str,
         high_resolution_retry: bool = False,
+        preferred_action_available: bool = True,
     ) -> PlannerOutcome:
         started = time.monotonic()
         if not frames or frames[-1].frame_id != snapshot.frame_id:
@@ -242,7 +243,12 @@ class GroundedVlmPlanner:
             temporal_count=temporal_count,
             crop_count=crop_count,
             required_goal_evidence=self._required_goal_evidence,
-            preferred_action_target=self._preferred_action_target,
+            preferred_action_target=(
+                self._preferred_action_target if preferred_action_available else None
+            ),
+            consumed_action_target=(
+                self._preferred_action_target if not preferred_action_available else None
+            ),
         )
         response_format = (
             GROUNDING_RESPONSE_FORMAT
@@ -279,7 +285,12 @@ class GroundedVlmPlanner:
                     temporal_count=temporal_count,
                     crop_count=crop_count,
                     required_goal_evidence=self._required_goal_evidence,
-                    preferred_action_target=self._preferred_action_target,
+                    preferred_action_target=(
+                        self._preferred_action_target if preferred_action_available else None
+                    ),
+                    consumed_action_target=(
+                        self._preferred_action_target if not preferred_action_available else None
+                    ),
                 ),
                 response_format=(
                     GROUNDING_RESPONSE_FORMAT if self._schema_supported is True else None
@@ -361,6 +372,7 @@ class GroundedVlmPlanner:
         crop_count: int,
         required_goal_evidence: Sequence[str] = (),
         preferred_action_target: str | None = None,
+        consumed_action_target: str | None = None,
     ) -> str:
         ocr = "\n".join(
             f"- {region.text!r} bbox="
@@ -414,6 +426,12 @@ class GroundedVlmPlanner:
                     if target_visible and missing_evidence
                     else "仅在它真实可见且完成证据缺失时点击。"
                 )
+            )
+        if consumed_action_target is not None:
+            action_target = (
+                f"\n单步导航目标 {consumed_action_target} 已执行且已观测到界面效果。"
+                "禁止再次点击该目标或目标页标题；若完成证据仍缺失，输出 WAIT(no_safe_action) "
+                "或 ABSTAIN，不得用重复点击代替缺失证据。"
             )
         return (
             "你是像素 GUI 闭环规划器。目标：" + goal + "\n"

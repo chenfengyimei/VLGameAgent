@@ -113,8 +113,9 @@ class GroundedClickPlanner:
         frames: tuple[Frame, ...],
         goal: str,
         high_resolution_retry: bool = False,
+        preferred_action_available: bool = True,
     ) -> PlannerOutcome:
-        del frames, goal
+        del frames, goal, preferred_action_available
         self.high_resolution_retries.append(high_resolution_retry)
         return PlannerOutcome(
             f"grounded-decision-{snapshot.frame_sequence}",

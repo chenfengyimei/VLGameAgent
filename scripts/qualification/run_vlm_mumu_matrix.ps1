@@ -74,9 +74,9 @@ $tasks = @(
         id = "accessibility-magnification"
         intent = "android.settings.ACCESSIBILITY_SETTINGS"
         setup_markers = @("显示大小和文字", "放大功能")
-        goal_evidence = @("快速放大屏幕", "放大功能快捷方式")
+        goal_evidence = @("快速放大屏幕")
         action_target = "放大功能"
-        goal = "Open 放大功能. Complete only when 快速放大屏幕 and 放大功能快捷方式 are visible; then output DONE. Do not toggle anything."
+        goal = "Open 放大功能. Complete only when 快速放大屏幕 is visible; then output DONE. Do not toggle anything."
     },
     [pscustomobject]@{
         id = "location-app-permissions"

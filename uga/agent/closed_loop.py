@@ -79,6 +79,8 @@ class _PendingAction:
     semantic_state: SemanticState
     target_digest: bytes
     issued_at: UGATime
+    pixel_change_candidate_at: UGATime | None = None
+    pixel_change_candidate_digest: bytes = b""
 
 
 OutcomeVerifier = Callable[[PlannerOutcome, PerceptionSnapshot, Frame, str], bool]
@@ -286,6 +288,7 @@ class ClosedLoopSupervisor:
         task_graph: TaskGraph | None = None,
         task_node_id: str | None = None,
         goal_evidence: tuple[str, ...] = (),
+        goal_action_target: str | None = None,
     ) -> None:
         if not 0 <= max_recoveries <= 2:
             raise ContractViolation("closed-loop recoveries must be within [0, 2]")
@@ -299,6 +302,13 @@ class ClosedLoopSupervisor:
             threshold=0.85,
             required_evidence=goal_evidence,
         )
+        self._goal_action_target = (
+            None if goal_action_target is None else normalize_visible_text(goal_action_target)
+        )
+        if goal_action_target is not None and not self._goal_action_target:
+            raise ContractViolation("goal action target cannot be blank")
+        self._preferred_action_consumed = False
+        self._consumed_target_rejections = 0
         self._validator = ActionValidator(profile)
         self._pending: _PendingAction | None = None
         self._uncertain_retries = 0
@@ -351,6 +361,10 @@ class ClosedLoopSupervisor:
             or self._uncertain_retries == 1
         )
 
+    @property
+    def preferred_action_available(self) -> bool:
+        return not self._preferred_action_consumed
+
     def diagnostics(self) -> dict[str, object]:
         return {
             "status": self.status.value,
@@ -358,6 +372,9 @@ class ClosedLoopSupervisor:
             "goal_confidence": self.goal_confidence,
             "required_goal_evidence": list(self._goal.required_evidence),
             "missing_goal_evidence": list(self._goal.last_missing_evidence),
+            "goal_action_target": self._goal_action_target,
+            "preferred_action_consumed": self._preferred_action_consumed,
+            "consumed_target_rejections": self._consumed_target_rejections,
             "recovery_count": self._recovery_count,
             "last_effect_observed": self.last_effect_observed,
             "logical_actions_issued": self._logical_actions_issued,
@@ -400,6 +417,8 @@ class ClosedLoopSupervisor:
         if pending is None:
             return EffectObservation(False, None, "no action awaiting verification")
         elapsed_ns = snapshot.captured_at.value_ns - pending.issued_at.value_ns
+        minimum_ns = 250_000_000
+        timeout_ns = self._profile.action_effect_timeout_ms * 1_000_000
         semantic_text = frozenset(
             normalize_visible_text(value)
             for value in snapshot.text
@@ -417,10 +436,35 @@ class ClosedLoopSupervisor:
             or ui_state != pending.ui_state
         )
         target_changed = False
+        current_digest = b""
         if pending.action.target_box is not None:
             current_digest = region_digest(frame, pending.action.target_box)
             target_changed = _digest_difference(pending.target_digest, current_digest) > 0.1
-        changed = semantic_changed or target_changed
+        if elapsed_ns < minimum_ns:
+            return EffectObservation(True, None, "waiting for the minimum action effect window")
+        persistent_target_change = False
+        if target_changed and not semantic_changed:
+            if pending.pixel_change_candidate_at is None:
+                pending.pixel_change_candidate_at = snapshot.captured_at
+                pending.pixel_change_candidate_digest = current_digest
+                return EffectObservation(True, None, "waiting for target pixel change to stabilize")
+            stable_ns = (
+                snapshot.captured_at.value_ns - pending.pixel_change_candidate_at.value_ns
+            )
+            candidate_stable = (
+                _digest_difference(pending.pixel_change_candidate_digest, current_digest) <= 0.02
+            )
+            if not candidate_stable:
+                pending.pixel_change_candidate_at = snapshot.captured_at
+                pending.pixel_change_candidate_digest = current_digest
+                return EffectObservation(True, None, "transient target pixels are still changing")
+            persistent_target_change = stable_ns >= minimum_ns
+            if not persistent_target_change:
+                return EffectObservation(True, None, "waiting for target pixel change to persist")
+        elif not target_changed:
+            pending.pixel_change_candidate_at = None
+            pending.pixel_change_candidate_digest = b""
+        changed = semantic_changed or persistent_target_change
         if changed:
             self._pending = None
             self.last_effect_observed = True
@@ -429,11 +473,13 @@ class ClosedLoopSupervisor:
             self._consecutive_same_ineffective = 0
             self._reset_no_safe_waits()
             self._uncertain_retries = 0
+            if self._matches_goal_action_target(pending.action):
+                self._preferred_action_consumed = True
             finding = self._record_action_result(
                 pending,
                 semantic_state,
                 effect_observed=True,
-                target_changed=target_changed,
+                target_changed=persistent_target_change,
             )
             if finding is not None:
                 self._last_failed_action_key = self._action_key(pending.action)
@@ -443,8 +489,6 @@ class ClosedLoopSupervisor:
                 self._last_failed_action_key = None
             self._ineffective.pop(self._action_key(pending.action), None)
             return EffectObservation(False, True, pending.action.expected_effect)
-        minimum_ns = 250_000_000
-        timeout_ns = self._profile.action_effect_timeout_ms * 1_000_000
         if elapsed_ns < max(minimum_ns, timeout_ns):
             return EffectObservation(True, None, "waiting for the expected visual effect")
         key = self._action_key(pending.action)
@@ -568,6 +612,19 @@ class ClosedLoopSupervisor:
                 )
             return self._retry_or_block(outcome, "planner did not identify a safe action")
         assert outcome.action is not None
+        if self._preferred_action_consumed and self._matches_goal_action_target(outcome.action):
+            self._consumed_target_rejections += 1
+            if self._consumed_target_rejections >= 2:
+                return self._block(
+                    outcome,
+                    "single-step navigation target already produced an effect; "
+                    "completion evidence is still absent",
+                )
+            return SupervisedDecision(
+                DecisionDisposition.REOBSERVE,
+                "single-step navigation target already produced an effect; refusing repeat",
+                outcome,
+            )
         key = self._action_key(outcome.action)
         if recovering_high_resolution and key == self._last_failed_action_key:
             return self._advance_loop_recovery(
@@ -855,6 +912,12 @@ class ClosedLoopSupervisor:
     def _reset_no_safe_waits(self) -> None:
         self._no_safe_state_signature = None
         self._no_safe_state_repeats = 0
+
+    def _matches_goal_action_target(self, action: GroundedAction) -> bool:
+        if self._goal_action_target is None:
+            return False
+        label = normalize_visible_text(action.target_label)
+        return self._goal_action_target in label or label in self._goal_action_target
 
     def _complete_task(self, *, success: bool) -> None:
         if self._task_graph is None or self._task_node_id is None:
