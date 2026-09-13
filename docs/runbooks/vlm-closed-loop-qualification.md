@@ -92,6 +92,25 @@ Create a `uga.vlm_live_plan` v1.1 JSON document beside an `episodes/` directory.
 It binds the same `source_revision` and lists each Episode's `episode_id`,
 `goal_id`, zero-based repetition, `task` or injected-`loop` role, manual review
 status, wrong-window/target/critical-error findings, and loop detection rounds.
+The repository's resumable MuMu runner contains the reviewed set of 20
+read-only Android Settings navigation goals. It resets only the Settings
+activity between Episodes, stops after two consecutive failures, and writes a
+draft whose review flags deliberately remain false:
+
+```powershell
+scripts/qualification/run_vlm_mumu_matrix.ps1 `
+  -PythonExecutable C:\path\to\python.exe `
+  -EvidenceRoot runs/qualification-vlm/live-v1 `
+  -Repetitions 5
+```
+
+Run with `-DryRun` first to inspect the exact goals. The script resumes exact
+`goal_id`/repetition pairs and never replaces a recorded failure with a retry.
+Review every Episode's video, planner decisions, grounded bbox, action effect,
+terminal status, and Replay result before changing `reviewed` or the three
+error findings in the final plan. Add the separately recorded injected-loop
+Episode only after that review.
+
 Then aggregate the matrix:
 
 ```powershell
