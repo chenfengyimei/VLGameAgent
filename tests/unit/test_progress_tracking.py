@@ -36,10 +36,10 @@ class LoopDetectorTests(unittest.TestCase):
     def test_two_step_state_action_ring_is_detected_after_two_rounds(self) -> None:
         detector = LoopDetector()
         records = (
-            LoopRecord("state-a", "click:next", True, "state-b", True),
-            LoopRecord("state-b", "click:back", True, "state-a", True),
-            LoopRecord("state-a", "click:next", True, "state-b", True),
-            LoopRecord("state-b", "click:back", True, "state-a", True),
+            LoopRecord("state-a", "click:next", False, "state-b", False),
+            LoopRecord("state-b", "click:back", False, "state-a", False),
+            LoopRecord("state-a", "click:next", False, "state-b", False),
+            LoopRecord("state-b", "click:back", False, "state-a", False),
         )
 
         findings = tuple(detector.record(record) for record in records)
@@ -58,9 +58,9 @@ class LoopDetectorTests(unittest.TestCase):
                     LoopRecord(
                         f"state-{index}",
                         f"action-{index}",
-                        True,
+                        False,
                         f"state-{(index + 1) % length}",
-                        True,
+                        False,
                     )
                     for index in range(length)
                 )
@@ -70,6 +70,17 @@ class LoopDetectorTests(unittest.TestCase):
                 self.assertIsNotNone(findings[-1])
                 assert findings[-1] is not None
                 self.assertEqual(findings[-1].cycle_length, length)
+
+    def test_repeated_state_action_ring_with_semantic_progress_is_not_a_loop(self) -> None:
+        detector = LoopDetector()
+        cycle = (
+            LoopRecord("state-a", "click:next", True, "state-b", True),
+            LoopRecord("state-b", "click:back", True, "state-a", True),
+        )
+
+        findings = tuple(detector.record(item) for item in (*cycle, *cycle))
+
+        self.assertTrue(all(finding is None for finding in findings))
 
 
 if __name__ == "__main__":

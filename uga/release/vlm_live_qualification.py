@@ -313,7 +313,14 @@ def build_vlm_live_qualification_report(
                 entry.loop_detection_rounds is not None
                 and entry.loop_detection_rounds <= 2
                 and status == "blocked"
-                and closed.get("last_loop_finding") is not None
+                and (
+                    closed.get("last_loop_finding") is not None
+                    or _integer(
+                        closed.get("no_safe_state_repeats", 0),
+                        "no-safe state repeats",
+                    )
+                    >= 2
+                )
             )
             loop_detections += detected
         reviewed += entry.reviewed

@@ -83,6 +83,7 @@ def _episode(root: Path, episode_id: str, revision: str, *, loop: bool = False) 
                 "closed_loop": {
                     "status": "blocked" if loop else "succeeded",
                     "last_loop_finding": {"kind": "state_cycle"} if loop else None,
+                    "no_safe_state_repeats": 0,
                 },
             },
         }
@@ -179,6 +180,39 @@ class VlmLiveQualificationTests(unittest.TestCase):
             self.assertTrue(replay.called)  # type: ignore[attr-defined]
 
     @patch("uga.release.vlm_live_qualification.ReplayEngine")
+    def test_accepts_bounded_no_safe_stall_as_injected_loop(self, replay: object) -> None:
+        del replay
+        revision = "d" * 40
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            plan, episodes = _plan(root, revision)
+            planner_path = episodes / "loop-00" / "planner.jsonl"
+            rows = tuple(
+                json.loads(line) for line in planner_path.read_text(encoding="utf-8").splitlines()
+            )
+            rows[-1]["payload"]["closed_loop"]["last_loop_finding"] = None
+            rows[-1]["payload"]["closed_loop"]["no_safe_state_repeats"] = 2
+            planner_path.write_text(
+                "".join(json.dumps(row) + "\n" for row in rows),
+                encoding="utf-8",
+            )
+            checksum_path = planner_path.parent / "checksum.json"
+            checksum = json.loads(checksum_path.read_text(encoding="utf-8"))
+            checksum["files"]["planner.jsonl"] = hashlib.sha256(
+                planner_path.read_bytes()
+            ).hexdigest()
+            checksum_path.write_text(json.dumps(checksum), encoding="utf-8")
+
+            report = build_vlm_live_qualification_report(
+                plan_path=plan,
+                episodes_root=episodes,
+                output_path=root / "report.json",
+                source_revision=revision,
+            )
+
+            self.assertTrue(json.loads(report.read_text(encoding="utf-8"))["passed"])
+
+    @patch("uga.release.vlm_live_qualification.ReplayEngine")
     def test_rejects_episode_without_exact_source_binding(self, replay: object) -> None:
         del replay
         revision = "b" * 40
@@ -205,4 +239,3 @@ class VlmLiveQualificationTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

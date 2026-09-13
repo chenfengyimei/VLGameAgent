@@ -115,7 +115,9 @@ class LoopDetector:
             second = recent[-length:]
             first_tokens = tuple((value.state_signature, value.action_key) for value in first)
             second_tokens = tuple((value.state_signature, value.action_key) for value in second)
-            if first_tokens == second_tokens:
+            if first_tokens == second_tokens and not any(
+                value.semantic_progress for value in (*first, *second)
+            ):
                 return LoopFinding(
                     LoopKind.STATE_ACTION_CYCLE,
                     length,

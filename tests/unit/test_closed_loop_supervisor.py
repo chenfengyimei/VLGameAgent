@@ -482,7 +482,7 @@ class ClosedLoopSupervisorTests(unittest.TestCase):
             ("state-a", "next", 1, "state-b", 2),
             ("state-b", "previous", 2, "state-a", 1),
         )
-        for index, (before_sig, label, before_frame, after_sig, after_frame) in enumerate(
+        for index, (before_sig, label, before_frame, after_sig, _after_frame) in enumerate(
             transitions, start=1
         ):
             proposal = outcome(index, label=label)
@@ -497,14 +497,24 @@ class ClosedLoopSupervisorTests(unittest.TestCase):
                     signature=after_sig,
                 ),
                 frame(
-                    after_frame,
+                    before_frame,
                     index * 1_000_000_000 + 250_000_000,
                 ),
             )
 
         self.assertIsNotNone(supervisor.last_loop_finding)
-        self.assertEqual(supervisor.recovery_count, 1)
-        self.assertTrue(supervisor.high_resolution_retry)
+        self.assertEqual(supervisor.recovery_count, 2)
+        recovery_snapshot = snapshot(6, 6_000_000_000, signature="state-a")
+        recovery = supervisor.assess(
+            outcome(6, label="next"),
+            recovery_snapshot,
+            recovery_snapshot,
+            frame(1, 6_000_000_000),
+            frame(1, 6_000_000_000),
+            "open settings",
+        )
+        self.assertEqual(recovery.disposition, DecisionDisposition.RECOVER)
+        self.assertEqual(recovery.recovery, RecoveryDirective.BACK)
 
 
 if __name__ == "__main__":
