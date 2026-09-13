@@ -18,126 +18,149 @@ $tasks = @(
         id = "network-internet"
         intent = "android.settings.WIRELESS_SETTINGS"
         setup_markers = @("互联网", "SIM 卡")
+        goal_evidence = @("添加网络")
         goal = "Open 互联网. Complete only when the 互联网 page and 添加网络 are visible; then output DONE."
     },
     [pscustomobject]@{
         id = "network-sim"
         intent = "android.settings.WIRELESS_SETTINGS"
         setup_markers = @("互联网", "SIM 卡")
+        goal_evidence = @("移动数据")
         goal = "Open SIM 卡. Complete only when the China Mobile GSM page and 移动数据 are visible; then output DONE."
     },
     [pscustomobject]@{
         id = "network-hotspot"
         intent = "android.settings.WIRELESS_SETTINGS"
         setup_markers = @("互联网", "热点和网络共享")
+        goal_evidence = @("WLAN 热点")
         goal = "Open 热点和网络共享. Complete only when that page and WLAN 热点 are visible; then output DONE. Do not toggle anything."
     },
     [pscustomobject]@{
         id = "internet-preferences"
         intent = "android.settings.WIFI_SETTINGS"
         setup_markers = @("添加网络", "网络偏好设置")
+        goal_evidence = @("自动开启 WLAN")
         goal = "Open 网络偏好设置. Complete only when that page and 自动开启 WLAN are visible; then output DONE. Do not toggle anything."
     },
     [pscustomobject]@{
         id = "battery-schedule"
         intent = "android.settings.BATTERY_SAVER_SETTINGS"
         setup_markers = @("使用省电模式", "设置时间表")
+        goal_evidence = @("根据电量百分比")
         goal = "Open 设置时间表. Complete only when 没有时间表 and 根据电量百分比 are visible; then output DONE. Do not select a schedule."
     },
     [pscustomobject]@{
         id = "storage-games"
         intent = "android.settings.INTERNAL_STORAGE_SETTINGS"
         setup_markers = @("存储空间管理器", "游戏")
+        goal_evidence = @("仙遇")
         goal = "Open 游戏. Complete only when the 游戏 storage page lists 仙遇 and its storage size; then output DONE. Do not open the app entry."
     },
     [pscustomobject]@{
         id = "accessibility-display-size"
         intent = "android.settings.ACCESSIBILITY_SETTINGS"
         setup_markers = @("显示大小和文字", "放大功能")
+        goal_evidence = @("预览", "字体大小")
         goal = "Open 显示大小和文字. Complete only when 预览 and 字体大小 are visible; then output DONE. Do not change any slider."
     },
     [pscustomobject]@{
         id = "accessibility-magnification"
         intent = "android.settings.ACCESSIBILITY_SETTINGS"
         setup_markers = @("显示大小和文字", "放大功能")
+        goal_evidence = @("快速放大屏幕", "放大功能快捷方式")
         goal = "Open 放大功能. Complete only when 快速放大屏幕 and 放大功能快捷方式 are visible; then output DONE. Do not toggle anything."
     },
     [pscustomobject]@{
         id = "location-app-permissions"
         intent = "android.settings.LOCATION_SOURCE_SETTINGS"
         setup_markers = @("应用位置信息权限", "位置信息服务")
+        goal_evidence = @("一律允许", "仅在使用时允许")
         goal = "Open 应用位置信息权限. Complete only when 一律允许 and 仅在使用时允许 are visible; then output DONE. Do not change permissions."
     },
     [pscustomobject]@{
         id = "location-services"
         intent = "android.settings.LOCATION_SOURCE_SETTINGS"
         setup_markers = @("应用位置信息权限", "位置信息服务")
+        goal_evidence = @("WLAN 扫描", "蓝牙扫描")
         goal = "Open 位置信息服务. Complete only when WLAN 扫描 and 蓝牙扫描 are visible; then output DONE. Do not toggle anything."
     },
     [pscustomobject]@{
         id = "observe-network-dashboard"
         intent = "android.settings.WIRELESS_SETTINGS"
         setup_markers = @("互联网", "热点和网络共享")
+        goal_evidence = @("互联网", "热点和网络共享")
         goal = "The requested destination is already open. Complete only when 互联网 and 热点和网络共享 are both visible on the current page; output DONE without any physical action."
     },
     [pscustomobject]@{
         id = "observe-internet"
         intent = "android.settings.WIFI_SETTINGS"
         setup_markers = @("添加网络", "网络偏好设置")
+        goal_evidence = @("添加网络", "网络偏好设置")
         goal = "The requested destination is already open. Complete only when 添加网络 and 网络偏好设置 are both visible; output DONE without any physical action."
     },
     [pscustomobject]@{
         id = "observe-battery-saver"
         intent = "android.settings.BATTERY_SAVER_SETTINGS"
         setup_markers = @("使用省电模式", "设置时间表")
+        goal_evidence = @("使用省电模式", "设置时间表")
         goal = "The requested destination is already open. Complete only when 使用省电模式 and 设置时间表 are both visible; output DONE without any physical action."
     },
     [pscustomobject]@{
         id = "observe-storage"
         intent = "android.settings.INTERNAL_STORAGE_SETTINGS"
         setup_markers = @("存储空间管理器", "游戏")
+        goal_evidence = @("存储空间管理器", "游戏")
         goal = "The requested destination is already open. Complete only when 存储空间管理器 and 游戏 are both visible; output DONE without any physical action."
     },
     [pscustomobject]@{
         id = "observe-display"
         intent = "android.settings.DISPLAY_SETTINGS"
         setup_markers = @("亮度", "锁定的屏幕")
+        goal_evidence = @("亮度", "锁定的屏幕")
         goal = "The requested destination is already open. Complete only when 亮度 and 锁定的屏幕 are both visible; output DONE without any physical action."
     },
     [pscustomobject]@{
         id = "observe-accessibility"
         intent = "android.settings.ACCESSIBILITY_SETTINGS"
         setup_markers = @("显示大小和文字", "放大功能")
+        goal_evidence = @("显示大小和文字", "放大功能")
         goal = "The requested destination is already open. Complete only when 显示大小和文字 and 放大功能 are both visible; output DONE without any physical action."
     },
     [pscustomobject]@{
         id = "observe-location"
         intent = "android.settings.LOCATION_SOURCE_SETTINGS"
         setup_markers = @("近期位置信息访问", "位置信息服务")
+        goal_evidence = @("近期位置信息访问", "位置信息服务")
         goal = "The requested destination is already open. Complete only when 近期位置信息访问 and 位置信息服务 are both visible; output DONE without any physical action."
     },
     [pscustomobject]@{
         id = "observe-sound"
         intent = "android.settings.SOUND_SETTINGS"
         setup_markers = @("媒体音量", "通知音量")
+        goal_evidence = @("媒体音量", "通知音量")
         goal = "The requested destination is already open. Complete only when 媒体音量 and 通知音量 are both visible; output DONE without any physical action."
     },
     [pscustomobject]@{
         id = "observe-language"
         intent = "android.settings.LOCALE_SETTINGS"
         setup_markers = @("首选语言顺序", "添加语言")
+        goal_evidence = @("首选语言顺序", "添加语言")
         goal = "The requested destination is already open. Complete only when 首选语言顺序 and 添加语言 are both visible; output DONE without any physical action."
     },
     [pscustomobject]@{
         id = "observe-keyboard"
         intent = "android.settings.INPUT_METHOD_SETTINGS"
         setup_markers = @("SogouIME-chuizi", "英语（美国）")
+        goal_evidence = @("SogouIME-chuizi", "英语（美国）")
         goal = "The requested destination is already open. Complete only when SogouIME-chuizi and 英语（美国） are both visible; output DONE without any physical action."
     }
 )
 
 if ($tasks.Count -ne 20 -or @($tasks.id | Sort-Object -Unique).Count -ne 20) {
     throw "MuMu qualification matrix must contain exactly 20 unique goals"
+}
+if (@($tasks | Where-Object { $_.goal_evidence.Count -lt 1 }).Count -ne 0) {
+    throw "every MuMu qualification goal must declare fresh OCR completion evidence"
 }
 
 if ($DryRun) {
@@ -178,6 +201,7 @@ function Start-VerifiedSettingsPage {
 
     $lastSnapshot = $null
     for ($attempt = 1; $attempt -le 3; $attempt++) {
+        & $Adb -s $Serial shell am force-stop com.android.permissioncontroller | Out-Null
         & $Adb -s $Serial shell am force-stop com.android.settings | Out-Null
         & $Adb -s $Serial shell am start -W -a $Task.intent | Out-Null
         if ($LASTEXITCODE -ne 0) {
@@ -305,6 +329,9 @@ try {
                 "--record", $episodes,
                 "--qualification-project-root", $project
             )
+            foreach ($requiredEvidence in $task.goal_evidence) {
+                $arguments += @("--goal-evidence", $requiredEvidence)
+            }
             Write-Host "[run] $($task.id) repetition=$repetition"
             & $PythonExecutable @arguments 2>&1 |
                 Tee-Object -FilePath $runLog -Append |

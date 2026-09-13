@@ -86,12 +86,27 @@ KeyResolver = Callable[[str], tuple[int, ...] | None]
 
 
 class GoalVerifier:
-    def __init__(self, *, confirmation_ns: int = 500_000_000, threshold: float = 0.85) -> None:
+    def __init__(
+        self,
+        *,
+        confirmation_ns: int = 500_000_000,
+        threshold: float = 0.85,
+        required_evidence: tuple[str, ...] = (),
+    ) -> None:
         if confirmation_ns < 0 or not 0.0 <= threshold <= 1.0:
             raise ContractViolation("goal verifier configuration is invalid")
+        normalized = tuple(normalize_visible_text(value) for value in required_evidence)
+        if any(not value for value in normalized) or len(normalized) != len(set(normalized)):
+            raise ContractViolation("required goal evidence must be unique and non-empty")
         self._confirmation_ns = confirmation_ns
         self._threshold = threshold
+        self._required_evidence = tuple(zip(required_evidence, normalized, strict=True))
         self._candidate: tuple[UGATime, str, frozenset[str]] | None = None
+        self.last_missing_evidence: tuple[str, ...] = ()
+
+    @property
+    def required_evidence(self) -> tuple[str, ...]:
+        return tuple(original for original, _ in self._required_evidence)
 
     def consider(self, outcome: PlannerOutcome, snapshot: PerceptionSnapshot) -> bool:
         if (
@@ -100,10 +115,27 @@ class GoalVerifier:
             or outcome.confidence < self._threshold
         ):
             self._candidate = None
+            self.last_missing_evidence = ()
             return False
-        evidence = frozenset(
+        observed_values = tuple(
             normalize_visible_text(value)
-            for value in (*outcome.visible_text, *snapshot.text)
+            for value in snapshot.text
+            if normalize_visible_text(value)
+        )
+        observed = frozenset(observed_values)
+        combined_observed = "".join(observed_values)
+        self.last_missing_evidence = tuple(
+            original
+            for original, required in self._required_evidence
+            if required not in combined_observed
+            and not any(required in value for value in observed)
+        )
+        if self.last_missing_evidence:
+            self._candidate = None
+            return False
+        evidence = observed or frozenset(
+            normalize_visible_text(value)
+            for value in outcome.visible_text
             if normalize_visible_text(value)
         )
         if self._candidate is None:
@@ -253,6 +285,7 @@ class ClosedLoopSupervisor:
         max_recoveries: int = 2,
         task_graph: TaskGraph | None = None,
         task_node_id: str | None = None,
+        goal_evidence: tuple[str, ...] = (),
     ) -> None:
         if not 0 <= max_recoveries <= 2:
             raise ContractViolation("closed-loop recoveries must be within [0, 2]")
@@ -264,6 +297,7 @@ class ClosedLoopSupervisor:
         self._goal = GoalVerifier(
             confirmation_ns=profile.page_stable_ms * 1_000_000,
             threshold=0.85,
+            required_evidence=goal_evidence,
         )
         self._validator = ActionValidator(profile)
         self._pending: _PendingAction | None = None
@@ -322,6 +356,8 @@ class ClosedLoopSupervisor:
             "status": self.status.value,
             "termination_reason": self.termination_reason,
             "goal_confidence": self.goal_confidence,
+            "required_goal_evidence": list(self._goal.required_evidence),
+            "missing_goal_evidence": list(self._goal.last_missing_evidence),
             "recovery_count": self._recovery_count,
             "last_effect_observed": self.last_effect_observed,
             "logical_actions_issued": self._logical_actions_issued,
@@ -469,6 +505,13 @@ class ClosedLoopSupervisor:
                 self._complete_task(success=True)
                 return SupervisedDecision(
                     DecisionDisposition.TERMINATE, "goal confirmed on two fresh frames", outcome
+                )
+            if self._goal.last_missing_evidence:
+                missing = ", ".join(self._goal.last_missing_evidence)
+                return SupervisedDecision(
+                    DecisionDisposition.REOBSERVE,
+                    f"goal completion rejected; missing fresh OCR evidence: {missing}",
+                    outcome,
                 )
             return SupervisedDecision(
                 DecisionDisposition.REOBSERVE,

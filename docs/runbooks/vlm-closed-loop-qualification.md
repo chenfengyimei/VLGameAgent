@@ -112,6 +112,11 @@ scripts/qualification/run_vlm_mumu_matrix.ps1 `
 
 Run with `-DryRun` first to inspect the exact goals. The script resumes exact
 `goal_id`/repetition pairs and never replaces a recorded failure with a retry.
+Every goal also supplies one or more repeated `--goal-evidence` values. The
+planner sees those mandatory facts, and `GoalVerifier` accepts `DONE` only when
+all of them occur in fresh local OCR on both confirmation frames; text claimed
+only by the model cannot satisfy completion. Without OCR, evidence-bound goals
+fail closed rather than lowering the threshold.
 Review every Episode's video, planner decisions, grounded bbox, action effect,
 terminal status, and Replay result before changing `reviewed` or the three
 error findings in the final plan. Add the separately recorded injected-loop

@@ -195,13 +195,18 @@ class GroundedVlmPlanner:
         structured_output: bool = True,
         max_image_width: int = 1280,
         journal: DecisionJournal | None = None,
+        required_goal_evidence: Sequence[str] = (),
     ) -> None:
         if max_image_width < 320:
             raise ContractViolation("grounded planner image width must be at least 320")
+        evidence = tuple(value.strip() for value in required_goal_evidence)
+        if any(not value for value in evidence) or len(evidence) != len(set(evidence)):
+            raise ContractViolation("required goal evidence must be unique and non-empty")
         self._client = client
         self._structured_output = structured_output
         self._max_image_width = max_image_width
         self._journal = journal or NullJournal()
+        self._required_goal_evidence = evidence
         self._schema_supported: bool | None = None
         self.last_raw_reply: str | None = None
         self.last_schema_valid = False
@@ -231,6 +236,7 @@ class GroundedVlmPlanner:
             repair_error=None,
             temporal_count=temporal_count,
             crop_count=crop_count,
+            required_goal_evidence=self._required_goal_evidence,
         )
         response_format = (
             GROUNDING_RESPONSE_FORMAT
@@ -266,6 +272,7 @@ class GroundedVlmPlanner:
                     repair_error=str(exc),
                     temporal_count=temporal_count,
                     crop_count=crop_count,
+                    required_goal_evidence=self._required_goal_evidence,
                 ),
                 response_format=(
                     GROUNDING_RESPONSE_FORMAT if self._schema_supported is True else None
@@ -345,6 +352,7 @@ class GroundedVlmPlanner:
         repair_error: str | None,
         temporal_count: int,
         crop_count: int,
+        required_goal_evidence: Sequence[str] = (),
     ) -> str:
         ocr = "\n".join(
             f"- {region.text!r} bbox="
@@ -360,6 +368,12 @@ class GroundedVlmPlanner:
             if repair_reply is not None
             else ""
         )
+        required = (
+            "\n显式完成证据（每一项都必须在最新帧真实可见，否则禁止 DONE）：\n"
+            + "\n".join(f"- {value}" for value in required_goal_evidence)
+            if required_goal_evidence
+            else ""
+        )
         return (
             "你是像素 GUI 闭环规划器。目标：" + goal + "\n"
             f"输入先给出 {temporal_count} 张按时间先后排列的干净全景图（最后一张最新），"
@@ -367,7 +381,11 @@ class GroundedVlmPlanner:
             "只能返回一个符合 JSON Schema 的决策。每次最多一个动作。"
             "必须先对照目标检查最新帧的完成证据；若可观察完成条件已经满足，必须输出"
             "kind=done、goal_status=succeeded、action=null，即使目标按钮因上一步成功而消失。"
+            "目标中的每一项完成条件都必须满足；仅看到通往目标页的导航行不代表已打开目标页。"
+            "visible_text 只能抄录最新图像或 OCR 中真实存在的文字，禁止写入期望但未出现的文字。"
             "只有确认目标尚未完成后，才能选择 act、wait 或 abstain。"
+            "若目标要求 Open/打开某项，且同名或明确同义的可点击行在最新帧可见，"
+            "应对该行输出 act，而不是因为目标页的完成证据尚未出现就 wait 或 abstain。"
             "不要返回自由点击坐标；点击必须给出所见控件的 normalized target_bbox。"
             "同时检查文字和常见视觉图标；即使 OCR 没有标签，清晰可辨且与目标直接对应的"
             "图标（例如齿轮代表设置）也可以作为低风险目标，并为图标本体给出 bbox。"
@@ -382,7 +400,7 @@ class GroundedVlmPlanner:
             "key/hotkey 的 target_bbox 必须为 null 且 key 必须是已知语义键名。"
             "expected_effect 必须描述下一帧可验证的界面或文本变化。"
             "登录、删除、支付、发送、安装标记为 critical。\n"
-            "当前 OCR：\n" + ocr + repair
+            "当前 OCR：\n" + ocr + required + repair
         )
 
     @staticmethod

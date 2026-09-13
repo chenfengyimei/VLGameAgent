@@ -59,6 +59,15 @@ def cli() -> None:
     run_parser.add_argument("--profile", required=True, help="game profile YAML path")
     run_parser.add_argument("--goal", default="Interact with the target")
     run_parser.add_argument(
+        "--goal-evidence",
+        action="append",
+        default=[],
+        help=(
+            "text that must be present in fresh OCR before DONE can be accepted; "
+            "repeat for multiple required facts"
+        ),
+    )
+    run_parser.add_argument(
         "--policy",
         choices=["scripted", "vlm"],
         default="scripted",

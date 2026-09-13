@@ -100,7 +100,9 @@ class GroundedVlmTests(unittest.TestCase):
         client = _Client([_reply()])
         snapshot = _snapshot()
 
-        outcome = GroundedVlmPlanner(client).decide(
+        outcome = GroundedVlmPlanner(
+            client, required_goal_evidence=("目标页标题", "目标页事实")
+        ).decide(
             snapshot=snapshot,
             frames=(_large_frame(100),),
             goal="打开设置",
@@ -115,6 +117,10 @@ class GroundedVlmTests(unittest.TestCase):
         instruction = str(client.calls[0]["instruction"])
         self.assertLess(instruction.index("完成证据"), instruction.index("normalized target_bbox"))
         self.assertIn("目标按钮因上一步成功而消失", instruction)
+        self.assertIn("每一项都必须在最新帧真实可见", instruction)
+        self.assertIn("目标页标题", instruction)
+        self.assertIn("目标页事实", instruction)
+        self.assertIn("可点击行在最新帧可见", instruction)
 
     def test_wait_is_a_non_action_with_reason(self) -> None:
         outcome = GroundedVlmPlanner(_Client([_reply("wait")])).decide(

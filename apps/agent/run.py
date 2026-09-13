@@ -160,6 +160,10 @@ def _current_target_client_rect(
 
 async def _run(args: argparse.Namespace) -> int:
     qualification_root = getattr(args, "qualification_project_root", None)
+    raw_goal_evidence = tuple(getattr(args, "goal_evidence", ()))
+    if any(not value.strip() for value in raw_goal_evidence):
+        raise SystemExit("--goal-evidence values cannot be blank")
+    goal_evidence = tuple(dict.fromkeys(value.strip() for value in raw_goal_evidence))
     if qualification_root is not None and not args.record:
         raise SystemExit("--qualification-project-root requires --record")
     if not math.isfinite(args.duration_seconds) or args.duration_seconds < 0:
@@ -299,6 +303,7 @@ async def _run(args: argparse.Namespace) -> int:
                 structured_output=True,
                 max_image_width=1280,
                 journal=journal,
+                required_goal_evidence=goal_evidence,
             )
             policy: ScriptedTapPolicy | None = None
         except BaseException:
@@ -429,6 +434,7 @@ async def _run(args: argparse.Namespace) -> int:
             max_recoveries=args.max_recoveries,
             task_graph=task_graph,
             task_node_id=task_node_id,
+            goal_evidence=goal_evidence,
         )
         gui_controller = GuiActionController(arbiter, scheduler, recorder)
         if recorder is not None:
@@ -663,6 +669,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run the UGA agent against a live window")
     parser.add_argument("--profile", type=Path, required=True)
     parser.add_argument("--goal", default="Interact with the target")
+    parser.add_argument(
+        "--goal-evidence",
+        action="append",
+        default=[],
+        help=(
+            "text that must be present in fresh OCR before DONE can be accepted; "
+            "repeat for multiple required facts"
+        ),
+    )
     parser.add_argument(
         "--policy",
         choices=["scripted", "vlm"],

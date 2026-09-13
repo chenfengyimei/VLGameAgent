@@ -23,6 +23,7 @@ from uga.perception.schema import (
     NormalizedBox,
     PerceptionSnapshot,
     PlannerOutcome,
+    TextRegion,
     WaitReason,
 )
 from uga.time.clock import ManualClock, UGATime
@@ -34,6 +35,7 @@ def snapshot(
     *,
     signature: str = "same-state",
     generation: int = 1,
+    visible_text: tuple[str, ...] = (),
 ) -> PerceptionSnapshot:
     return PerceptionSnapshot(
         f"snapshot-{number}",
@@ -44,7 +46,10 @@ def snapshot(
         1,
         1,
         ControlMode.GUI,
-        (),
+        tuple(
+            TextRegion(value, NormalizedBox(0.1, 0.1, 0.9, 0.2), 0.99)
+            for value in visible_text
+        ),
         (),
         (("goal", "settings"),),
         signature,
@@ -118,6 +123,32 @@ class GoalVerifierTests(unittest.TestCase):
         self.assertFalse(
             verifier.consider(
                 outcome(3, kind=DecisionKind.DONE), snapshot(3, 600_000_000)
+            )
+        )
+
+    def test_required_evidence_must_come_from_fresh_ocr_not_model_claims(self) -> None:
+        verifier = GoalVerifier(
+            confirmation_ns=500_000_000,
+            required_evidence=("根据电量百分比",),
+        )
+
+        self.assertFalse(
+            verifier.consider(
+                outcome(1, kind=DecisionKind.DONE),
+                snapshot(1, 0, visible_text=("设置时间表", "没有时间表")),
+            )
+        )
+        self.assertEqual(verifier.last_missing_evidence, ("根据电量百分比",))
+        self.assertFalse(
+            verifier.consider(
+                outcome(2, kind=DecisionKind.DONE),
+                snapshot(2, 100_000_000, visible_text=("根据电量", "百分比")),
+            )
+        )
+        self.assertTrue(
+            verifier.consider(
+                outcome(3, kind=DecisionKind.DONE),
+                snapshot(3, 600_000_000, visible_text=("根据电量", "百分比")),
             )
         )
 
