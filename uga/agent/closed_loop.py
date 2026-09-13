@@ -208,10 +208,12 @@ class ActionValidator:
                     return False, "target center is inside a configured no-click region"
             if self._target_changed(action.target_box, decided_frame, fresh_frame):
                 return False, "target pixels changed while the model was deciding"
-            if not secondary_verified and not self._ocr_target_consistent(
-                action, fresh_snapshot
-            ):
-                return False, "OCR and model target grounding conflict"
+            if not secondary_verified:
+                grounding = self._ocr_target_grounding(action, fresh_snapshot)
+                if grounding == "missing":
+                    return False, "target no longer exists at the grounded OCR region"
+                if grounding == "conflict":
+                    return False, "OCR and model target grounding conflict"
             for element in fresh_snapshot.ui_elements:
                 if (
                     action.target_box.intersection_ratio(element.box) >= 0.35
@@ -223,11 +225,11 @@ class ActionValidator:
         return True, "grounded action validated on the latest frame"
 
     @staticmethod
-    def _ocr_target_consistent(
+    def _ocr_target_grounding(
         action: GroundedAction, snapshot: PerceptionSnapshot
-    ) -> bool:
+    ) -> str:
         if action.target_box is None or not snapshot.visible_text:
-            return True
+            return "unavailable"
         target = normalize_visible_text(action.target_label)
         overlapping = tuple(
             region
@@ -235,13 +237,13 @@ class ActionValidator:
             if action.target_box.intersection_ratio(region.box) >= 0.35
         )
         if not overlapping:
-            return True
+            return "missing"
         for region in overlapping:
             text = normalize_visible_text(region.text)
             labels_match = bool(target and text and (target in text or text in target))
             if labels_match and region.confidence >= 0.5:
-                return True
-        return False
+                return "match"
+        return "conflict"
 
     @staticmethod
     def _target_changed(box: NormalizedBox, decided: Frame, fresh: Frame) -> bool:
@@ -663,7 +665,10 @@ class ClosedLoopSupervisor:
             secondary_verified=secondary_verified,
         )
         if not valid:
-            if reason == "decision generation became stale":
+            if reason in {
+                "decision generation became stale",
+                "target no longer exists at the grounded OCR region",
+            }:
                 self._stale_results_discarded += 1
                 return SupervisedDecision(
                     DecisionDisposition.REOBSERVE,

@@ -311,6 +311,37 @@ class ClosedLoopSupervisorTests(unittest.TestCase):
         self.assertIn("before execution", reason)
         self.assertEqual(self.supervisor.diagnostics()["stale_results_discarded"], 1)
 
+    def test_target_missing_from_fresh_ocr_is_discarded_as_stale(self) -> None:
+        target_box = NormalizedBox(0.1, 0.4, 0.3, 0.5)
+        proposal = replace(
+            outcome(1),
+            action=replace(outcome(1).action, target_box=target_box),
+        )
+        decided = replace(
+            snapshot(1, 0),
+            visible_text=(TextRegion("settings", target_box, 0.99),),
+        )
+        fresh = replace(
+            snapshot(2, 1),
+            visible_text=(
+                TextRegion("settings", NormalizedBox(0.1, 0.05, 0.3, 0.1), 0.99),
+                TextRegion("destination", NormalizedBox(0.1, 0.2, 0.3, 0.3), 0.99),
+            ),
+        )
+
+        decision = self.supervisor.assess(
+            proposal,
+            decided,
+            fresh,
+            frame(1, 0),
+            frame(1, 1),
+            "open settings",
+        )
+
+        self.assertEqual(decision.disposition, DecisionDisposition.REOBSERVE)
+        self.assertIn("stale decision discarded", decision.reason)
+        self.assertEqual(self.supervisor.diagnostics()["stale_results_discarded"], 1)
+
     def test_action_effect_must_change_semantic_or_target_state(self) -> None:
         current = snapshot(1, 0)
         proposal = outcome(1)

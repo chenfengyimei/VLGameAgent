@@ -34,6 +34,18 @@ class _Source:
         )
 
 
+class _TransientFallback(_Source):
+    def __init__(self) -> None:
+        super().__init__(period_s=0.001)
+        self.attempts = 0
+
+    def capture(self):  # type: ignore[no-untyped-def]
+        self.attempts += 1
+        if self.attempts == 1:
+            raise CaptureTimeoutError("transient fixture timeout")
+        return super().capture()
+
+
 class CaptureHubTests(unittest.IsolatedAsyncioTestCase):
     async def test_capture_continues_while_consumer_is_slow(self) -> None:
         source = _Source()
@@ -81,6 +93,30 @@ class CaptureHubTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(item.frame.frame_id.startswith("source-"))
         self.assertEqual(hub.stats().primary_frames, 0)
         self.assertGreaterEqual(hub.stats().fallback_frames, 1)
+        self.assertLess(elapsed, 0.15)
+
+    async def test_transient_fallback_miss_does_not_consume_heartbeat_period(self) -> None:
+        primary = _Source(period_s=0.005, timeouts=True)
+        fallback = _TransientFallback()
+        hub = CaptureHub(
+            primary=primary,
+            fallback=fallback,
+            frames=FrameRingBuffer(),
+            fallback_after_s=0.02,
+            fallback_hz=4.0,
+            consumer_timeout_s=1.0,
+        )
+        stop = asyncio.Event()
+        task = asyncio.create_task(hub.run(stop))
+
+        started = time.monotonic()
+        item = await hub.capture_once()
+        elapsed = time.monotonic() - started
+        stop.set()
+        await task
+
+        self.assertTrue(item.frame.frame_id.startswith("source-"))
+        self.assertEqual(fallback.attempts, 2)
         self.assertLess(elapsed, 0.15)
 
 

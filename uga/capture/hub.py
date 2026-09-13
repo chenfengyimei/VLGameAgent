@@ -146,11 +146,16 @@ class CaptureHub:
             last = self._last_publish_monotonic
             if last is not None and time.monotonic() - last < self._fallback_after_s:
                 continue
-            last_attempt = time.monotonic()
             try:
                 frame = await asyncio.to_thread(self._fallback.capture)
             except CaptureTimeoutError:
+                # A failed heartbeat did not publish a frame and therefore does
+                # not consume the 4 Hz output budget. Retry promptly so one
+                # transient GDI miss cannot turn a 250 ms primary stall into a
+                # capture gap beyond the 500 ms qualification ceiling.
+                await asyncio.sleep(min(0.01, self._fallback_period_s / 10.0))
                 continue
+            last_attempt = time.monotonic()
             await asyncio.to_thread(self._publish, frame, "fallback")
 
     def _publish(self, frame: Frame, source: str) -> None:

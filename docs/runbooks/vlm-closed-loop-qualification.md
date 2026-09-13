@@ -124,7 +124,11 @@ and normal OCR, freshness, focus, and action-effect validation still apply.
 Once that target produces a verified semantic effect it is consumed and cannot
 be clicked again. Target-only pixel changes must remain stable for two samples
 at least 250 ms apart, preventing Android click ripples from masquerading as
-progress.
+progress. When OCR is present, the target label must also remain inside the
+same grounded bbox on the fresh pre-execution snapshot. A label that moved to
+a page heading or disappeared from that region makes the model result stale;
+the result is discarded even when the normalized click coordinates still fall
+inside the window.
 Review every Episode's video, planner decisions, grounded bbox, action effect,
 terminal status, and Replay result before changing `reviewed` or the three
 error findings in the final plan. Add the separately recorded injected-loop
