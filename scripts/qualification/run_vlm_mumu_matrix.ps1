@@ -17,108 +17,191 @@ $tasks = @(
     [pscustomobject]@{
         id = "network-internet"
         intent = "android.settings.WIRELESS_SETTINGS"
+        setup_markers = @("互联网", "SIM 卡")
         goal = "Open 互联网. Complete only when the 互联网 page and 添加网络 are visible; then output DONE."
     },
     [pscustomobject]@{
         id = "network-sim"
         intent = "android.settings.WIRELESS_SETTINGS"
+        setup_markers = @("互联网", "SIM 卡")
         goal = "Open SIM 卡. Complete only when the China Mobile GSM page and 移动数据 are visible; then output DONE."
     },
     [pscustomobject]@{
         id = "network-hotspot"
         intent = "android.settings.WIRELESS_SETTINGS"
+        setup_markers = @("互联网", "热点和网络共享")
         goal = "Open 热点和网络共享. Complete only when that page and WLAN 热点 are visible; then output DONE. Do not toggle anything."
-    },
-    [pscustomobject]@{
-        id = "network-data-saver"
-        intent = "android.settings.WIRELESS_SETTINGS"
-        goal = "Open 省流模式. Complete only when that page and 启用省流模式 are visible; then output DONE. Do not toggle anything."
-    },
-    [pscustomobject]@{
-        id = "network-vpn"
-        intent = "android.settings.WIRELESS_SETTINGS"
-        goal = "Open VPN. Complete only when the VPN page and 尚未添加任何 VPN are visible; then output DONE."
     },
     [pscustomobject]@{
         id = "internet-preferences"
         intent = "android.settings.WIFI_SETTINGS"
+        setup_markers = @("添加网络", "网络偏好设置")
         goal = "Open 网络偏好设置. Complete only when that page and 自动开启 WLAN are visible; then output DONE. Do not toggle anything."
     },
     [pscustomobject]@{
-        id = "connected-preferences"
-        intent = "android.settings.BLUETOOTH_SETTINGS"
-        goal = "Open 连接偏好设置. Complete only when that page and 投屏 are visible; then output DONE. Do not enable Bluetooth."
+        id = "battery-schedule"
+        intent = "android.settings.BATTERY_SAVER_SETTINGS"
+        setup_markers = @("使用省电模式", "设置时间表")
+        goal = "Open 设置时间表. Complete only when 没有时间表 and 根据电量百分比 are visible; then output DONE. Do not select a schedule."
     },
     [pscustomobject]@{
-        id = "apps-browser-info"
-        intent = "android.settings.APPLICATION_SETTINGS"
-        goal = "Open the 浏览器 app information page. Complete only when 浏览器, 归档, and 强行停止 are visible; then output DONE. Do not press those controls."
-    },
-    [pscustomobject]@{
-        id = "apps-settings-info"
-        intent = "android.settings.APPLICATION_SETTINGS"
-        goal = "Open the 设置 app information page. Complete only when 设置, 归档, and 强行停止 are visible; then output DONE. Do not press those controls."
-    },
-    [pscustomobject]@{
-        id = "apps-xianyu-info"
-        intent = "android.settings.APPLICATION_SETTINGS"
-        goal = "Open the 仙遇 app information page. Complete only when 仙遇, 卸载, and 强行停止 are visible; then output DONE. Do not press those controls."
-    },
-    [pscustomobject]@{
-        id = "display-lock-screen"
-        intent = "android.settings.DISPLAY_SETTINGS"
-        goal = "Open 锁定的屏幕. Complete only when that page and 要显示的内容 are visible; then output DONE. Do not change any option."
+        id = "storage-games"
+        intent = "android.settings.INTERNAL_STORAGE_SETTINGS"
+        setup_markers = @("存储空间管理器", "游戏")
+        goal = "Open 游戏. Complete only when the 游戏 storage page lists 仙遇 and its storage size; then output DONE. Do not open the app entry."
     },
     [pscustomobject]@{
         id = "accessibility-display-size"
         intent = "android.settings.ACCESSIBILITY_SETTINGS"
+        setup_markers = @("显示大小和文字", "放大功能")
         goal = "Open 显示大小和文字. Complete only when 预览 and 字体大小 are visible; then output DONE. Do not change any slider."
-    },
-    [pscustomobject]@{
-        id = "accessibility-color-motion"
-        intent = "android.settings.ACCESSIBILITY_SETTINGS"
-        goal = "Open 色彩和动画. Complete only when 颜色反转 and 移除动画 are visible; then output DONE. Do not toggle anything."
     },
     [pscustomobject]@{
         id = "accessibility-magnification"
         intent = "android.settings.ACCESSIBILITY_SETTINGS"
+        setup_markers = @("显示大小和文字", "放大功能")
         goal = "Open 放大功能. Complete only when 快速放大屏幕 and 放大功能快捷方式 are visible; then output DONE. Do not toggle anything."
     },
     [pscustomobject]@{
         id = "location-app-permissions"
         intent = "android.settings.LOCATION_SOURCE_SETTINGS"
+        setup_markers = @("应用位置信息权限", "位置信息服务")
         goal = "Open 应用位置信息权限. Complete only when 一律允许 and 仅在使用时允许 are visible; then output DONE. Do not change permissions."
     },
     [pscustomobject]@{
         id = "location-services"
         intent = "android.settings.LOCATION_SOURCE_SETTINGS"
+        setup_markers = @("应用位置信息权限", "位置信息服务")
         goal = "Open 位置信息服务. Complete only when WLAN 扫描 and 蓝牙扫描 are visible; then output DONE. Do not toggle anything."
     },
     [pscustomobject]@{
-        id = "browser-notifications"
-        intent = "android.settings.APPLICATION_SETTINGS"
-        goal = 'Open 浏览器, then open 通知. Complete only when 所有“浏览器”通知 and 常规 are visible; then output DONE. Do not toggle notifications or press archive, disable, or force stop.'
+        id = "observe-network-dashboard"
+        intent = "android.settings.WIRELESS_SETTINGS"
+        setup_markers = @("互联网", "热点和网络共享")
+        goal = "The requested destination is already open. Complete only when 互联网 and 热点和网络共享 are both visible on the current page; output DONE without any physical action."
     },
     [pscustomobject]@{
-        id = "browser-permissions"
-        intent = "android.settings.APPLICATION_SETTINGS"
-        goal = "Open 浏览器, then open 权限. Complete only when the 应用权限 page shows 浏览器, 已允许, and 位置信息; then output DONE. Do not change permissions."
+        id = "observe-internet"
+        intent = "android.settings.WIFI_SETTINGS"
+        setup_markers = @("添加网络", "网络偏好设置")
+        goal = "The requested destination is already open. Complete only when 添加网络 and 网络偏好设置 are both visible; output DONE without any physical action."
     },
     [pscustomobject]@{
-        id = "location-recent-access"
-        intent = "android.settings.LOCATION_SOURCE_SETTINGS"
-        goal = "Open 查看全部. Complete only when 近期位置信息访问 and 最近没有任何应用申请使用位置信息 are visible; then output DONE."
+        id = "observe-battery-saver"
+        intent = "android.settings.BATTERY_SAVER_SETTINGS"
+        setup_markers = @("使用省电模式", "设置时间表")
+        goal = "The requested destination is already open. Complete only when 使用省电模式 and 设置时间表 are both visible; output DONE without any physical action."
     },
     [pscustomobject]@{
-        id = "accessibility-lawnchair"
+        id = "observe-storage"
+        intent = "android.settings.INTERNAL_STORAGE_SETTINGS"
+        setup_markers = @("存储空间管理器", "游戏")
+        goal = "The requested destination is already open. Complete only when 存储空间管理器 and 游戏 are both visible; output DONE without any physical action."
+    },
+    [pscustomobject]@{
+        id = "observe-display"
+        intent = "android.settings.DISPLAY_SETTINGS"
+        setup_markers = @("亮度", "锁定的屏幕")
+        goal = "The requested destination is already open. Complete only when 亮度 and 锁定的屏幕 are both visible; output DONE without any physical action."
+    },
+    [pscustomobject]@{
+        id = "observe-accessibility"
         intent = "android.settings.ACCESSIBILITY_SETTINGS"
-        goal = 'Open Lawnchair. Complete only when the Lawnchair page and 使用“Lawnchair” are visible; then output DONE. Do not enable the service.'
+        setup_markers = @("显示大小和文字", "放大功能")
+        goal = "The requested destination is already open. Complete only when 显示大小和文字 and 放大功能 are both visible; output DONE without any physical action."
+    },
+    [pscustomobject]@{
+        id = "observe-location"
+        intent = "android.settings.LOCATION_SOURCE_SETTINGS"
+        setup_markers = @("近期位置信息访问", "位置信息服务")
+        goal = "The requested destination is already open. Complete only when 近期位置信息访问 and 位置信息服务 are both visible; output DONE without any physical action."
+    },
+    [pscustomobject]@{
+        id = "observe-sound"
+        intent = "android.settings.SOUND_SETTINGS"
+        setup_markers = @("媒体音量", "通知音量")
+        goal = "The requested destination is already open. Complete only when 媒体音量 and 通知音量 are both visible; output DONE without any physical action."
+    },
+    [pscustomobject]@{
+        id = "observe-language"
+        intent = "android.settings.LOCALE_SETTINGS"
+        setup_markers = @("首选语言顺序", "添加语言")
+        goal = "The requested destination is already open. Complete only when 首选语言顺序 and 添加语言 are both visible; output DONE without any physical action."
+    },
+    [pscustomobject]@{
+        id = "observe-keyboard"
+        intent = "android.settings.INPUT_METHOD_SETTINGS"
+        setup_markers = @("SogouIME-chuizi", "英语（美国）")
+        goal = "The requested destination is already open. Complete only when SogouIME-chuizi and 英语（美国） are both visible; output DONE without any physical action."
     }
 )
+
+if ($tasks.Count -ne 20 -or @($tasks.id | Sort-Object -Unique).Count -ne 20) {
+    throw "MuMu qualification matrix must contain exactly 20 unique goals"
+}
 
 if ($DryRun) {
     $tasks | ConvertTo-Json -Depth 4
     exit 0
+}
+
+function Get-SettingsSetupSnapshot {
+    param(
+        [Parameter(Mandatory)]
+        [string]$Adb,
+        [Parameter(Mandatory)]
+        [string]$Serial
+    )
+
+    $focus = (& $Adb -s $Serial shell dumpsys window |
+        Select-String "mCurrentFocus" | Select-Object -First 1).Line
+    & $Adb -s $Serial shell uiautomator dump /sdcard/uga_setup.xml | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        return [pscustomobject]@{ focus = $focus; hierarchy = "" }
+    }
+    $hierarchy = (& $Adb -s $Serial shell cat /sdcard/uga_setup.xml) -join ""
+    [pscustomobject]@{ focus = $focus; hierarchy = $hierarchy }
+}
+
+function Start-VerifiedSettingsPage {
+    param(
+        [Parameter(Mandatory)]
+        [string]$Adb,
+        [Parameter(Mandatory)]
+        [string]$Serial,
+        [Parameter(Mandatory)]
+        [pscustomobject]$Task
+    )
+
+    $lastSnapshot = $null
+    for ($attempt = 1; $attempt -le 3; $attempt++) {
+        & $Adb -s $Serial shell am force-stop com.android.settings | Out-Null
+        & $Adb -s $Serial shell am start -W -a $Task.intent | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            continue
+        }
+        Start-Sleep -Milliseconds 1200
+        $lastSnapshot = Get-SettingsSetupSnapshot -Adb $Adb -Serial $Serial
+        $markersReady = @(
+            $Task.setup_markers | Where-Object {
+                $lastSnapshot.hierarchy -notmatch [regex]::Escape($_)
+            }
+        ).Count -eq 0
+        if ($lastSnapshot.focus -match "com\.android\.settings" -and $markersReady) {
+            # Allow the compositor to publish the verified hierarchy before WGC attaches.
+            Start-Sleep -Milliseconds 500
+            return
+        }
+        Start-Sleep -Milliseconds 500
+    }
+    $missing = @(
+        $Task.setup_markers | Where-Object {
+            $null -eq $lastSnapshot -or
+            $lastSnapshot.hierarchy -notmatch [regex]::Escape($_)
+        }
+    ) -join ", "
+    $focus = if ($null -eq $lastSnapshot) { "unavailable" } else { $lastSnapshot.focus }
+    throw "Settings setup did not stabilize for $($Task.id): focus=$focus missing=[$missing]"
 }
 
 $project = (Resolve-Path -LiteralPath $ProjectRoot).Path
@@ -191,14 +274,10 @@ try {
                 continue
             }
 
-            & $AdbExecutable -s $AdbSerial shell am force-stop com.android.settings | Out-Null
-            & $AdbExecutable -s $AdbSerial shell am start -W -a $task.intent | Out-Null
-            Start-Sleep -Milliseconds 750
-            $focus = (& $AdbExecutable -s $AdbSerial shell dumpsys window |
-                Select-String "mCurrentFocus" | Select-Object -First 1).Line
-            if ($focus -notmatch "com\.android\.settings") {
-                throw "Settings setup did not become foreground for $($task.id): $focus"
-            }
+            Start-VerifiedSettingsPage `
+                -Adb $AdbExecutable `
+                -Serial $AdbSerial `
+                -Task $task
 
             $before = @(
                 Get-ChildItem -LiteralPath $episodes -Directory | ForEach-Object Name
@@ -217,7 +296,7 @@ try {
                 "--vision-mode", "local",
                 "--ocr", "auto",
                 "--max-recoveries", "2",
-                "--duration-seconds", "45",
+                "--duration-seconds", "75",
                 "--observation-hz", "5",
                 "--dashboard-port", "0",
                 "--record", $episodes,

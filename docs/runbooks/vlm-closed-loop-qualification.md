@@ -93,9 +93,15 @@ It binds the same `source_revision` and lists each Episode's `episode_id`,
 `goal_id`, zero-based repetition, `task` or injected-`loop` role, manual review
 status, wrong-window/target/critical-error findings, and loop detection rounds.
 The repository's resumable MuMu runner contains the reviewed set of 20
-read-only Android Settings navigation goals. It resets only the Settings
-activity between Episodes, stops after two consecutive failures, and writes a
-draft whose review flags deliberately remain false:
+read-only Android Settings goals: ten single-step navigation targets and ten
+already-satisfied observation targets that must produce `DONE` without input.
+Before each Episode it resets only the Settings activity, verifies two expected
+UI-hierarchy markers and the foreground package, then gives WGC an additional
+500 ms to publish the stable page. Setup is attempted at most three times, so a
+late page from the preceding Episode cannot become the first planner frame.
+Each Episode has a 75-second budget for a click, effect verification, and two
+fresh `DONE` observations. The runner stops after two consecutive failures and
+writes a draft whose review flags deliberately remain false:
 
 ```powershell
 scripts/qualification/run_vlm_mumu_matrix.ps1 `
