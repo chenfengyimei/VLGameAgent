@@ -158,11 +158,11 @@ $tasks = @(
         goal = "The requested destination is already open. Complete only when 首选语言顺序 and 添加语言 are both visible; output DONE without any physical action."
     },
     [pscustomobject]@{
-        id = "observe-keyboard"
-        intent = "android.settings.INPUT_METHOD_SETTINGS"
-        setup_markers = @("SogouIME-chuizi", "英语（美国）")
-        goal_evidence = @("SogouIME-chuizi", "英语（美国）")
-        goal = "The requested destination is already open. Complete only when SogouIME-chuizi and 英语（美国） are both visible; output DONE without any physical action."
+        id = "observe-date-time"
+        intent = "android.settings.DATE_SETTINGS"
+        setup_markers = @("自动确定日期和时间", "自动确定时区")
+        goal_evidence = @("自动确定日期和时间", "自动确定时区")
+        goal = "The requested destination is already open. Complete only when 自动确定日期和时间 and 自动确定时区 are both visible; output DONE without any physical action."
     }
 )
 
