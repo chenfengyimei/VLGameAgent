@@ -191,11 +191,13 @@ function Get-SettingsSetupSnapshot {
 
     $focus = (& $Adb -s $Serial shell dumpsys window |
         Select-String "mCurrentFocus" | Select-Object -First 1).Line
-    # MuMu Android 15 can return 139 after successfully writing the hierarchy.
-    # Delete the prior file first, then trust only the newly read XML payload.
-    & $Adb -s $Serial shell rm -f /sdcard/uga_setup.xml | Out-Null
-    & $Adb -s $Serial shell uiautomator dump /sdcard/uga_setup.xml 2>$null | Out-Null
-    $hierarchy = (& $Adb -s $Serial shell cat /sdcard/uga_setup.xml) -join ""
+    # MuMu Android 15 often segfaults after emitting a complete hierarchy and
+    # therefore may never materialize the requested /sdcard file. ADB exec-out
+    # preserves the XML stream and reports a usable status despite that guest
+    # process teardown, so validate the fresh stream instead of a stale file.
+    $hierarchy = (
+        & $Adb -s $Serial exec-out uiautomator dump /dev/tty 2>$null
+    ) -join ""
     if ($hierarchy -notmatch "<hierarchy") {
         $hierarchy = ""
     }

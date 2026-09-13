@@ -99,6 +99,9 @@ Before each Episode it resets only the Settings activity, verifies two expected
 UI-hierarchy markers and the foreground package, then gives WGC an additional
 500 ms to publish the stable page. Setup is attempted at most three times, so a
 late page from the preceding Episode cannot become the first planner frame.
+The MuMu Android 15 hierarchy check reads `uiautomator dump /dev/tty` through
+ADB `exec-out`: that guest binary can segfault after emitting valid XML and may
+not create an `/sdcard` dump file, while the direct stream remains complete.
 Each Episode has a 75-second budget for a click, effect verification, and two
 fresh `DONE` observations. The runner stops after two consecutive failures and
 writes a draft whose review flags deliberately remain false:
