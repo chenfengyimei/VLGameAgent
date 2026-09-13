@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import importlib
 import json
+import os
 import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path
+from unittest.mock import patch
 
 from tests.helpers import frame
 from uga.control.lifetime import ActionLifetime
@@ -26,6 +28,45 @@ from uga.time.clock import UGATime
 
 
 class EpisodeReplayTests(unittest.TestCase):
+    def test_finalize_retries_transient_windows_directory_lock(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            writer = EpisodeWriter(
+                temporary,
+                EpisodeMetadata(
+                    episode_id="transient-publish-lock",
+                    game_id="fixture-game",
+                    game_version="1.0",
+                    window_size=(2, 2),
+                    capture_backend="fixture",
+                    start_monotonic_ns=100,
+                    task="publish atomically",
+                    result=EpisodeResult.IN_PROGRESS,
+                    agent_version="test-agent",
+                    policy_version="test-policy",
+                    human_controlled=False,
+                ),
+                require_video=False,
+            )
+            real_replace = os.replace
+            attempts = 0
+
+            def transient_replace(source: Path, destination: Path) -> None:
+                nonlocal attempts
+                attempts += 1
+                if attempts < 3:
+                    raise PermissionError("simulated scanner lock")
+                real_replace(source, destination)
+
+            with (
+                patch("uga.recording.episode_writer.os.replace", transient_replace),
+                patch("uga.recording.episode_writer.time.sleep") as sleep,
+            ):
+                episode = writer.finalize(EpisodeResult.SUCCESS, UGATime(100))
+
+            self.assertTrue(episode.is_dir())
+            self.assertEqual(attempts, 3)
+            self.assertEqual(sleep.call_count, 2)
+
     def test_abort_removes_private_staging_episode(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

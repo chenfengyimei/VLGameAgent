@@ -4,6 +4,7 @@ import math
 import os
 import queue
 import shutil
+import time
 import uuid
 from collections.abc import Callable
 from dataclasses import replace
@@ -76,6 +77,9 @@ _PROVENANCE_SCHEMA = (
     ("effective_from_ns", "int64"),
     ("expires_at_ns", "int64"),
 )
+
+_PUBLISH_RETRY_ATTEMPTS = 20
+_PUBLISH_RETRY_DELAY_S = 0.05
 
 
 class EpisodeWriter:
@@ -348,9 +352,23 @@ class EpisodeWriter:
             self._write_tables()
             self._write_json_files(result, ending)
             write_json(self._staging_path / "checksum.json", self._checksums())
-            os.replace(self._staging_path, self._final_path)
+            self._publish_staging()
             self._closed = True
             return self._final_path
+
+    def _publish_staging(self) -> None:
+        """Atomically publish after bounded retries for transient Windows locks."""
+        for attempt in range(_PUBLISH_RETRY_ATTEMPTS):
+            try:
+                os.replace(self._staging_path, self._final_path)
+                return
+            except PermissionError:
+                if self._final_path.exists():
+                    raise FileExistsError(self._final_path) from None
+                if attempt + 1 >= _PUBLISH_RETRY_ATTEMPTS:
+                    raise
+                time.sleep(_PUBLISH_RETRY_DELAY_S)
+        raise AssertionError("unreachable Episode publish retry state")
 
     def abort(self) -> None:
         """Close attached resources and remove this writer's private staging tree."""
