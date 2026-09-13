@@ -112,6 +112,9 @@ class GroundedVlmTests(unittest.TestCase):
         )
         self.assertEqual(len(client.calls[0]["images"]), 2)  # type: ignore[arg-type]
         self.assertEqual(client.calls[0]["response_format"], GROUNDING_RESPONSE_FORMAT)
+        instruction = str(client.calls[0]["instruction"])
+        self.assertLess(instruction.index("完成证据"), instruction.index("normalized target_bbox"))
+        self.assertIn("目标按钮因上一步成功而消失", instruction)
 
     def test_wait_is_a_non_action_with_reason(self) -> None:
         outcome = GroundedVlmPlanner(_Client([_reply("wait")])).decide(
