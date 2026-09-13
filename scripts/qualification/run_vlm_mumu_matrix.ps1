@@ -217,9 +217,14 @@ function Start-VerifiedSettingsPage {
     & $Adb -s $Serial shell am force-stop com.android.permissioncontroller | Out-Null
     & $Adb -s $Serial shell am force-stop com.android.settings | Out-Null
     $needsStart = $true
+    $startAttempts = 0
     $lastSnapshot = $null
-    for ($attempt = 1; $attempt -le 3; $attempt++) {
+    for ($hierarchyAttempt = 1; $hierarchyAttempt -le 5; $hierarchyAttempt++) {
         if ($needsStart) {
+            if ($startAttempts -ge 3) {
+                break
+            }
+            $startAttempts++
             & $Adb -s $Serial shell am start -W -a $Task.intent | Out-Null
             if ($LASTEXITCODE -ne 0) {
                 continue
@@ -238,8 +243,9 @@ function Start-VerifiedSettingsPage {
             return
         }
         # An empty hierarchy is a transient MuMu UIAutomator failure. Preserve
-        # the verified Settings activity across bounded dump retries; restarting
-        # it here would reset UIAutomator to the same unstable startup window.
+        # the verified Settings activity across five bounded dump retries;
+        # restarting it here would reset UIAutomator to the same unstable startup
+        # window. Activity starts retain their separate three-attempt ceiling.
         $needsStart = $lastSnapshot.focus -notmatch "com\.android\.settings"
         Start-Sleep -Milliseconds 500
     }

@@ -103,8 +103,9 @@ The MuMu Android 15 hierarchy check reads `uiautomator dump /dev/tty` through
 ADB `exec-out`: that guest binary can segfault after emitting valid XML and may
 not create an `/sdcard` dump file, while the direct stream remains complete.
 If the stream is temporarily empty while Settings still owns focus, the runner
-keeps that activity alive and retries the hierarchy read within the same
-three-attempt budget; it restarts the activity only after focus is lost.
+keeps that activity alive and retries the hierarchy read up to five times; it
+restarts the activity only after focus is lost and still allows at most three
+activity starts.
 Each Episode has a 75-second budget for a click, effect verification, and two
 fresh `DONE` observations. The runner stops after two consecutive failures and
 writes a draft whose review flags deliberately remain false:
