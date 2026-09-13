@@ -9,6 +9,8 @@ from uga.benchmark.fixture import fixture_environments, verified_fixture_environ
 from uga.benchmark.io import load_benchmark_runs, write_benchmark_report, write_benchmark_runs
 from uga.benchmark.runner import BenchmarkRunner
 from uga.benchmark.schema import load_benchmark_tasks
+from uga.core.errors import ContractViolation
+from uga.evaluation.grounding_qualification import build_grounding_qualification_report
 from uga.release.revision import require_clean_source_revision
 
 
@@ -62,6 +64,19 @@ def _fixture(args: argparse.Namespace) -> None:
     print(json.dumps({"runs": str(output), "report": str(report_path)}, indent=2))
 
 
+def _grounding_report(args: argparse.Namespace) -> None:
+    report = build_grounding_qualification_report(
+        annotations_path=args.annotations,
+        predictions_path=args.predictions,
+        output_path=args.output,
+        source_revision=require_clean_source_revision(args.project_root),
+    )
+    payload = json.loads(report.read_text(encoding="utf-8"))
+    print(report)
+    if payload.get("passed") is not True:
+        raise ContractViolation("grounding qualification thresholds did not pass")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Validate and summarize UGA-Bench runs")
     subparsers = parser.add_subparsers(required=True)
@@ -88,6 +103,16 @@ def main() -> None:
     policy.add_argument("--artifact", type=Path)
     policy.add_argument("--rule-baseline", action="store_true")
     fixture.set_defaults(handler=_fixture)
+
+    grounding = subparsers.add_parser(
+        "grounding-report",
+        help="build a source-bound report for the 200-sample visual grounding corpus",
+    )
+    grounding.add_argument("--annotations", type=Path, required=True)
+    grounding.add_argument("--predictions", type=Path, required=True)
+    grounding.add_argument("--output", type=Path, required=True)
+    grounding.add_argument("--project-root", type=Path, default=Path("."))
+    grounding.set_defaults(handler=_grounding_report)
 
     args = parser.parse_args()
     args.handler(args)

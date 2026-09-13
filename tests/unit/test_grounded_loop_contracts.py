@@ -151,10 +151,24 @@ class GroundingEvaluatorTests(unittest.TestCase):
 
         self.assertEqual(metrics.samples, 2)
         self.assertEqual(metrics.schema_valid_rate, 1.0)
+        self.assertEqual(metrics.decision_kind_accuracy, 0.5)
         self.assertEqual(metrics.action_kind_accuracy, 0.5)
         self.assertEqual(metrics.box_hit_rate, 1.0)
         self.assertEqual(metrics.false_act_rate, 1.0)
         self.assertEqual(metrics.forbidden_action_count, 1)
+        self.assertEqual(metrics.wrong_window_count, 0)
+
+    def test_normalized_text_metric_handles_chinese_without_spaces(self) -> None:
+        samples = (
+            GroundingSample("cn", DecisionKind.DONE, ("网络和互联网",), None),
+        )
+        predictions = (
+            GroundingPrediction(DecisionKind.DONE, ("网络 和 互联网",), None),
+        )
+
+        metrics = GroundingEvaluator().evaluate(samples, predictions)
+
+        self.assertEqual(metrics.text_f1, 1.0)
 
 
 if __name__ == "__main__":

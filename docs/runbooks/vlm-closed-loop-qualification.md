@@ -81,3 +81,29 @@ Store raw Episodes outside Git under `runs/`. Hash the Episode `run.json`,
 release ledger accepts only its typed source-bound artifacts; a prose smoke
 report or copied hash is diagnostic evidence and cannot promote UGA-075.
 
+### Offline report
+
+Each annotation JSONL row must include `sample_id`, one of the four categories,
+the goal, one to three hash-verified relative frame references, `ocr_truth`,
+`expected_kind`, `expected_action_kind`, normalized `expected_bbox`, expected
+effect, goal status, and forbidden decision/action kinds and regions. Each
+prediction row uses the same sample id and records the full clean source
+revision, model id, Schema validity, decision/action kind, visible text,
+normalized target bbox, and wrong-window flag.
+
+Place the annotations, predictions, and referenced frames below one evidence
+directory, then run from a clean committed checkout:
+
+```powershell
+uga-benchmark grounding-report `
+  --annotations runs/qualification-vlm/offline/annotations.jsonl `
+  --predictions runs/qualification-vlm/offline/predictions.jsonl `
+  --output runs/qualification-vlm/offline/report.json `
+  --project-root .
+```
+
+The command recomputes all metrics, enforces the 80/40/40/40 minimum cohort,
+hashes the inputs and referenced frame set, binds the report to Git HEAD, and
+fails if any threshold is missed. A malformed model reply must be recorded as
+`schema_valid: false`; it is counted as a failure and never repaired by the
+evaluator.
