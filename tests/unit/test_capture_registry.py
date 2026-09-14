@@ -41,9 +41,11 @@ class FakeBackend(CaptureBackend):
         self.start_fails = start_fails
         self.stop_fails = stop_fails
         self.stop_calls = 0
+        self.probe_calls = 0
         super().__init__()
 
     def probe(self, target: WindowIdentity) -> CaptureProbe:
+        self.probe_calls += 1
         return CaptureProbe(self.available, self.score, "test probe", CAPABILITY)
 
     def _start(self, target: WindowIdentity) -> None:
@@ -90,6 +92,35 @@ class CaptureRegistryTests(unittest.TestCase):
         registry.register(FakeBackend("none", False, 0))
         with self.assertRaises(BackendUnavailableError):
             registry.start_best(identity())
+
+    def test_excluded_backend_is_not_probed_during_recovery(self) -> None:
+        registry = CaptureBackendRegistry(("failed", "fallback"))
+        failed = FakeBackend("failed", True, 100)
+        fallback = FakeBackend("fallback", True, 10)
+        registry.register(failed)
+        registry.register(fallback)
+
+        self.assertIs(
+            registry.start_best(identity(), exclude=frozenset({"failed"})),
+            fallback,
+        )
+        self.assertEqual(failed.probe_calls, 0)
+        self.assertEqual(fallback.probe_calls, 1)
+
+    def test_start_available_prewarms_candidates_in_preference_order(self) -> None:
+        registry = CaptureBackendRegistry(("first", "second", "missing"))
+        first = FakeBackend("first", True, 50)
+        second = FakeBackend("second", True, 10)
+        missing = FakeBackend("missing", False, 100)
+        registry.register(second)
+        registry.register(missing)
+        registry.register(first)
+
+        started = registry.start_available(identity())
+
+        self.assertEqual(started, (first, second))
+        for backend in started:
+            backend.stop()
 
 
 if __name__ == "__main__":

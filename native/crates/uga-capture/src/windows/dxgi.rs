@@ -12,10 +12,10 @@ use windows::Win32::Graphics::Dxgi::{
     IDXGIAdapter, IDXGIDevice, IDXGIOutput1, IDXGIOutputDuplication, IDXGIResource,
 };
 use windows::Win32::Graphics::Gdi::{MONITOR_DEFAULTTONEAREST, MonitorFromWindow};
-use windows::Win32::UI::WindowsAndMessaging::{GetWindowRect, IsWindow};
+use windows::Win32::UI::WindowsAndMessaging::IsWindow;
 use windows::core::Interface;
 
-use super::{CaptureError, CapturedBgraFrame};
+use super::{CaptureError, CapturedBgraFrame, visible_window_rect};
 
 pub struct DxgiCapture {
     hwnd: HWND,
@@ -106,8 +106,7 @@ impl DxgiCapture {
         let staging = self.staging_texture(source_desc)?;
         unsafe { self.context.CopyResource(&staging, &texture) };
 
-        let mut target_rect = RECT::default();
-        unsafe { GetWindowRect(self.hwnd, &raw mut target_rect)? };
+        let target_rect = visible_window_rect(self.hwnd)?;
         let crop = intersect(target_rect, self.output_rect).ok_or(CaptureError::TargetLost)?;
         let source_x = u32::try_from(crop.left - self.output_rect.left)
             .map_err(|_| CaptureError::Unsupported("negative crop origin"))?;

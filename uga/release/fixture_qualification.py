@@ -643,7 +643,9 @@ def run_fixture_qualification(
 
     registry = _capture_registry(backend_preference, windows)
     candidates = registry.candidates(target.identity)
-    backend: CaptureBackend = registry.start_best(target.identity)
+    capture_backends = registry.start_available(target.identity)
+    backend: CaptureBackend = capture_backends[0]
+    standby_backends = list(capture_backends[1:])
     clock = PerfCounterClock()
     started = clock.now()
     enabled = AgentEnableState(True)
@@ -682,18 +684,22 @@ def run_fixture_qualification(
         try:
             return backend.capture()
         except (BackendUnavailableError, CaptureTimeoutError) as error:
+            failed_backend = backend
             failed_id = backend.backend_id
             failed_backends.add(failed_id)
-            with contextlib.suppress(Exception):
-                backend.stop()
-            replacement = registry.start_best(
-                target.identity,
-                exclude=frozenset(failed_backends),
+            replacement = (
+                standby_backends.pop(0)
+                if standby_backends
+                else registry.start_best(
+                    target.identity,
+                    exclude=frozenset(failed_backends),
+                )
             )
             transition: dict[str, object] = {
                 "from": failed_id,
                 "to": replacement.backend_id,
                 "error": str(error),
+                "prewarmed": replacement in capture_backends,
             }
             capture_transitions.append(transition)
             backend = replacement
@@ -702,7 +708,14 @@ def run_fixture_qualification(
                 clock.now(),
                 transition,
             )
-            return backend.capture()
+            # Sample the replacement before tearing down the failed native
+            # session. Destruction can block, but must not lengthen the source
+            # timeline gap recorded for the first failover frame.
+            try:
+                return backend.capture()
+            finally:
+                with contextlib.suppress(Exception):
+                    failed_backend.stop()
 
     writer.record_event(
         "capture-selected",
@@ -1020,6 +1033,9 @@ def run_fixture_qualification(
         emergency_listener.close()
         shutdown.trip(ShutdownCause.NORMAL_STOP)
         backend.stop()
+        for standby_backend in standby_backends:
+            with contextlib.suppress(Exception):
+                standby_backend.stop()
 
     assert episode_path is not None
     assert initial_frame is not None and final_frame is not None

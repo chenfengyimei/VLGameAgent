@@ -26,12 +26,18 @@ class CaptureBackendRegistry:
             raise ContractViolation(f"duplicate capture backend: {backend.backend_id}")
         self._backends[backend.backend_id] = backend
 
-    def candidates(self, target: WindowIdentity) -> tuple[BackendCandidate, ...]:
+    def candidates(
+        self,
+        target: WindowIdentity,
+        *,
+        exclude: frozenset[str] = frozenset(),
+    ) -> tuple[BackendCandidate, ...]:
         preference = {name: index for index, name in enumerate(self._preference)}
         default_index = len(preference)
         candidates = [
             BackendCandidate(backend, backend.probe(target), preference.get(name, default_index))
             for name, backend in self._backends.items()
+            if name not in exclude
         ]
         candidates.sort(
             key=lambda item: (not item.probe.available, item.preference_index, -item.probe.score)
@@ -42,9 +48,7 @@ class CaptureBackendRegistry:
         self, target: WindowIdentity, *, exclude: frozenset[str] = frozenset()
     ) -> CaptureBackend:
         errors: list[str] = []
-        for candidate in self.candidates(target):
-            if candidate.backend.backend_id in exclude:
-                continue
+        for candidate in self.candidates(target, exclude=exclude):
             if not candidate.probe.available:
                 errors.append(f"{candidate.backend.backend_id}: {candidate.probe.reason}")
                 continue
@@ -53,5 +57,26 @@ class CaptureBackendRegistry:
                 return candidate.backend
             except Exception as error:
                 errors.append(f"{candidate.backend.backend_id}: {error}")
+        detail = "; ".join(errors) if errors else "no backends registered"
+        raise BackendUnavailableError(f"no capture backend could start ({detail})")
+
+    def start_available(
+        self, target: WindowIdentity, *, exclude: frozenset[str] = frozenset()
+    ) -> tuple[CaptureBackend, ...]:
+        """Start every healthy candidate in preference order for warm failover."""
+        started: list[CaptureBackend] = []
+        errors: list[str] = []
+        for candidate in self.candidates(target, exclude=exclude):
+            if not candidate.probe.available:
+                errors.append(f"{candidate.backend.backend_id}: {candidate.probe.reason}")
+                continue
+            try:
+                candidate.backend.start(target)
+            except Exception as error:
+                errors.append(f"{candidate.backend.backend_id}: {error}")
+            else:
+                started.append(candidate.backend)
+        if started:
+            return tuple(started)
         detail = "; ".join(errors) if errors else "no backends registered"
         raise BackendUnavailableError(f"no capture backend could start ({detail})")

@@ -11,7 +11,7 @@ use windows::Graphics::Capture::{
 };
 use windows::Graphics::DirectX::Direct3D11::IDirect3DDevice;
 use windows::Graphics::DirectX::DirectXPixelFormat;
-use windows::Win32::Foundation::{HWND, RECT, RPC_E_CHANGED_MODE};
+use windows::Win32::Foundation::{HWND, RPC_E_CHANGED_MODE};
 use windows::Win32::Graphics::Direct3D11::{
     D3D11_CPU_ACCESS_READ, D3D11_MAP_READ, D3D11_MAPPED_SUBRESOURCE, D3D11_TEXTURE2D_DESC,
     D3D11_USAGE_STAGING, ID3D11Device, ID3D11DeviceContext, ID3D11Texture2D,
@@ -23,11 +23,11 @@ use windows::Win32::System::WinRT::Direct3D11::{
 };
 use windows::Win32::System::WinRT::Graphics::Capture::IGraphicsCaptureItemInterop;
 use windows::Win32::System::WinRT::{RO_INIT_MULTITHREADED, RoInitialize, RoUninitialize};
-use windows::Win32::UI::WindowsAndMessaging::{GetWindowRect, IsWindow};
+use windows::Win32::UI::WindowsAndMessaging::IsWindow;
 use windows::core::{IInspectable, Interface, factory, w};
 
 use super::dxgi::create_device;
-use super::{CaptureError, CapturedBgraFrame};
+use super::{CaptureError, CapturedBgraFrame, visible_window_rect};
 
 pub struct WgcCapture {
     hwnd: HWND,
@@ -173,8 +173,7 @@ impl WgcCapture {
         unsafe { self.context.CopyResource(&staging, &texture) };
         let bytes = map_tightly_packed(&self.context, &staging, copy_width, copy_height)?;
 
-        let mut physical_rect = RECT::default();
-        unsafe { GetWindowRect(self.hwnd, &raw mut physical_rect)? };
+        let physical_rect = visible_window_rect(self.hwnd)?;
         let system_time = frame.SystemRelativeTime()?;
         let present_estimate = i128::from(system_time.Duration)
             .checked_mul(100)
