@@ -42,7 +42,13 @@ GROUNDING_RESPONSE_FORMAT: dict[str, Any] = {
                 "explanation",
             ],
             "properties": {
-                "kind": {"enum": [item.value for item in DecisionKind]},
+                "kind": {
+                    "enum": [item.value for item in DecisionKind],
+                    "description": (
+                        "DONE only when the positive external goal state is visibly "
+                        "achieved; inability to continue is WAIT(no_safe_action), not DONE."
+                    ),
+                },
                 "scene_summary": {"type": "string", "maxLength": 160},
                 "visible_text": {
                     "type": "array",
@@ -108,7 +114,12 @@ GROUNDING_RESPONSE_FORMAT: dict[str, Any] = {
                                     "anyOf": [
                                         {"type": "string", "maxLength": 32},
                                         {"type": "null"},
-                                    ]
+                                    ],
+                                    "description": (
+                                        "Must be JSON null for every click, including a "
+                                        "visible Back/Return button. Only key/hotkey actions "
+                                        "may use a semantic key name."
+                                    ),
                                 },
                             },
                         },
@@ -441,6 +452,9 @@ class GroundedVlmPlanner:
             "只能返回一个符合 JSON Schema 的决策。每次最多一个动作。"
             "必须先对照目标检查最新帧的完成证据；若可观察完成条件已经满足，必须输出"
             "kind=done、goal_status=succeeded、action=null，即使目标按钮因上一步成功而消失。"
+            "DONE 只表示目标要求的正向外部状态已在画面中可见实现。目标要求在无安全动作时"
+            "停止、报告或退出，不代表该外部目标成功；遇到这种情况必须输出 kind=wait、"
+            "wait_reason=no_safe_action、goal_status=in_progress、action=null，绝对禁止 DONE。"
             "目标中的每一项完成条件都必须满足；仅看到通往目标页的导航行不代表已打开目标页。"
             "visible_text 只能抄录最新图像或 OCR 中真实存在的文字，禁止写入期望但未出现的文字。"
             "只有确认目标尚未完成后，才能选择 act、wait 或 abstain。"
@@ -457,6 +471,9 @@ class GroundedVlmPlanner:
             "kind=wait 时 action 必须为 null；其他非 act 决策的 action 和 wait_reason "
             "都必须为 null。"
             "click 的 target_bbox 必须是四个归一化数且 key 必须为 null；"
+            "所有 click 都必须把 key 写成 JSON 字面量 null，包括点击画面中的返回按钮或返回箭头；"
+            "绝不能为 click 填 return_button、back 等符号值。若目标要求返回上一页且画面中有"
+            "可见的返回按钮或箭头，同时其他候选控件不可用，应 ACT 点击该返回控件。"
             "key/hotkey 的 target_bbox 必须为 null 且 key 必须是已知语义键名。"
             "expected_effect 必须描述下一帧可验证的界面或文本变化。"
             "登录、删除、支付、发送、安装标记为 critical。\n"

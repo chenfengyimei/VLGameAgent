@@ -96,6 +96,38 @@ class GroundedVlmTests(unittest.TestCase):
         self.assertEqual(properties["visible_text"]["maxItems"], 16)
         self.assertEqual(properties["explanation"]["maxLength"], 240)
 
+    def test_schema_and_prompt_distinguish_blocked_from_done(self) -> None:
+        client = _Client([_reply("wait")])
+
+        GroundedVlmPlanner(client).decide(
+            snapshot=_snapshot(),
+            frames=(_large_frame(100),),
+            goal="页面没有安全可用操作时停止并报告无法继续",
+        )
+
+        schema = GROUNDING_RESPONSE_FORMAT["json_schema"]["schema"]
+        self.assertIn("not DONE", schema["properties"]["kind"]["description"])
+        instruction = str(client.calls[0]["instruction"])
+        self.assertIn("不代表该外部目标成功", instruction)
+        self.assertIn("wait_reason=no_safe_action", instruction)
+        self.assertIn("绝对禁止 DONE", instruction)
+
+    def test_schema_and_prompt_require_null_key_for_back_button_click(self) -> None:
+        client = _Client([_reply()])
+
+        GroundedVlmPlanner(client).decide(
+            snapshot=_snapshot(),
+            frames=(_large_frame(100),),
+            goal="返回上一页，不要点击不可用的继续按钮",
+        )
+
+        schema = GROUNDING_RESPONSE_FORMAT["json_schema"]["schema"]
+        action_schema = schema["properties"]["action"]["anyOf"][1]
+        self.assertIn("including", action_schema["properties"]["key"]["description"])
+        instruction = str(client.calls[0]["instruction"])
+        self.assertIn("return_button、back", instruction)
+        self.assertIn("应 ACT 点击该返回控件", instruction)
+
     def test_uses_clean_overview_and_grounded_target_crop(self) -> None:
         client = _Client([_reply()])
         snapshot = _snapshot()
