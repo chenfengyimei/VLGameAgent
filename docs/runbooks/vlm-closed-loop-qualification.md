@@ -136,7 +136,10 @@ For evidence-bound goals, fresh local OCR and perception confidence may also
 confirm completion when the model contradictorily returns `ACT`, `WAIT`, or
 `ABSTAIN`: the supervisor suppresses input and requires the same evidence on a
 second fresh frame after the page-stability interval. It never treats a single
-frame, model-claimed text, or confidence below 0.85 as completion.
+frame, model-claimed text, or confidence below 0.85 as completion. For bound
+evidence, confidence is the minimum confidence of the OCR regions that actually
+matched every required literal, not the average confidence of unrelated text
+elsewhere on the screen.
 Once that target produces a verified semantic effect it is consumed and cannot
 be clicked again. Target-only pixel changes must remain stable for two samples
 at least 250 ms apart, preventing Android click ripples from masquerading as

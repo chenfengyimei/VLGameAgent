@@ -105,24 +105,31 @@ class GoalVerifier:
         self._required_evidence = tuple(zip(required_evidence, normalized, strict=True))
         self._candidate: tuple[UGATime, str, frozenset[str]] | None = None
         self.last_missing_evidence: tuple[str, ...] = ()
+        self.last_evidence_confidence: float | None = None
 
     @property
     def required_evidence(self) -> tuple[str, ...]:
         return tuple(original for original, _ in self._required_evidence)
 
     def inspect_evidence(self, snapshot: PerceptionSnapshot) -> tuple[str, ...]:
-        observed_values = tuple(
-            normalize_visible_text(value)
-            for value in snapshot.text
-            if normalize_visible_text(value)
+        observed = tuple(
+            (normalized, region.confidence)
+            for region in snapshot.visible_text
+            if (normalized := normalize_visible_text(region.text))
         )
-        observed = frozenset(observed_values)
-        combined_observed = "".join(observed_values)
-        self.last_missing_evidence = tuple(
-            original
-            for original, required in self._required_evidence
-            if required not in combined_observed
-            and not any(required in value for value in observed)
+        evidence_scores: list[float] = []
+        missing: list[str] = []
+        for original, required in self._required_evidence:
+            confidence = _text_evidence_confidence(required, observed)
+            if confidence is None:
+                missing.append(original)
+            else:
+                evidence_scores.append(confidence)
+        self.last_missing_evidence = tuple(missing)
+        self.last_evidence_confidence = (
+            min(evidence_scores)
+            if evidence_scores and not self.last_missing_evidence
+            else None
         )
         return self.last_missing_evidence
 
@@ -130,27 +137,31 @@ class GoalVerifier:
         if (
             outcome.kind != DecisionKind.DONE
             or outcome.goal_status != GoalStatus.SUCCEEDED
-            or outcome.confidence < self._threshold
-            or snapshot.confidence < self._threshold
         ):
             self._candidate = None
             self.last_missing_evidence = ()
+            self.last_evidence_confidence = None
             return False
-        return self._consider_snapshot(snapshot, fallback_evidence=outcome.visible_text)
+        return self._consider_snapshot(
+            snapshot,
+            fallback_evidence=outcome.visible_text,
+            decision_confidence=outcome.confidence,
+        )
 
     def consider_observed_evidence(self, snapshot: PerceptionSnapshot) -> bool:
         """Confirm an evidence-bound goal without trusting a contradictory action."""
-        if not self._required_evidence or snapshot.confidence < self._threshold:
+        if not self._required_evidence:
             self._candidate = None
             self.inspect_evidence(snapshot)
             return False
-        return self._consider_snapshot(snapshot)
+        return self._consider_snapshot(snapshot, decision_confidence=1.0)
 
     def _consider_snapshot(
         self,
         snapshot: PerceptionSnapshot,
         *,
         fallback_evidence: tuple[str, ...] = (),
+        decision_confidence: float,
     ) -> bool:
         observed_values = tuple(
             normalize_visible_text(value)
@@ -160,6 +171,15 @@ class GoalVerifier:
         observed = frozenset(observed_values)
         self.inspect_evidence(snapshot)
         if self.last_missing_evidence:
+            self._candidate = None
+            return False
+        combined_confidence = min(
+            decision_confidence,
+            1.0
+            if self.last_evidence_confidence is None
+            else self.last_evidence_confidence,
+        )
+        if combined_confidence < self._threshold:
             self._candidate = None
             return False
         evidence = observed or frozenset(
@@ -177,6 +197,37 @@ class GoalVerifier:
             self._candidate = None
             return True
         return False
+
+
+def _text_evidence_confidence(
+    required: str,
+    observed: tuple[tuple[str, float], ...],
+) -> float | None:
+    """Return the strongest confidence of a literal OCR match, including split text."""
+    direct = [confidence for value, confidence in observed if required in value]
+    if direct:
+        return max(direct)
+    combined = "".join(value for value, _ in observed)
+    if required not in combined:
+        return None
+    offsets: list[tuple[int, int, float]] = []
+    cursor = 0
+    for value, confidence in observed:
+        offsets.append((cursor, cursor + len(value), confidence))
+        cursor += len(value)
+    scores: list[float] = []
+    start = combined.find(required)
+    while start >= 0:
+        end = start + len(required)
+        touched = [
+            confidence
+            for left, right, confidence in offsets
+            if left < end and right > start
+        ]
+        if touched:
+            scores.append(min(touched))
+        start = combined.find(required, start + 1)
+    return max(scores) if scores else None
 
 
 class ActionValidator:
@@ -401,6 +452,7 @@ class ClosedLoopSupervisor:
             "goal_confidence": self.goal_confidence,
             "required_goal_evidence": list(self._goal.required_evidence),
             "missing_goal_evidence": list(self._goal.last_missing_evidence),
+            "goal_evidence_confidence": self._goal.last_evidence_confidence,
             "goal_action_target": self._goal_action_target,
             "preferred_action_consumed": self._preferred_action_consumed,
             "consumed_target_rejections": self._consumed_target_rejections,
@@ -573,15 +625,14 @@ class ClosedLoopSupervisor:
         if outcome.kind != DecisionKind.WAIT or outcome.wait_reason != WaitReason.NO_SAFE_ACTION:
             self._reset_no_safe_waits()
         if outcome.kind == DecisionKind.DONE:
-            if min(outcome.confidence, fresh_snapshot.confidence) < 0.85:
-                return self._retry_or_block(
-                    outcome,
-                    "goal completion confidence is below 0.85",
-                )
             if self._goal.consider(outcome, fresh_snapshot):
+                evidence_confidence = self._goal.last_evidence_confidence
                 self.status = TerminalStatus.SUCCEEDED
                 self.termination_reason = "goal_confirmed"
-                self.goal_confidence = outcome.confidence
+                self.goal_confidence = min(
+                    outcome.confidence,
+                    1.0 if evidence_confidence is None else evidence_confidence,
+                )
                 self._complete_task(success=True)
                 return SupervisedDecision(
                     DecisionDisposition.TERMINATE, "goal confirmed on two fresh frames", outcome
@@ -593,6 +644,15 @@ class ClosedLoopSupervisor:
                     f"goal completion rejected; missing fresh OCR evidence: {missing}",
                     outcome,
                 )
+            evidence_confidence = self._goal.last_evidence_confidence
+            if min(
+                outcome.confidence,
+                1.0 if evidence_confidence is None else evidence_confidence,
+            ) < 0.85:
+                return self._retry_or_block(
+                    outcome,
+                    "goal completion confidence is below 0.85",
+                )
             return SupervisedDecision(
                 DecisionDisposition.REOBSERVE,
                 "goal completion awaits a second fresh frame",
@@ -601,16 +661,17 @@ class ClosedLoopSupervisor:
         if self._goal.required_evidence:
             evidence_confirmed = self._goal.consider_observed_evidence(fresh_snapshot)
             if not self._goal.last_missing_evidence:
-                if fresh_snapshot.confidence < 0.85:
+                evidence_confidence = self._goal.last_evidence_confidence or 0.0
+                if evidence_confidence < 0.85:
                     return self._retry_or_block(
                         outcome,
-                        "required completion evidence is visible but perception "
+                        "required completion evidence is visible but its OCR "
                         "confidence is below 0.85",
                     )
                 if evidence_confirmed:
                     self.status = TerminalStatus.SUCCEEDED
                     self.termination_reason = "goal_confirmed"
-                    self.goal_confidence = fresh_snapshot.confidence
+                    self.goal_confidence = evidence_confidence
                     self._complete_task(success=True)
                     return SupervisedDecision(
                         DecisionDisposition.TERMINATE,

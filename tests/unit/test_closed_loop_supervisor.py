@@ -172,8 +172,10 @@ class GoalVerifierTests(unittest.TestCase):
     def test_observed_evidence_requires_configured_fact_and_confidence(self) -> None:
         unbound = GoalVerifier(confirmation_ns=500_000_000)
         low_confidence = replace(
-            snapshot(1, 0, visible_text=("destination",)),
-            confidence=0.8,
+            snapshot(1, 0),
+            visible_text=(
+                TextRegion("destination", NormalizedBox(0.1, 0.1, 0.9, 0.2), 0.8),
+            ),
         )
         verifier = GoalVerifier(
             confirmation_ns=500_000_000,
@@ -182,6 +184,49 @@ class GoalVerifierTests(unittest.TestCase):
 
         self.assertFalse(unbound.consider_observed_evidence(snapshot(1, 0)))
         self.assertFalse(verifier.consider_observed_evidence(low_confidence))
+
+    def test_evidence_confidence_ignores_unrelated_low_confidence_text(self) -> None:
+        verifier = GoalVerifier(
+            confirmation_ns=500_000_000,
+            required_evidence=("destination",),
+        )
+        current = replace(
+            snapshot(1, 0),
+            visible_text=(
+                TextRegion("noise", NormalizedBox(0.1, 0.1, 0.2, 0.2), 0.1),
+                TextRegion("destination", NormalizedBox(0.2, 0.2, 0.8, 0.3), 0.96),
+            ),
+            confidence=0.53,
+        )
+
+        self.assertFalse(verifier.consider_observed_evidence(current))
+        self.assertEqual(verifier.last_evidence_confidence, 0.96)
+        later = replace(
+            current,
+            snapshot_id="snapshot-2",
+            frame_id="frame-2",
+            frame_sequence=2,
+            captured_at=UGATime(500_000_000),
+        )
+        self.assertTrue(verifier.consider_observed_evidence(later))
+
+    def test_split_evidence_uses_lowest_contributing_region_confidence(self) -> None:
+        verifier = GoalVerifier(
+            confirmation_ns=500_000_000,
+            required_evidence=("根据电量百分比",),
+        )
+        current = replace(
+            snapshot(1, 0),
+            visible_text=(
+                TextRegion("根据电量", NormalizedBox(0.1, 0.1, 0.3, 0.2), 0.97),
+                TextRegion("百分比", NormalizedBox(0.3, 0.1, 0.5, 0.2), 0.88),
+            ),
+        )
+
+        verifier.inspect_evidence(current)
+
+        self.assertEqual(verifier.last_missing_evidence, ())
+        self.assertEqual(verifier.last_evidence_confidence, 0.88)
 
 
 class ClosedLoopSupervisorTests(unittest.TestCase):
@@ -520,6 +565,46 @@ class ClosedLoopSupervisorTests(unittest.TestCase):
         self.assertEqual(supervisor.status, TerminalStatus.SUCCEEDED)
         self.assertEqual(supervisor.diagnostics()["logical_actions_issued"], 0)
 
+    def test_evidence_confidence_is_not_diluted_by_unrelated_ocr_noise(self) -> None:
+        supervisor = ClosedLoopSupervisor(
+            self.clock,
+            self.profile,
+            goal_evidence=("destination",),
+            goal_action_target="settings",
+        )
+        noisy = replace(
+            snapshot(1, 0),
+            visible_text=(
+                TextRegion("noise", NormalizedBox(0.1, 0.1, 0.2, 0.2), 0.1),
+                TextRegion("destination", NormalizedBox(0.2, 0.2, 0.8, 0.3), 0.96),
+            ),
+            confidence=0.53,
+        )
+
+        first = supervisor.assess(
+            outcome(1), noisy, noisy, frame(1, 0), frame(1, 0), "open settings"
+        )
+        later = replace(
+            noisy,
+            snapshot_id="snapshot-2",
+            frame_id="frame-2",
+            frame_sequence=2,
+            captured_at=UGATime(500_000_000),
+        )
+        second = supervisor.assess(
+            outcome(2, kind=DecisionKind.DONE),
+            later,
+            later,
+            frame(2, 500_000_000),
+            frame(2, 500_000_000),
+            "open settings",
+        )
+
+        self.assertEqual(first.disposition, DecisionDisposition.REOBSERVE)
+        self.assertEqual(second.disposition, DecisionDisposition.TERMINATE)
+        self.assertEqual(supervisor.goal_confidence, 0.95)
+        self.assertEqual(supervisor.diagnostics()["logical_actions_issued"], 0)
+
     def test_single_step_goal_refuses_a_different_action_target(self) -> None:
         supervisor = ClosedLoopSupervisor(
             self.clock,
@@ -580,8 +665,8 @@ class ClosedLoopSupervisorTests(unittest.TestCase):
         self.assertEqual(self.supervisor.status, TerminalStatus.SUCCEEDED)
 
     def test_low_confidence_done_reobserves_once_then_blocks(self) -> None:
-        current = replace(snapshot(1, 0), confidence=0.8)
-        proposal = outcome(1, kind=DecisionKind.DONE)
+        current = snapshot(1, 0)
+        proposal = outcome(1, kind=DecisionKind.DONE, confidence=0.8)
 
         first = self.supervisor.assess(
             proposal,
