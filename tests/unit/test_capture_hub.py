@@ -10,7 +10,7 @@ from tests.helpers import frame
 from uga.capture.frame import Frame
 from uga.capture.hub import CaptureHub
 from uga.capture.ring_buffer import FrameRingBuffer
-from uga.core.errors import CaptureTimeoutError
+from uga.core.errors import BackendUnavailableError, CaptureTimeoutError
 from uga.time.clock import UGATime
 
 
@@ -45,6 +45,12 @@ class _TransientFallback(_Source):
         if self.attempts == 1:
             raise CaptureTimeoutError("transient fixture timeout")
         return super().capture()
+
+
+class _UnavailableSource(_Source):
+    def capture(self) -> Frame:
+        self.count += 1
+        raise BackendUnavailableError("transient fixture backend failure")
 
 
 class _TimestampedSlowSource(_Source):
@@ -111,6 +117,30 @@ class CaptureHubTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(hub.stats().primary_frames, 0)
         self.assertGreaterEqual(hub.stats().fallback_frames, 1)
         self.assertLess(elapsed, 0.15)
+
+    async def test_backend_failure_keeps_fallback_alive_and_is_counted(self) -> None:
+        primary = _UnavailableSource(period_s=0)
+        fallback = _Source(period_s=0.001)
+        hub = CaptureHub(
+            primary=primary,
+            fallback=fallback,
+            frames=FrameRingBuffer(),
+            fallback_after_s=0.02,
+            fallback_hz=4.0,
+            consumer_timeout_s=1.0,
+            source_error_backoff_s=0.005,
+        )
+        stop = asyncio.Event()
+        task = asyncio.create_task(hub.run(stop))
+
+        item = await hub.capture_once()
+        stop.set()
+        await task
+
+        self.assertTrue(item.frame.frame_id.startswith("source-"))
+        self.assertEqual(hub.stats().primary_frames, 0)
+        self.assertGreaterEqual(hub.stats().primary_errors, 1)
+        self.assertGreaterEqual(hub.stats().fallback_frames, 1)
 
     async def test_transient_fallback_miss_does_not_consume_heartbeat_period(self) -> None:
         primary = _Source(period_s=0.005, timeouts=True)

@@ -182,6 +182,11 @@ def render_page(snapshot: dict[str, Any], *, preview_available: bool = False) ->
             _card("已采集帧", runtime.get("capture_frames", 0)),
             _card("采集间隔 P95", _format_number(runtime.get("capture_gap_p95_ms"), " ms")),
             _card("采集间隔最大", _format_number(runtime.get("capture_gap_max_ms"), " ms")),
+            _card(
+                "主源 / 兜底错误",
+                f"{int(runtime.get('capture_primary_errors', 0))} / "
+                f"{int(runtime.get('capture_fallback_errors', 0))}",
+            ),
             _card("过期推理丢弃", runtime.get("stale_results_discarded", 0)),
             _card("逻辑动作", runtime.get("logical_actions_issued", 0)),
             _card("物理事件", runtime.get("executed_actions", 0)),

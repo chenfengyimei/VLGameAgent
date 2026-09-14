@@ -527,6 +527,8 @@ async def _run(args: argparse.Namespace) -> int:
                 "capture_frames": capture_stats.accepted_frames,
                 "capture_primary_frames": capture_stats.primary_frames,
                 "capture_fallback_frames": capture_stats.fallback_frames,
+                "capture_primary_errors": capture_stats.primary_errors,
+                "capture_fallback_errors": capture_stats.fallback_errors,
                 "capture_gap_p95_ms": capture_stats.p95_gap_ns / 1_000_000,
                 "capture_gap_max_ms": capture_stats.max_gap_ns / 1_000_000,
                 "stale_results_discarded": diagnostics.get(
@@ -670,6 +672,8 @@ async def _run(args: argparse.Namespace) -> int:
                 "capture_frames": capture_source.stats().accepted_frames,
                 "capture_primary_frames": capture_source.stats().primary_frames,
                 "capture_fallback_frames": capture_source.stats().fallback_frames,
+                "capture_primary_errors": capture_source.stats().primary_errors,
+                "capture_fallback_errors": capture_source.stats().fallback_errors,
                 "capture_consumer_skipped_frames": (
                     capture_source.stats().consumer_skipped_frames
                 ),

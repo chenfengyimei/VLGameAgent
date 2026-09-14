@@ -12,7 +12,7 @@ from typing import Protocol
 
 from uga.capture.frame import Frame
 from uga.capture.ring_buffer import FrameRingBuffer, SequencedFrame
-from uga.core.errors import CaptureTimeoutError, ContractViolation
+from uga.core.errors import BackendUnavailableError, CaptureTimeoutError, ContractViolation
 
 
 class SynchronousFrameSource(Protocol):
@@ -24,6 +24,8 @@ class CaptureHubStats:
     accepted_frames: int
     primary_frames: int
     fallback_frames: int
+    primary_errors: int
+    fallback_errors: int
     stale_source_frames: int
     consumer_skipped_frames: int
     p95_gap_ns: int
@@ -51,6 +53,7 @@ class CaptureHub:
         fallback_after_s: float = 0.25,
         fallback_hz: float = 4.0,
         consumer_timeout_s: float = 10.0,
+        source_error_backoff_s: float = 0.05,
     ) -> None:
         if not math.isfinite(fallback_after_s) or fallback_after_s <= 0:
             raise ContractViolation("capture fallback delay must be positive")
@@ -58,6 +61,12 @@ class CaptureHub:
             raise ContractViolation("capture fallback frequency must be in (0, 4]")
         if not math.isfinite(consumer_timeout_s) or consumer_timeout_s <= 0:
             raise ContractViolation("capture consumer timeout must be positive")
+        if (
+            not math.isfinite(source_error_backoff_s)
+            or source_error_backoff_s <= 0
+            or source_error_backoff_s > 1.0
+        ):
+            raise ContractViolation("capture source error backoff must be in (0, 1]")
         self._primary = primary
         self._fallback = fallback
         self._frames = frames
@@ -65,6 +74,7 @@ class CaptureHub:
         self._fallback_after_s = fallback_after_s
         self._fallback_period_s = 1.0 / fallback_hz
         self._consumer_timeout_s = consumer_timeout_s
+        self._source_error_backoff_s = source_error_backoff_s
         self._publish_lock = Lock()
         self._stats_lock = Lock()
         self._started = asyncio.Event()
@@ -79,6 +89,7 @@ class CaptureHub:
         self._stale = 0
         self._consumer_skipped = 0
         self._sources: Counter[str] = Counter()
+        self._source_errors: Counter[str] = Counter()
         self._gaps_ns: list[int] = []
 
     async def run(self, stop: asyncio.Event) -> None:
@@ -111,6 +122,8 @@ class CaptureHub:
                 accepted_frames=self._accepted,
                 primary_frames=self._sources["primary"],
                 fallback_frames=self._sources["fallback"],
+                primary_errors=self._source_errors["primary"],
+                fallback_errors=self._source_errors["fallback"],
                 stale_source_frames=self._stale,
                 consumer_skipped_frames=self._consumer_skipped,
                 p95_gap_ns=ordered[p95_index] if ordered else 0,
@@ -123,6 +136,17 @@ class CaptureHub:
                 frame = await asyncio.to_thread(self._primary.capture)
             except CaptureTimeoutError:
                 await asyncio.sleep(0)
+                continue
+            except BackendUnavailableError:
+                # A transient WGC session failure must not cancel the fallback
+                # heartbeat (or the whole AgentLoop TaskGroup). Keep retrying
+                # the primary with bounded backoff while GDI owns the timeline.
+                with self._stats_lock:
+                    self._source_errors["primary"] += 1
+                with contextlib.suppress(TimeoutError):
+                    await asyncio.wait_for(
+                        stop.wait(), timeout=self._source_error_backoff_s
+                    )
                 continue
             await asyncio.to_thread(
                 self._publish,
@@ -158,11 +182,13 @@ class CaptureHub:
             attempt_started = time.monotonic()
             try:
                 frame = await asyncio.to_thread(self._fallback.capture)
-            except CaptureTimeoutError:
+            except (CaptureTimeoutError, BackendUnavailableError):
                 # A failed heartbeat did not publish a frame and therefore does
                 # not consume the 4 Hz output budget. Retry promptly so one
                 # transient GDI miss cannot turn a 250 ms primary stall into a
                 # capture gap beyond the 500 ms qualification ceiling.
+                with self._stats_lock:
+                    self._source_errors["fallback"] += 1
                 await asyncio.sleep(min(0.01, self._fallback_period_s / 10.0))
                 continue
             last_attempt = attempt_started

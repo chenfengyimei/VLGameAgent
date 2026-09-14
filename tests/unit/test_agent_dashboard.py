@@ -25,6 +25,8 @@ class DecisionDashboardTests(unittest.TestCase):
                 "status": "running",
                 "goal": "打开 <网络>",
                 "capture_frames": 42,
+                "capture_primary_errors": 2,
+                "capture_fallback_errors": 1,
             },
             preview_provider=lambda: (b"\x89PNG\r\n", "image/png"),
         )
@@ -52,6 +54,9 @@ class DecisionDashboardTests(unittest.TestCase):
         payload = json.loads(response.read())
         self.assertEqual(payload["runtime"]["status"], "running")
         self.assertEqual(payload["runtime"]["capture_frames"], 42)
+        page = self._request(f"127.0.0.1:{self.port}", "/").read().decode()
+        self.assertIn("主源 / 兜底错误", page)
+        self.assertIn("2 / 1", page)
 
         frame_response = self._request(f"127.0.0.1:{self.port}", "/api/frame")
         self.assertEqual(frame_response.status, 200)
