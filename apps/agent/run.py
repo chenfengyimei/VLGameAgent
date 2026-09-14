@@ -54,7 +54,7 @@ from uga.policy.chunk_controller import ActionChunkController
 from uga.policy.decision_journal import DecisionJournal, DecisionRecord
 from uga.policy.grounded_vlm import GroundedOutcomeVerifier, GroundedVlmPlanner
 from uga.policy.scripted_tap import ScriptedTapPolicy
-from uga.policy.vlm_planner import OpenAICompatibleVisionClient
+from uga.policy.vlm_planner import OpenAICompatibleVisionClient, encode_frame_png
 from uga.recording.episode_writer import EpisodeWriter
 from uga.recording.schema import EpisodeMetadata, EpisodeResult
 from uga.recording.video import PyAvVideoRecorder
@@ -283,25 +283,13 @@ async def _run(args: argparse.Namespace) -> int:
     dashboard: DecisionDashboard | None = None
     journal: DecisionJournal | None = None
     grounded_planner: GroundedVlmPlanner | None = None
+    ocr_active = False
 
     if args.policy == "vlm":
         try:
             sampler_backend = GDIFallbackCaptureBackend(windows)
             sampler_backend.start(target.identity)
             journal = DecisionJournal()
-            if args.dashboard_port > 0:
-                try:
-                    dashboard = DecisionDashboard(journal, args.dashboard_port)
-                    dashboard.start()
-                    print(
-                        f"[dashboard] live at http://127.0.0.1:{args.dashboard_port}",
-                        flush=True,
-                    )
-                except OSError as exc:
-                    if dashboard is not None:
-                        _best_effort_cleanup(dashboard.stop)
-                        dashboard = None
-                    print(f"[dashboard] disabled: {exc}", flush=True)
             assert vision_client is not None
             grounded_planner = GroundedVlmPlanner(
                 vision_client,
@@ -402,6 +390,7 @@ async def _run(args: argparse.Namespace) -> int:
         if args.ocr == "auto" and profile.perception.ocr_enabled:
             try:
                 text_provider = RapidOcrProvider()
+                ocr_active = True
                 print("[perception] RapidOCR enabled", flush=True)
             except BackendUnavailableError as exc:
                 print(
@@ -495,6 +484,85 @@ async def _run(args: argparse.Namespace) -> int:
             args.vlm_decision_interval if grounded_planner is not None else 0.0
         ),
     )
+
+    if journal is not None and args.dashboard_port > 0:
+        def dashboard_status() -> dict[str, object]:
+            capture_stats = capture_source.stats()
+            scheduler_stats = scheduler.stats()
+            diagnostics = loop.closed_loop_diagnostics or {}
+            latest = frames.latest()
+            latest_action = next(
+                (
+                    row.get("action")
+                    for row in reversed(journal.snapshot().get("events", []))
+                    if isinstance(row, dict) and row.get("action")
+                ),
+                None,
+            )
+            return {
+                "status": loop.terminal_status.value,
+                "goal": args.goal,
+                "model": args.vlm_model,
+                "vision_mode": args.vision_mode,
+                "ocr_active": ocr_active,
+                "frame_id": None if latest is None else latest.frame.frame_id,
+                "frame_source": (
+                    None if latest is None else latest.frame.source_backend
+                ),
+                "frame_age_ms": (
+                    None
+                    if latest is None
+                    else max(
+                        0.0,
+                        (clock.now().value_ns - latest.frame.capture_timestamp.value_ns)
+                        / 1_000_000,
+                    )
+                ),
+                "current_action": latest_action,
+                "goal_confidence": loop.goal_confidence,
+                "goal_evidence_confidence": diagnostics.get(
+                    "goal_evidence_confidence"
+                ),
+                "termination_reason": loop.termination_reason,
+                "capture_frames": capture_stats.accepted_frames,
+                "capture_primary_frames": capture_stats.primary_frames,
+                "capture_fallback_frames": capture_stats.fallback_frames,
+                "capture_gap_p95_ms": capture_stats.p95_gap_ns / 1_000_000,
+                "capture_gap_max_ms": capture_stats.max_gap_ns / 1_000_000,
+                "stale_results_discarded": diagnostics.get(
+                    "stale_results_discarded", 0
+                ),
+                "logical_actions_issued": diagnostics.get(
+                    "logical_actions_issued", 0
+                ),
+                "executed_actions": scheduler_stats.executed,
+                "recovery_count": diagnostics.get("recovery_count", 0),
+                "recent_failure": diagnostics.get("last_loop_finding"),
+            }
+
+        def dashboard_preview() -> tuple[bytes, str] | None:
+            latest = frames.latest()
+            if latest is None:
+                return None
+            return encode_frame_png(latest.frame, max_width=960), "image/png"
+
+        try:
+            dashboard = DecisionDashboard(
+                journal,
+                args.dashboard_port,
+                status_provider=dashboard_status,
+                preview_provider=dashboard_preview,
+            )
+            dashboard.start()
+            print(
+                f"[dashboard] live at http://127.0.0.1:{args.dashboard_port}",
+                flush=True,
+            )
+        except OSError as exc:
+            if dashboard is not None:
+                _best_effort_cleanup(dashboard.stop)
+                dashboard = None
+            print(f"[dashboard] disabled: {exc}", flush=True)
 
     stop = asyncio.Event()
     loop_ref = asyncio.get_running_loop()
