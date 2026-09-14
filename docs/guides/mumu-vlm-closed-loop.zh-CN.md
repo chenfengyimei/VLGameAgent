@@ -243,6 +243,12 @@ $env:UGA_VERIFIER_API_KEY = '<仅在当前终端设置>'
 确认 DLL 摘要正确、面板“最新帧源”优先为 `windows_graphics_capture`，关闭会覆盖 MuMu
 的窗口和高负载程序。GDI 只是主源超过 250ms 没有新帧时的最高 4Hz 心跳源。
 
+### 提示 `target window could not become foreground`
+
+先最小化任务管理器、UAC 提示框、远程控制悬浮层等高完整性或置顶窗口，再手动点一次
+MuMu 设备窗口后重试。UGA 不会绕过 Windows 前景/UIPI 边界；目标无法成为前景时，
+应在发送任何物理输入前安全退出。这不是点击坐标问题，也不应通过关闭焦点保护解决。
+
 ### 点击无效果或重复
 
 查看时间线的预期效果与 `metrics.json`。首次无效只允许同目标重新定位一次；若同一状态
