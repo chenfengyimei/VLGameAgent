@@ -109,6 +109,12 @@ def _esc(value: object) -> str:
     return html.escape(str(value))
 
 
+def _clip(value: object, limit: int = 180) -> object:
+    if not isinstance(value, str) or len(value) <= limit:
+        return value
+    return value[: limit - 1].rstrip() + "…"
+
+
 def _format_number(value: object, suffix: str = "") -> str:
     if isinstance(value, float):
         return f"{value:.1f}{suffix}"
@@ -207,10 +213,10 @@ def render_page(snapshot: dict[str, Any], *, preview_available: bool = False) ->
                 clock=_esc(event.get("wall_clock")),
                 latency=latency_text,
                 action=_esc(event.get("action")),
-                detail=_esc(event.get("detail")),
-                step=_esc(event.get("quest_step")),
+                detail=_esc(_clip(event.get("detail"))),
+                step=_esc(_clip(event.get("quest_step"))),
                 images=images if images is not None else "-",
-                head=f"<code>{_esc(head)}</code>" if head else "-",
+                head=f"<code>{_esc(_clip(head))}</code>" if head else "-",
             )
         )
     return _PAGE.format(
