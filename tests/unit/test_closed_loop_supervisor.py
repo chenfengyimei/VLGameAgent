@@ -455,6 +455,50 @@ class ClosedLoopSupervisorTests(unittest.TestCase):
         self.assertEqual(second.disposition, DecisionDisposition.BLOCK)
         self.assertEqual(supervisor.diagnostics()["logical_actions_issued"], 1)
 
+    def test_visible_completion_evidence_refuses_a_physical_action(self) -> None:
+        supervisor = ClosedLoopSupervisor(
+            self.clock,
+            self.profile,
+            goal_evidence=("destination",),
+            goal_action_target="settings",
+        )
+        current = snapshot(1, 0, visible_text=("destination",))
+
+        decision = supervisor.assess(
+            outcome(1),
+            current,
+            current,
+            frame(1, 0),
+            frame(1, 0),
+            "open settings",
+        )
+
+        self.assertEqual(decision.disposition, DecisionDisposition.REOBSERVE)
+        self.assertIn("already visible", decision.reason)
+        self.assertEqual(supervisor.diagnostics()["logical_actions_issued"], 0)
+
+    def test_single_step_goal_refuses_a_different_action_target(self) -> None:
+        supervisor = ClosedLoopSupervisor(
+            self.clock,
+            self.profile,
+            goal_evidence=("destination",),
+            goal_action_target="settings",
+        )
+        current = snapshot(1, 0, visible_text=("settings",))
+
+        decision = supervisor.assess(
+            outcome(1, label="other option"),
+            current,
+            current,
+            frame(1, 0),
+            frame(1, 0),
+            "open settings",
+        )
+
+        self.assertEqual(decision.disposition, DecisionDisposition.REOBSERVE)
+        self.assertIn("configured navigation target", decision.reason)
+        self.assertEqual(supervisor.diagnostics()["logical_actions_issued"], 0)
+
     def test_unchanged_action_is_recorded_as_ineffective_after_timeout(self) -> None:
         current = snapshot(1, 0)
         proposal = outcome(1)

@@ -128,6 +128,10 @@ provide `--goal-action-target`; when its literal label is present while required
 completion evidence is absent, the constrained prompt requires the model to
 ground that visible row as its one action. The model must still return the bbox,
 and normal OCR, freshness, focus, and action-effect validation still apply.
+The supervisor independently refuses every other ACT target, and refuses all
+physical actions once the required completion evidence is already present.
+This prevents a slow navigation result from being followed by selection of an
+option on the destination page even when the model fails to emit `DONE`.
 Once that target produces a verified semantic effect it is consumed and cannot
 be clicked again. Target-only pixel changes must remain stable for two samples
 at least 250 ms apart, preventing Android click ripples from masquerading as

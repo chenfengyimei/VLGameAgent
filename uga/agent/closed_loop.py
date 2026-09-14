@@ -110,6 +110,22 @@ class GoalVerifier:
     def required_evidence(self) -> tuple[str, ...]:
         return tuple(original for original, _ in self._required_evidence)
 
+    def inspect_evidence(self, snapshot: PerceptionSnapshot) -> tuple[str, ...]:
+        observed_values = tuple(
+            normalize_visible_text(value)
+            for value in snapshot.text
+            if normalize_visible_text(value)
+        )
+        observed = frozenset(observed_values)
+        combined_observed = "".join(observed_values)
+        self.last_missing_evidence = tuple(
+            original
+            for original, required in self._required_evidence
+            if required not in combined_observed
+            and not any(required in value for value in observed)
+        )
+        return self.last_missing_evidence
+
     def consider(self, outcome: PlannerOutcome, snapshot: PerceptionSnapshot) -> bool:
         if (
             outcome.kind != DecisionKind.DONE
@@ -125,13 +141,7 @@ class GoalVerifier:
             if normalize_visible_text(value)
         )
         observed = frozenset(observed_values)
-        combined_observed = "".join(observed_values)
-        self.last_missing_evidence = tuple(
-            original
-            for original, required in self._required_evidence
-            if required not in combined_observed
-            and not any(required in value for value in observed)
-        )
+        self.inspect_evidence(snapshot)
         if self.last_missing_evidence:
             self._candidate = None
             return False
@@ -616,6 +626,20 @@ class ClosedLoopSupervisor:
                 )
             return self._retry_or_block(outcome, "planner did not identify a safe action")
         assert outcome.action is not None
+        missing_evidence = self._goal.inspect_evidence(fresh_snapshot)
+        if self._goal.required_evidence and not missing_evidence:
+            return self._retry_or_block(
+                outcome,
+                "required completion evidence is already visible; refusing physical action",
+            )
+        if (
+            self._goal_action_target is not None
+            and not self._matches_goal_action_target(outcome.action)
+        ):
+            return self._retry_or_block(
+                outcome,
+                "single-step action does not match the configured navigation target",
+            )
         if self._preferred_action_consumed and self._matches_goal_action_target(outcome.action):
             self._consumed_target_rejections += 1
             if self._consumed_target_rejections >= 2:

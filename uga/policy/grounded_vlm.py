@@ -406,7 +406,7 @@ class GroundedVlmPlanner:
                 + (
                     "。因此当前帧绝对禁止 DONE。"
                     if missing_evidence
-                    else "。因此可以结合图像判断 DONE。"
+                    else "。全部显式证据已出现；当前帧必须输出 DONE，绝对禁止 ACT。"
                 )
             )
         target_visible = bool(
@@ -420,6 +420,7 @@ class GroundedVlmPlanner:
         if preferred_action_target is not None:
             action_target = (
                 f"\n本任务的单步导航目标是：{preferred_action_target}。"
+                "若输出 ACT，target_label 必须是该目标，不得点击目标页内的其他选项。"
                 + (
                     "该目标文字已在最新 OCR 中出现且完成证据仍缺失；当前帧必须输出 "
                     "ACT，target_label 使用该文字，bbox 对准它所在的整行可点击区域。"

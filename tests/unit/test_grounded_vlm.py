@@ -150,6 +150,24 @@ class GroundedVlmTests(unittest.TestCase):
         self.assertIn("已执行且已观测到界面效果", instruction)
         self.assertIn("禁止再次点击", instruction)
 
+    def test_visible_required_evidence_makes_act_explicitly_forbidden(self) -> None:
+        client = _Client([_reply("done")])
+
+        GroundedVlmPlanner(
+            client,
+            required_goal_evidence=("设置",),
+            preferred_action_target="设置",
+        ).decide(
+            snapshot=_snapshot(),
+            frames=(_large_frame(100),),
+            goal="打开设置",
+        )
+
+        instruction = str(client.calls[0]["instruction"])
+        self.assertIn("当前帧必须输出 DONE", instruction)
+        self.assertIn("绝对禁止 ACT", instruction)
+        self.assertIn("不得点击目标页内的其他选项", instruction)
+
     def test_temporal_overviews_are_chronological_and_capped_at_three(self) -> None:
         client = _Client([_reply()])
 
