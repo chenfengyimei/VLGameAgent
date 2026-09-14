@@ -68,7 +68,11 @@ class CaptureHub:
         self._publish_lock = Lock()
         self._stats_lock = Lock()
         self._started = asyncio.Event()
-        self._last_publish_monotonic: float | None = None
+        # Scheduling follows when the accepted image was sampled, not when its
+        # potentially expensive CPU copy finished publishing. Otherwise a slow
+        # GDI copy is added to every 250 ms heartbeat period and can inflate the
+        # recorded capture-timestamp gap beyond the qualification ceiling.
+        self._last_frame_monotonic: float | None = None
         self._last_capture_timestamp_ns: int | None = None
         self._last_consumer_sequence = 0
         self._accepted = 0
@@ -120,7 +124,12 @@ class CaptureHub:
             except CaptureTimeoutError:
                 await asyncio.sleep(0)
                 continue
-            await asyncio.to_thread(self._publish, frame, "primary")
+            await asyncio.to_thread(
+                self._publish,
+                frame,
+                "primary",
+                time.monotonic(),
+            )
 
     async def _capture_fallback(self, stop: asyncio.Event) -> None:
         assert self._fallback is not None
@@ -128,7 +137,7 @@ class CaptureHub:
         last_attempt: float | None = None
         while not stop.is_set():
             now = time.monotonic()
-            last = self._last_publish_monotonic
+            last = self._last_frame_monotonic
             timeline_due = (last if last is not None else started) + self._fallback_after_s
             rate_due = (
                 last_attempt + self._fallback_period_s
@@ -143,9 +152,10 @@ class CaptureHub:
 
             # The primary may have published while this task was waking. Recheck
             # the shared timeline before spending a fallback capture.
-            last = self._last_publish_monotonic
+            last = self._last_frame_monotonic
             if last is not None and time.monotonic() - last < self._fallback_after_s:
                 continue
+            attempt_started = time.monotonic()
             try:
                 frame = await asyncio.to_thread(self._fallback.capture)
             except CaptureTimeoutError:
@@ -155,10 +165,15 @@ class CaptureHub:
                 # capture gap beyond the 500 ms qualification ceiling.
                 await asyncio.sleep(min(0.01, self._fallback_period_s / 10.0))
                 continue
-            last_attempt = time.monotonic()
-            await asyncio.to_thread(self._publish, frame, "fallback")
+            last_attempt = attempt_started
+            await asyncio.to_thread(
+                self._publish,
+                frame,
+                "fallback",
+                attempt_started,
+            )
 
-    def _publish(self, frame: Frame, source: str) -> None:
+    def _publish(self, frame: Frame, source: str, sampled_monotonic: float) -> None:
         with self._publish_lock:
             timestamp_ns = frame.capture_timestamp.value_ns
             latest = self._frames.latest()
@@ -169,11 +184,10 @@ class CaptureHub:
             if self._record_frame is not None:
                 self._record_frame(frame)
             self._frames.publish(frame)
-            now = time.monotonic()
             with self._stats_lock:
                 if self._last_capture_timestamp_ns is not None:
                     self._gaps_ns.append(timestamp_ns - self._last_capture_timestamp_ns)
                 self._last_capture_timestamp_ns = timestamp_ns
-                self._last_publish_monotonic = now
+                self._last_frame_monotonic = sampled_monotonic
                 self._accepted += 1
                 self._sources[source] += 1

@@ -7,6 +7,7 @@ import unittest
 from dataclasses import replace
 
 from tests.helpers import frame
+from uga.capture.frame import Frame
 from uga.capture.hub import CaptureHub
 from uga.capture.ring_buffer import FrameRingBuffer
 from uga.core.errors import CaptureTimeoutError
@@ -20,7 +21,7 @@ class _Source:
         self.count = 0
         self._lock = threading.Lock()
 
-    def capture(self):  # type: ignore[no-untyped-def]
+    def capture(self) -> Frame:
         time.sleep(self.period_s)
         if self.timeouts:
             raise CaptureTimeoutError("fixture timeout")
@@ -39,11 +40,27 @@ class _TransientFallback(_Source):
         super().__init__(period_s=0.001)
         self.attempts = 0
 
-    def capture(self):  # type: ignore[no-untyped-def]
+    def capture(self) -> Frame:
         self.attempts += 1
         if self.attempts == 1:
             raise CaptureTimeoutError("transient fixture timeout")
         return super().capture()
+
+
+class _TimestampedSlowSource(_Source):
+    """A GDI-like source whose timestamp precedes a costly pixel copy."""
+
+    def capture(self) -> Frame:
+        sampled_ns = time.perf_counter_ns()
+        time.sleep(self.period_s)
+        with self._lock:
+            self.count += 1
+            count = self.count
+        return replace(
+            frame(count, timestamp_ns=sampled_ns),
+            frame_id=f"slow-{count}",
+            capture_timestamp=UGATime(sampled_ns),
+        )
 
 
 class CaptureHubTests(unittest.IsolatedAsyncioTestCase):
@@ -118,6 +135,28 @@ class CaptureHubTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(item.frame.frame_id.startswith("source-"))
         self.assertEqual(fallback.attempts, 2)
         self.assertLess(elapsed, 0.15)
+
+    async def test_fallback_copy_time_does_not_accumulate_into_heartbeat_period(self) -> None:
+        primary = _Source(period_s=0.005, timeouts=True)
+        fallback = _TimestampedSlowSource(period_s=0.08)
+        hub = CaptureHub(
+            primary=primary,
+            fallback=fallback,
+            frames=FrameRingBuffer(),
+            fallback_after_s=0.02,
+            fallback_hz=4.0,
+            consumer_timeout_s=1.0,
+        )
+        stop = asyncio.Event()
+        task = asyncio.create_task(hub.run(stop))
+
+        await asyncio.sleep(0.65)
+        stop.set()
+        await task
+
+        stats = hub.stats()
+        self.assertGreaterEqual(stats.fallback_frames, 3)
+        self.assertLess(stats.max_gap_ns, 300_000_000)
 
 
 if __name__ == "__main__":
