@@ -60,7 +60,7 @@ if os.name == "nt":
 
 
 class GDIFallbackCaptureBackend(CaptureBackend):
-    """Conservative CPU fallback for visible windowed client areas."""
+    """Conservative CPU fallback for the same visible bounds as native capture."""
 
     backend_id = "gdi_fallback"
     _BI_RGB = 0
@@ -111,12 +111,19 @@ class GDIFallbackCaptureBackend(CaptureBackend):
         snapshot = self._windows.snapshot(self._target.hwnd)
         if snapshot.identity != self._target:
             raise ContractViolation("window identity changed during capture")
-        width = int(snapshot.client_screen_rect.width)
-        height = int(snapshot.client_screen_rect.height)
+        capture_rect = snapshot.visible_screen_rect or snapshot.client_screen_rect
+        width = int(capture_rect.width)
+        height = int(capture_rect.height)
         if width < 1 or height < 1:
-            raise BackendUnavailableError("window client area is empty or minimized")
+            raise BackendUnavailableError("visible window area is empty or minimized")
         timestamp = self._clock.now()
-        payload = self._capture_bgra(self._target.hwnd, width, height)
+        payload = self._capture_bgra(
+            self._target.hwnd,
+            width,
+            height,
+            source_x=int(capture_rect.left - snapshot.window_rect.left),
+            source_y=int(capture_rect.top - snapshot.window_rect.top),
+        )
         frame_id = uuid.uuid4().hex
         return Frame(
             frame_id=frame_id,
@@ -127,7 +134,7 @@ class GDIFallbackCaptureBackend(CaptureBackend):
             height=height,
             stride_bytes=width * 4,
             pixel_format=PixelFormat.BGRA8,
-            physical_rect=snapshot.client_screen_rect,
+            physical_rect=capture_rect,
             client_rect=Rect(0, 0, width, height),
             source_backend=self.backend_id,
             buffer_handle=BufferHandle(
@@ -142,8 +149,8 @@ class GDIFallbackCaptureBackend(CaptureBackend):
         return None
 
     def _configure_signatures(self) -> None:
-        self._user32.GetDC.argtypes = [ctypes.c_void_p]
-        self._user32.GetDC.restype = ctypes.c_void_p
+        self._user32.GetWindowDC.argtypes = [ctypes.c_void_p]
+        self._user32.GetWindowDC.restype = ctypes.c_void_p
         self._user32.ReleaseDC.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
         self._user32.ReleaseDC.restype = ctypes.c_int
         self._gdi32.CreateCompatibleDC.argtypes = [ctypes.c_void_p]
@@ -176,8 +183,16 @@ class GDIFallbackCaptureBackend(CaptureBackend):
         self._gdi32.DeleteDC.argtypes = [ctypes.c_void_p]
         self._gdi32.DeleteDC.restype = ctypes.c_bool
 
-    def _capture_bgra(self, hwnd: int, width: int, height: int) -> bytes:
-        window_dc = self._user32.GetDC(ctypes.c_void_p(hwnd))
+    def _capture_bgra(
+        self,
+        hwnd: int,
+        width: int,
+        height: int,
+        *,
+        source_x: int,
+        source_y: int,
+    ) -> bytes:
+        window_dc = self._user32.GetWindowDC(ctypes.c_void_p(hwnd))
         if not window_dc:
             raise ctypes.WinError(ctypes.get_last_error())
         memory_dc = None
@@ -222,8 +237,8 @@ class GDIFallbackCaptureBackend(CaptureBackend):
                 width,
                 height,
                 window_dc,
-                0,
-                0,
+                source_x,
+                source_y,
                 self._SRCCOPY | self._CAPTUREBLT,
             )
             if not copied:

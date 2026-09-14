@@ -34,13 +34,12 @@ class GdiCaptureLifecycleTests(unittest.TestCase):
                 resize_window(hwnd, 640, 480)
                 snapshot = self.windows.snapshot(hwnd)
                 second = backend.capture()
+                visible = snapshot.visible_screen_rect or snapshot.client_screen_rect
                 self.assertEqual(
                     (second.width, second.height),
-                    (
-                        int(snapshot.client_screen_rect.width),
-                        int(snapshot.client_screen_rect.height),
-                    ),
+                    (int(visible.width), int(visible.height)),
                 )
+                self.assertEqual(second.physical_rect, visible)
                 self.assertGreater(second.width, first.width)
                 self.assertEqual(second.window_identity, target)
             finally:

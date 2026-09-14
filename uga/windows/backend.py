@@ -20,6 +20,7 @@ class WindowSnapshot:
     dpi: int
     is_visible: bool
     is_foreground: bool
+    visible_screen_rect: Rect | None = None
 
 
 @runtime_checkable
@@ -61,6 +62,7 @@ class Win32WindowBackend:
         self._tracker = tracker or WindowIdentityTracker()
         self._user32 = ctypes.WinDLL("user32", use_last_error=True)
         self._kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        self._dwmapi = ctypes.WinDLL("dwmapi", use_last_error=True)
         self._configure_signatures()
 
     def foreground_hwnd(self) -> int | None:
@@ -155,14 +157,16 @@ class Win32WindowBackend:
             executable_path=path,
             process_start_time_100ns=start_time,
         )
+        window_rect = self._window_rect(hwnd)
         return WindowSnapshot(
             identity=identity,
             title=self._window_title(hwnd),
-            window_rect=self._window_rect(hwnd),
+            window_rect=window_rect,
             client_screen_rect=self._client_rect(hwnd),
             dpi=dpi_for_window(hwnd),
             is_visible=bool(self._user32.IsWindowVisible(ctypes.c_void_p(hwnd))),
             is_foreground=self.foreground_hwnd() == hwnd,
+            visible_screen_rect=self._visible_window_rect(hwnd, window_rect),
         )
 
     def _window_title(self, hwnd: int) -> str:
@@ -176,6 +180,21 @@ class Win32WindowBackend:
         if not self._user32.GetWindowRect(ctypes.c_void_p(hwnd), ctypes.byref(rect)):
             raise ctypes.WinError(ctypes.get_last_error())
         return Rect(rect.left, rect.top, rect.right, rect.bottom)
+
+    def _visible_window_rect(self, hwnd: int, fallback: Rect) -> Rect:
+        """Return the DWM-visible bounds shared by WGC, DXGI, and GDI capture."""
+        rect = _RECT()
+        result = int(
+            self._dwmapi.DwmGetWindowAttribute(
+                ctypes.c_void_p(hwnd),
+                9,  # DWMWA_EXTENDED_FRAME_BOUNDS
+                ctypes.byref(rect),
+                ctypes.sizeof(rect),
+            )
+        )
+        if result >= 0 and rect.right > rect.left and rect.bottom > rect.top:
+            return Rect(rect.left, rect.top, rect.right, rect.bottom)
+        return fallback
 
     def _client_rect(self, hwnd: int) -> Rect:
         rect = _RECT()
@@ -267,6 +286,13 @@ class Win32WindowBackend:
         self._user32.WindowFromPoint.restype = ctypes.c_void_p
         self._user32.GetAncestor.argtypes = [ctypes.c_void_p, ctypes.c_uint]
         self._user32.GetAncestor.restype = ctypes.c_void_p
+        self._dwmapi.DwmGetWindowAttribute.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_uint,
+            ctypes.c_void_p,
+            ctypes.c_uint,
+        ]
+        self._dwmapi.DwmGetWindowAttribute.restype = ctypes.c_long
         self._kernel32.OpenProcess.argtypes = [ctypes.c_ulong, ctypes.c_bool, ctypes.c_ulong]
         self._kernel32.OpenProcess.restype = ctypes.c_void_p
         self._kernel32.GetCurrentThreadId.argtypes = []

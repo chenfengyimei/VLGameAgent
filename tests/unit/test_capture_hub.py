@@ -84,7 +84,18 @@ class CaptureHubTests(unittest.IsolatedAsyncioTestCase):
         task = asyncio.create_task(hub.run(stop))
         first = await hub.capture_once()
 
-        await asyncio.sleep(0.12)  # represents a slow in-flight model request
+        # Wait on the observable producer condition instead of assuming the
+        # Windows CI scheduler will run five worker-thread captures in 120 ms.
+        # The consumer remains idle throughout this bounded wait, which is the
+        # behavior this test is intended to prove.
+        deadline = asyncio.get_running_loop().time() + 1.0
+        while True:
+            latest = frames.latest()
+            if latest is not None and latest.sequence >= first.sequence + 5:
+                break
+            if asyncio.get_running_loop().time() >= deadline:
+                self.fail("capture producer did not advance while consumer was idle")
+            await asyncio.sleep(0.005)
         newest = await hub.capture_once()
         stop.set()
         await task
