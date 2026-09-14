@@ -6,6 +6,9 @@ through explicit safety and ownership boundaries.
 
 **[中文完整介绍与使用教程](docs/usage.zh-CN.md) — recommended for first-time users.**
 
+For the local Qwen3-VL + MuMu closed loop and its live visual dashboard, use the
+step-by-step [Chinese MuMu VLM guide](docs/guides/mumu-vlm-closed-loop.zh-CN.md).
+
 The repository implements the full observe→decide→control→record→dataset→train→
 benchmark pipeline, including three capture backends (WGC, DXGI duplication,
 GDI fallback), lease-arbitrated input with watchdog and emergency-stop safety,

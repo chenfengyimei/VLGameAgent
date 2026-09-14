@@ -194,12 +194,21 @@ uga-benchmark summarize runs/bench-runs.jsonl --config configs/benchmarks/uga-be
 
 ### 5.7 仪表盘
 
+运行 VLM 智能体时，`--dashboard-port` 会启动实际闭环只读面板：
+
 ```powershell
-uga-dashboard --output dashboard.html                        # 离线生成
-uga-dashboard --serve --host 127.0.0.1 --port 8765           # 本地服务（仅回环）
+uga-agent run --profile configs/games/mumu-xianyu.yaml `
+  --policy vlm --goal '仅观察当前页面，禁止任何操作。' `
+  --dashboard-port 8787
 ```
 
-浏览器打开 `http://127.0.0.1:8765`（命令需带 CSRF 令牌，服务启动时打印）。
+浏览器打开 `http://127.0.0.1:8787`，可查看目标、MuMu 实时画面、OCR/模型状态、
+采集间隔、过期推理丢弃、逻辑/物理动作、恢复次数与决策时间线。面板仅绑定本机回环、
+只读且不缓存画面；运行结束后自动关闭。`--dashboard-port 0` 可禁用。
+
+`uga-dashboard --output dashboard.html` 和 `uga-dashboard --serve` 是通用运行时状态页，
+不等同于上述 VLM 决策面板。MuMu 的完整配置与面板说明见
+[MuMu + 本地视觉模型闭环教程](guides/mumu-vlm-closed-loop.zh-CN.md)。
 
 ### 5.8 紧急停止
 
@@ -257,19 +266,28 @@ uga-agent run --profile configs/games/mumu-xianyu.yaml `
 
 ### 5.10 全自动识图模式（VLM 规划器）
 
-以上模式点击坐标来自外部；本模式让项目**自己看画面、自己决定点哪**——闭环：
-截帧 → 缩放编码 → 视觉模型（OpenAI 兼容接口）分析画面与目标 → 严格校验的
-JSON 动作（`{"action":"tap","x":0.59,"y":0.64}`，坐标为客户区百分比）→
-按最新窗口几何换算成物理屏幕坐标 → 注入点击 → 观察结果 → 再决策，循环往复。
+本模式采用可验证的单步闭环：持续捕获 → OCR/VLM 感知 → 结构化单步决策 →
+窗口、几何、目标框与焦点复核 → 执行 → 效果验证 → 双帧完成确认或有界恢复。
+模型返回目标标签和 bbox，最终落点由运行时在最新帧的有效区域中计算；模型不能自由
+提供最终点击坐标，也不能一次播放多步 GUI 序列。
 
 ```powershell
-# 本地：先启动 LM Studio 加载识图模型（如 gemma-3-4b-it）并开启本地服务
+# 先在 LM Studio 加载 qwen3-vl-4b-instruct 并开启本地服务
 uga-agent run --profile configs/games/mumu-xianyu.yaml `
   --policy vlm `
-  --goal "完成创角并进入游戏：观察画面，点击能推进流程的按钮" `
+  --goal '打开互联网；只有看到互联网页面和添加网络时才完成。' `
+  --goal-action-target '互联网' `
+  --goal-evidence '添加网络' `
   --vlm-base-url http://127.0.0.1:1234/v1 `
-  --vlm-model gemma-3-4b-it `
-  --duration-seconds 0 `
+  --vlm-model qwen3-vl-4b-instruct `
+  --vlm-no-thinking `
+  --vlm-decision-interval 1 `
+  --vision-mode local `
+  --ocr auto `
+  --max-recoveries 2 `
+  --duration-seconds 75 `
+  --observation-hz 5 `
+  --dashboard-port 8787 `
   --record runs/episodes
 ```
 
@@ -278,14 +296,17 @@ uga-agent run --profile configs/games/mumu-xianyu.yaml `
 
 要点：
 
-- **坐标自决**：模型只输出画面内百分比坐标，运行时按**当次决策时的最新窗口
-  几何**换算——窗口移动也不影响命中，且坐标永远落在游戏窗口内。
-- **失败即保守**：回复无法解析/超时/断连 → 退避重试，连续 5 次失败
-  fail-closed 终止（绝不编造动作）；`{"action":"wait"}` 表示画面在加载或无
-  合适目标。
-- **节流**：`--vlm-decision-interval`（默认 6 秒）控制决策频率；提示词携带
-  上一次动作，画面没变化时模型会自行换目标（自我纠正）。
+- **一次一动作**：每次观察最多执行一个 GUI 动作，动作后必须重新观察。
+- **完成证据**：重复 `--goal-evidence` 可声明所有必需 OCR 事实；两张间隔至少
+  500ms 的新鲜帧都满足且综合置信度至少 0.85，才接受 `DONE`。
+- **失败即保守**：Schema 修复失败、OCR/VLM 冲突、目标框失效或置信度不足时
+  重新观察、`ABSTAIN` 或安全停止，绝不猜坐标。
+- **有界恢复**：默认最多两种恢复；删除了随机邻近点击、等待后强制返回和无限重试。
+- **旧结果零输入**：窗口、几何、任务代次失效或目标区域变化时，推理结果直接丢弃。
 - 停止方式与持续运行一致：`Ctrl+Shift+F12` 全局热键或 `Ctrl+C`。
+
+从安装、LM Studio、MuMu、零输入冒烟、单步导航、面板解读到 Episode 诊断的完整步骤见
+[MuMu + 本地视觉模型闭环教程](guides/mumu-vlm-closed-loop.zh-CN.md)。
 
 ---
 
