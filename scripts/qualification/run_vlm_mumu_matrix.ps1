@@ -13,6 +13,56 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+function Invoke-BoundedProcess {
+    param(
+        [Parameter(Mandatory)]
+        [string]$FilePath,
+        [Parameter(Mandatory)]
+        [string[]]$Arguments,
+        [ValidateRange(100, 120000)]
+        [int]$TimeoutMilliseconds = 15000,
+        [switch]$AllowNonZeroExit
+    )
+
+    $startInfo = [Diagnostics.ProcessStartInfo]::new()
+    $startInfo.FileName = $FilePath
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+    foreach ($argument in $Arguments) {
+        $startInfo.ArgumentList.Add($argument)
+    }
+    $process = [Diagnostics.Process]::new()
+    $process.StartInfo = $startInfo
+    if (-not $process.Start()) {
+        throw "failed to start process: $FilePath"
+    }
+    $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+    $stderrTask = $process.StandardError.ReadToEndAsync()
+    if (-not $process.WaitForExit($TimeoutMilliseconds)) {
+        try {
+            $process.Kill($true)
+            $process.WaitForExit()
+        } finally {
+            $process.Dispose()
+        }
+        throw "process timed out after ${TimeoutMilliseconds}ms: $FilePath $($Arguments -join ' ')"
+    }
+    $stdout = $stdoutTask.GetAwaiter().GetResult()
+    $stderr = $stderrTask.GetAwaiter().GetResult()
+    $exitCode = $process.ExitCode
+    $process.Dispose()
+    if ($exitCode -ne 0 -and -not $AllowNonZeroExit) {
+        throw "process failed with exit code ${exitCode}: $FilePath $($Arguments -join ' '): $stderr"
+    }
+    [pscustomobject]@{
+        stdout = $stdout
+        stderr = $stderr
+        exit_code = $exitCode
+    }
+}
+
 $tasks = @(
     [pscustomobject]@{
         id = "network-internet"
@@ -189,15 +239,30 @@ function Get-SettingsSetupSnapshot {
         [string]$Serial
     )
 
-    $focus = (& $Adb -s $Serial shell dumpsys window |
-        Select-String "mCurrentFocus" | Select-Object -First 1).Line
+    try {
+        $focusResult = Invoke-BoundedProcess `
+            -FilePath $Adb `
+            -Arguments @("-s", $Serial, "shell", "dumpsys", "window") `
+            -TimeoutMilliseconds 10000
+        $focus = ($focusResult.stdout -split "`r?`n" |
+            Select-String "mCurrentFocus" | Select-Object -First 1).Line
+    } catch {
+        $focus = ""
+    }
     # MuMu Android 15 often segfaults after emitting a complete hierarchy and
     # therefore may never materialize the requested /sdcard file. ADB exec-out
     # preserves the XML stream and reports a usable status despite that guest
     # process teardown, so validate the fresh stream instead of a stale file.
-    $hierarchy = (
-        & $Adb -s $Serial exec-out uiautomator dump /dev/tty 2>$null
-    ) -join ""
+    try {
+        $hierarchyResult = Invoke-BoundedProcess `
+            -FilePath $Adb `
+            -Arguments @("-s", $Serial, "exec-out", "uiautomator", "dump", "/dev/tty") `
+            -TimeoutMilliseconds 15000 `
+            -AllowNonZeroExit
+        $hierarchy = $hierarchyResult.stdout
+    } catch {
+        $hierarchy = ""
+    }
     if ($hierarchy -notmatch "<hierarchy") {
         $hierarchy = ""
     }
@@ -214,8 +279,14 @@ function Start-VerifiedSettingsPage {
         [pscustomobject]$Task
     )
 
-    & $Adb -s $Serial shell am force-stop com.android.permissioncontroller | Out-Null
-    & $Adb -s $Serial shell am force-stop com.android.settings | Out-Null
+    Invoke-BoundedProcess `
+        -FilePath $Adb `
+        -Arguments @("-s", $Serial, "shell", "am", "force-stop", "com.android.permissioncontroller") `
+        -TimeoutMilliseconds 10000 | Out-Null
+    Invoke-BoundedProcess `
+        -FilePath $Adb `
+        -Arguments @("-s", $Serial, "shell", "am", "force-stop", "com.android.settings") `
+        -TimeoutMilliseconds 10000 | Out-Null
     $needsStart = $true
     $startAttempts = 0
     $lastSnapshot = $null
@@ -225,8 +296,13 @@ function Start-VerifiedSettingsPage {
                 break
             }
             $startAttempts++
-            & $Adb -s $Serial shell am start -W -a $Task.intent | Out-Null
-            if ($LASTEXITCODE -ne 0) {
+            try {
+                Invoke-BoundedProcess `
+                    -FilePath $Adb `
+                    -Arguments @("-s", $Serial, "shell", "am", "start", "-W", "-a", $Task.intent) `
+                    -TimeoutMilliseconds 15000 | Out-Null
+            } catch {
+                Write-Warning "bounded Settings start failed for $($Task.id): $_"
                 continue
             }
         }
@@ -287,8 +363,15 @@ try {
     if (-not (Test-Path -LiteralPath $AdbExecutable -PathType Leaf)) {
         throw "ADB executable is unavailable: $AdbExecutable"
     }
-    & $AdbExecutable connect $AdbSerial | Out-Null
-    if ((& $AdbExecutable -s $AdbSerial get-state).Trim() -ne "device") {
+    Invoke-BoundedProcess `
+        -FilePath $AdbExecutable `
+        -Arguments @("connect", $AdbSerial) `
+        -TimeoutMilliseconds 10000 | Out-Null
+    $adbState = Invoke-BoundedProcess `
+        -FilePath $AdbExecutable `
+        -Arguments @("-s", $AdbSerial, "get-state") `
+        -TimeoutMilliseconds 10000
+    if ($adbState.stdout.Trim() -ne "device") {
         throw "MuMu ADB target is not ready: $AdbSerial"
     }
     $models = Invoke-RestMethod -Uri ($BaseUrl.TrimEnd("/") + "/models") -TimeoutSec 10
