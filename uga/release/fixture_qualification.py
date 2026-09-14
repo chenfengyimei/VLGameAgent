@@ -175,6 +175,20 @@ def _lifetime(
 _CYCLE_NS = 5_000_000_000
 
 
+def _rebase_cycle_base(created: UGATime, scheduled_base_ns: int) -> tuple[int, int]:
+    """Move a late fixture cycle into the future without backfilling actions.
+
+    Long capture runs can occasionally lose more than the 250 ms scheduling
+    lead to an OS or capture stall.  Keeping the original base would create
+    already-effective actions and previously aborted the entire qualification.
+    Shift this and all following cycles by the observed lag instead.  The first
+    action remains 100 ms in the future and no missed input is replayed in a
+    burst.
+    """
+    rebased = max(scheduled_base_ns, created.value_ns)
+    return rebased, rebased - scheduled_base_ns
+
+
 def _build_fixture_cycle(
     created: UGATime,
     target: WindowSnapshot,
@@ -740,6 +754,8 @@ def run_fixture_qualification(
     canonical_recorded = 0
     accepted_proposals = 0
     observed_flushes = 0
+    cycle_rebases = 0
+    schedule_shift_ns = 0
     arbiter = ActionArbiter(clock, leases)
     scheduler_interval_ns = round(1_000_000_000 / ActionScheduler.DEFAULT_HZ)
     try:
@@ -770,13 +786,26 @@ def run_fixture_qualification(
                 raise ContractViolation(f"fixture safety supervision tripped: {cause}")
             loop_before = clock.now()
             while next_cycle < cycle_count:
-                base_ns = script_start_ns + next_cycle * _CYCLE_NS
+                base_ns = script_start_ns + next_cycle * _CYCLE_NS + schedule_shift_ns
                 if loop_before.value_ns < base_ns - 250_000_000:
                     break
                 if not _activate(windows, target.identity.hwnd):
                     raise ContractViolation("fixture focus could not be restored for next cycle")
                 _require_click_point_owned(windows, target)
                 created = clock.now()
+                base_ns, rebase_ns = _rebase_cycle_base(created, base_ns)
+                if rebase_ns:
+                    schedule_shift_ns += rebase_ns
+                    cycle_rebases += 1
+                    writer.record_event(
+                        f"cycle-rebased-{cycle_rebases}",
+                        created,
+                        {
+                            "cycle": next_cycle,
+                            "rebase_ns": rebase_ns,
+                            "schedule_shift_ns": schedule_shift_ns,
+                        },
+                    )
                 actions, success_check = _build_fixture_cycle(
                     created,
                     target,
@@ -901,14 +930,20 @@ def run_fixture_qualification(
 
             loop_after = clock.now()
             elapsed_seconds = (loop_after.value_ns - capture_started.value_ns) / 1_000_000_000
-            if elapsed_seconds >= duration_seconds:
+            extended_duration_seconds = duration_seconds + schedule_shift_ns / 1_000_000_000
+            if elapsed_seconds >= extended_duration_seconds:
                 capture_ended = loop_after
                 assert final_frame is not None
                 success_seen = success_seen or _success_pixel_count(final_frame) >= 20
                 break
             next_due_ns = min(next_scheduler_ns, next_capture_ns)
             if next_cycle < cycle_count:
-                next_cycle_schedule_ns = script_start_ns + next_cycle * _CYCLE_NS - 250_000_000
+                next_cycle_schedule_ns = (
+                    script_start_ns
+                    + next_cycle * _CYCLE_NS
+                    + schedule_shift_ns
+                    - 250_000_000
+                )
                 next_due_ns = min(next_due_ns, next_cycle_schedule_ns)
             remaining_ns = next_due_ns - loop_after.value_ns
             if remaining_ns > 0:
@@ -1095,6 +1130,8 @@ def run_fixture_qualification(
             "guard_rejected": guard_rejected,
             "execution_ratio": execution_ratio,
             "observed_flushes": observed_flushes,
+            "cycle_rebases": cycle_rebases,
+            "schedule_shift_ms": schedule_shift_ns / 1_000_000,
             "scheduler": asdict(stats),
             "focus_loss": focus_report,
             "held_key_fault": held_key_report,

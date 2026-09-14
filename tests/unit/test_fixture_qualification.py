@@ -8,10 +8,13 @@ from uga.control.executor import ExecutionReason, ExecutionResult
 from uga.control.input_state import KeyboardStateSnapshot
 from uga.control.physical import KeyEncoding
 from uga.core.errors import ContractViolation
+from uga.environment.fixture_world import FixtureScenario
 from uga.release.fixture_corpus import run_fixture_corpus
 from uga.release.fixture_qualification import (
+    _build_fixture_cycle,
     _emergency_hotkey_passed,
     _exercise_held_key_fault,
+    _rebase_cycle_base,
     _require_click_point_owned,
     _select_owned_fixture_target,
     _watchdog_timeout_passed,
@@ -26,6 +29,32 @@ from uga.windows.window_identity import WindowIdentity
 
 
 class FixtureQualificationTests(unittest.TestCase):
+    def test_late_fixture_cycle_is_rebased_without_backfilling(self) -> None:
+        identity = WindowIdentity(1, 10, "a" * 64, 1, 1)
+        rect = Rect(0, 0, 800, 600)
+        target = WindowSnapshot(identity, "fixture", rect, rect, 96, True, True)
+        created = UGATime(1_350_000_000)
+
+        base_ns, shift_ns = _rebase_cycle_base(created, 1_000_000_000)
+        actions, success_check = _build_fixture_cycle(
+            created,
+            target,
+            7,
+            base_ns,
+            FixtureScenario.EXPLORATION,
+        )
+
+        self.assertEqual(base_ns, created.value_ns)
+        self.assertEqual(shift_ns, 350_000_000)
+        self.assertGreater(actions[0].lifetime.effective_from.value_ns, created.value_ns)
+        self.assertEqual(success_check, base_ns + 4_200_000_000)
+
+    def test_on_time_fixture_cycle_keeps_nominal_schedule(self) -> None:
+        base_ns, shift_ns = _rebase_cycle_base(UGATime(900_000_000), 1_000_000_000)
+
+        self.assertEqual(base_ns, 1_000_000_000)
+        self.assertEqual(shift_ns, 0)
+
     def test_fixture_target_requires_owned_process_identity(self) -> None:
         selected_identity = WindowIdentity(1, 10, "a" * 64, 1, 1)
         expected = WindowIdentity(1, 10, "a" * 64, 1, 2)
