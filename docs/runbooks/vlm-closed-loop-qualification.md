@@ -132,6 +132,11 @@ The supervisor independently refuses every other ACT target, and refuses all
 physical actions once the required completion evidence is already present.
 This prevents a slow navigation result from being followed by selection of an
 option on the destination page even when the model fails to emit `DONE`.
+For evidence-bound goals, fresh local OCR and perception confidence may also
+confirm completion when the model contradictorily returns `ACT`, `WAIT`, or
+`ABSTAIN`: the supervisor suppresses input and requires the same evidence on a
+second fresh frame after the page-stability interval. It never treats a single
+frame, model-claimed text, or confidence below 0.85 as completion.
 Once that target produces a verified semantic effect it is consumed and cannot
 be clicked again. Target-only pixel changes must remain stable for two samples
 at least 250 ms apart, preventing Android click ripples from masquerading as

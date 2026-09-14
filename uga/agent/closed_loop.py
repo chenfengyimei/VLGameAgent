@@ -131,10 +131,27 @@ class GoalVerifier:
             outcome.kind != DecisionKind.DONE
             or outcome.goal_status != GoalStatus.SUCCEEDED
             or outcome.confidence < self._threshold
+            or snapshot.confidence < self._threshold
         ):
             self._candidate = None
             self.last_missing_evidence = ()
             return False
+        return self._consider_snapshot(snapshot, fallback_evidence=outcome.visible_text)
+
+    def consider_observed_evidence(self, snapshot: PerceptionSnapshot) -> bool:
+        """Confirm an evidence-bound goal without trusting a contradictory action."""
+        if not self._required_evidence or snapshot.confidence < self._threshold:
+            self._candidate = None
+            self.inspect_evidence(snapshot)
+            return False
+        return self._consider_snapshot(snapshot)
+
+    def _consider_snapshot(
+        self,
+        snapshot: PerceptionSnapshot,
+        *,
+        fallback_evidence: tuple[str, ...] = (),
+    ) -> bool:
         observed_values = tuple(
             normalize_visible_text(value)
             for value in snapshot.text
@@ -147,7 +164,7 @@ class GoalVerifier:
             return False
         evidence = observed or frozenset(
             normalize_visible_text(value)
-            for value in outcome.visible_text
+            for value in fallback_evidence
             if normalize_visible_text(value)
         )
         if self._candidate is None:
@@ -556,6 +573,11 @@ class ClosedLoopSupervisor:
         if outcome.kind != DecisionKind.WAIT or outcome.wait_reason != WaitReason.NO_SAFE_ACTION:
             self._reset_no_safe_waits()
         if outcome.kind == DecisionKind.DONE:
+            if min(outcome.confidence, fresh_snapshot.confidence) < 0.85:
+                return self._retry_or_block(
+                    outcome,
+                    "goal completion confidence is below 0.85",
+                )
             if self._goal.consider(outcome, fresh_snapshot):
                 self.status = TerminalStatus.SUCCEEDED
                 self.termination_reason = "goal_confirmed"
@@ -576,6 +598,32 @@ class ClosedLoopSupervisor:
                 "goal completion awaits a second fresh frame",
                 outcome,
             )
+        if self._goal.required_evidence:
+            evidence_confirmed = self._goal.consider_observed_evidence(fresh_snapshot)
+            if not self._goal.last_missing_evidence:
+                if fresh_snapshot.confidence < 0.85:
+                    return self._retry_or_block(
+                        outcome,
+                        "required completion evidence is visible but perception "
+                        "confidence is below 0.85",
+                    )
+                if evidence_confirmed:
+                    self.status = TerminalStatus.SUCCEEDED
+                    self.termination_reason = "goal_confirmed"
+                    self.goal_confidence = fresh_snapshot.confidence
+                    self._complete_task(success=True)
+                    return SupervisedDecision(
+                        DecisionDisposition.TERMINATE,
+                        "goal confirmed from required OCR evidence on two fresh frames; "
+                        "contradictory planner action suppressed",
+                        outcome,
+                    )
+                return SupervisedDecision(
+                    DecisionDisposition.REOBSERVE,
+                    "required completion evidence is visible; suppressing physical "
+                    "action while awaiting a second fresh frame",
+                    outcome,
+                )
         if outcome.kind == DecisionKind.WAIT:
             self._goal.consider(outcome, fresh_snapshot)
             if outcome.wait_reason == WaitReason.NO_SAFE_ACTION:
@@ -626,12 +674,6 @@ class ClosedLoopSupervisor:
                 )
             return self._retry_or_block(outcome, "planner did not identify a safe action")
         assert outcome.action is not None
-        missing_evidence = self._goal.inspect_evidence(fresh_snapshot)
-        if self._goal.required_evidence and not missing_evidence:
-            return self._retry_or_block(
-                outcome,
-                "required completion evidence is already visible; refusing physical action",
-            )
         if (
             self._goal_action_target is not None
             and not self._matches_goal_action_target(outcome.action)

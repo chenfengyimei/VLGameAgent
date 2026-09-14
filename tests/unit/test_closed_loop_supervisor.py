@@ -152,6 +152,37 @@ class GoalVerifierTests(unittest.TestCase):
             )
         )
 
+    def test_observed_evidence_can_confirm_despite_contradictory_action(self) -> None:
+        verifier = GoalVerifier(
+            confirmation_ns=500_000_000,
+            required_evidence=("destination",),
+        )
+
+        self.assertFalse(
+            verifier.consider_observed_evidence(
+                snapshot(1, 0, visible_text=("destination",))
+            )
+        )
+        self.assertTrue(
+            verifier.consider_observed_evidence(
+                snapshot(2, 500_000_000, visible_text=("destination",))
+            )
+        )
+
+    def test_observed_evidence_requires_configured_fact_and_confidence(self) -> None:
+        unbound = GoalVerifier(confirmation_ns=500_000_000)
+        low_confidence = replace(
+            snapshot(1, 0, visible_text=("destination",)),
+            confidence=0.8,
+        )
+        verifier = GoalVerifier(
+            confirmation_ns=500_000_000,
+            required_evidence=("destination",),
+        )
+
+        self.assertFalse(unbound.consider_observed_evidence(snapshot(1, 0)))
+        self.assertFalse(verifier.consider_observed_evidence(low_confidence))
+
 
 class ClosedLoopSupervisorTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -455,7 +486,7 @@ class ClosedLoopSupervisorTests(unittest.TestCase):
         self.assertEqual(second.disposition, DecisionDisposition.BLOCK)
         self.assertEqual(supervisor.diagnostics()["logical_actions_issued"], 1)
 
-    def test_visible_completion_evidence_refuses_a_physical_action(self) -> None:
+    def test_visible_completion_evidence_suppresses_action_and_confirms_locally(self) -> None:
         supervisor = ClosedLoopSupervisor(
             self.clock,
             self.profile,
@@ -464,7 +495,7 @@ class ClosedLoopSupervisorTests(unittest.TestCase):
         )
         current = snapshot(1, 0, visible_text=("destination",))
 
-        decision = supervisor.assess(
+        first = supervisor.assess(
             outcome(1),
             current,
             current,
@@ -472,9 +503,21 @@ class ClosedLoopSupervisorTests(unittest.TestCase):
             frame(1, 0),
             "open settings",
         )
+        later = snapshot(2, 500_000_000, visible_text=("destination",))
+        second = supervisor.assess(
+            outcome(2),
+            later,
+            later,
+            frame(2, 500_000_000),
+            frame(2, 500_000_000),
+            "open settings",
+        )
 
-        self.assertEqual(decision.disposition, DecisionDisposition.REOBSERVE)
-        self.assertIn("already visible", decision.reason)
+        self.assertEqual(first.disposition, DecisionDisposition.REOBSERVE)
+        self.assertIn("suppressing physical action", first.reason)
+        self.assertEqual(second.disposition, DecisionDisposition.TERMINATE)
+        self.assertIn("contradictory planner action suppressed", second.reason)
+        self.assertEqual(supervisor.status, TerminalStatus.SUCCEEDED)
         self.assertEqual(supervisor.diagnostics()["logical_actions_issued"], 0)
 
     def test_single_step_goal_refuses_a_different_action_target(self) -> None:
@@ -535,6 +578,31 @@ class ClosedLoopSupervisorTests(unittest.TestCase):
         self.assertEqual(pending.disposition, DecisionDisposition.REOBSERVE)
         self.assertEqual(completed.disposition, DecisionDisposition.TERMINATE)
         self.assertEqual(self.supervisor.status, TerminalStatus.SUCCEEDED)
+
+    def test_low_confidence_done_reobserves_once_then_blocks(self) -> None:
+        current = replace(snapshot(1, 0), confidence=0.8)
+        proposal = outcome(1, kind=DecisionKind.DONE)
+
+        first = self.supervisor.assess(
+            proposal,
+            current,
+            current,
+            frame(1, 0),
+            frame(1, 0),
+            "open settings",
+        )
+        second = self.supervisor.assess(
+            proposal,
+            current,
+            current,
+            frame(1, 0),
+            frame(1, 0),
+            "open settings",
+        )
+
+        self.assertEqual(first.disposition, DecisionDisposition.REOBSERVE)
+        self.assertEqual(second.disposition, DecisionDisposition.BLOCK)
+        self.assertEqual(self.supervisor.status, TerminalStatus.BLOCKED)
 
     def test_loop_uses_distinct_high_resolution_then_safe_back_recovery(self) -> None:
         supervisor = ClosedLoopSupervisor(
