@@ -369,6 +369,16 @@ class GroundedVlmPlanner:
     def policy_version(self) -> str:
         return "grounded-vlm-1.0.0"
 
+    @property
+    def last_decision_source(self) -> str:
+        """Trusted, runtime-assigned origin of the latest decision.
+
+        Read by the supervisor's action gate: model JSON never gets to claim
+        this value — only rule code assigns ``ocr_*`` fast-path sources or
+        ``model`` for a raw model reply.
+        """
+        return self._last_decision_source
+
     def decide(
         self,
         *,

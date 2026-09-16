@@ -5,6 +5,7 @@ from dataclasses import replace
 
 from tests.helpers import frame, identity
 from uga.agent.closed_loop import (
+    ActionValidator,
     ClosedLoopSupervisor,
     DecisionDisposition,
     GoalVerifier,
@@ -1193,13 +1194,172 @@ class ClosedLoopSupervisorTests(unittest.TestCase):
         )
 
         decision = supervisor.assess(
-            proposal, current, fresh, frame(1, 0), frame(2, 1), "持续推进"
+            proposal,
+            current,
+            fresh,
+            frame(1, 0),
+            frame(2, 1),
+            "持续推进",
+            decision_source="ocr_close_glyph_fast",
         )
 
         self.assertEqual(decision.disposition, DecisionDisposition.EXECUTE)
         self.assertIn("deterministic exit control", decision.reason)
         assert decision.outcome.action is not None
         self.assertEqual(decision.outcome.action.target_label, "ui_back")
+
+    def test_model_reserved_label_is_routed_to_hotspot_never_raw_box(self) -> None:
+        # A model reply claiming the reserved ``ui_back`` label has no
+        # privilege: the label is display text.  Without a trusted runtime
+        # source the click must be re-anchored onto the user-confirmed
+        # calibration, never executed at the model's own coordinates.
+        supervisor = ClosedLoopSupervisor(
+            self.clock,
+            PerceptionProfile(action_effect_timeout_ms=1000),
+            back_hotspot=(0.06, 0.08),
+        )
+        current = snapshot(1, 0)
+        model_box = NormalizedBox(0.972, 0.012, 0.99, 0.04)
+        proposal = replace(
+            outcome(1),
+            action=GroundedAction(
+                GuiActionKind.CLICK,
+                "ui_back",
+                model_box,
+                "模型自报的退出标签",
+                1.0,
+            ),
+        )
+
+        decision = supervisor.assess(
+            proposal, current, current, frame(1, 0), frame(1, 0), "持续推进"
+        )
+
+        self.assertEqual(decision.disposition, DecisionDisposition.EXECUTE)
+        assert decision.outcome.action is not None
+        center = decision.outcome.action.target_box.center  # type: ignore[union-attr]
+        self.assertAlmostEqual(center.x, 0.06, places=6)
+        self.assertAlmostEqual(center.y, 0.08, places=6)
+        self.assertNotEqual(
+            decision.outcome.action.target_box, model_box  # type: ignore[union-attr]
+        )
+
+    def test_reserved_label_with_trusted_source_still_respects_no_click(self) -> None:
+        # Even a trusted rule-source exit click is refused when its final
+        # landing point falls inside the chrome strip.
+        supervisor = ClosedLoopSupervisor(
+            self.clock,
+            PerceptionProfile(
+                action_effect_timeout_ms=1000,
+                no_click_regions=((0.0, 0.0, 1.0, 0.055),),
+            ),
+            back_hotspot=(0.06, 0.03),
+        )
+        current = snapshot(1, 0)
+        proposal = replace(
+            outcome(1),
+            action=GroundedAction(
+                GuiActionKind.CLICK,
+                "ui_back",
+                NormalizedBox(0.03, 0.01, 0.09, 0.05),
+                "the feature page closes",
+                1.0,
+            ),
+        )
+
+        decision = supervisor.assess(
+            proposal,
+            current,
+            current,
+            frame(1, 0),
+            frame(1, 0),
+            "持续推进",
+            decision_source="ocr_close_glyph_fast",
+        )
+
+        self.assertIn(
+            decision.disposition,
+            {DecisionDisposition.REOBSERVE, DecisionDisposition.BLOCK},
+        )
+        self.assertIn("no-click region", decision.reason)
+
+    def test_trusted_exit_click_rejected_after_window_recreation(self) -> None:
+        supervisor = ClosedLoopSupervisor(
+            self.clock,
+            PerceptionProfile(action_effect_timeout_ms=1000),
+            back_hotspot=(0.06, 0.08),
+        )
+        validated = frame(1, 0)
+        recreated = replace(frame(2, 1_000), window_identity=identity(generation=2))
+        proposal = replace(
+            outcome(1),
+            action=GroundedAction(
+                GuiActionKind.CLICK,
+                "ui_back",
+                NormalizedBox(0.03, 0.05, 0.09, 0.11),
+                "the feature page closes",
+                1.0,
+            ),
+        )
+        fresh = snapshot(2, 1_000)
+
+        decision = supervisor.assess(
+            proposal,
+            fresh,
+            fresh,
+            recreated,
+            recreated,
+            "持续推进",
+            decision_source="ocr_close_glyph_fast",
+        )
+        self.assertEqual(decision.disposition, DecisionDisposition.REOBSERVE)
+        self.assertIn("stale", decision.reason)
+
+        stable, reason = supervisor.validate_execution_context(validated, recreated)
+        self.assertFalse(stable)
+        self.assertIn("generation or geometry changed", reason)
+
+    def test_pointer_offset_moves_final_point_into_no_click_region(self) -> None:
+        # EX06 regression: the box CENTER sits safely outside the forbidden
+        # strip, but the pointer offset drags the real landing point into it.
+        # The gate must judge the final point, not the center.
+        validator = ActionValidator(
+            PerceptionProfile(
+                no_click_regions=((0.5, 0.5, 0.7, 0.7),),
+            )
+        )
+        current = snapshot(1, 0)
+        safe_action = GroundedAction(
+            GuiActionKind.CLICK,
+            "设置",
+            NormalizedBox(0.2, 0.2, 0.4, 0.4),
+            "打开设置",
+            0.95,
+        )
+        drifted_action = replace(
+            safe_action, pointer_offset_x=0.25, pointer_offset_y=0.25
+        )
+
+        safe = validator.validate(
+            replace(outcome(1), action=safe_action),
+            current,
+            current,
+            frame(1, 0),
+            frame(1, 0),
+            "打开设置",
+        )
+        self.assertTrue(safe[0])
+
+        drifted = validator.validate(
+            replace(outcome(1), action=drifted_action),
+            current,
+            current,
+            frame(1, 0),
+            frame(1, 0),
+            "打开设置",
+        )
+        self.assertFalse(drifted[0])
+        self.assertIn("no-click region", drifted[1])
 
     def test_failed_back_attempt_alternates_to_the_close_hotspot(self) -> None:
         supervisor = ClosedLoopSupervisor(

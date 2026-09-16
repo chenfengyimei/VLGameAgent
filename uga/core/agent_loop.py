@@ -469,6 +469,7 @@ class RealtimeAgentLoop:
                 pending.frame,
                 latest_after_inference.frame,
                 observation.user_goal,
+                decision_source=getattr(grounded_planner, "last_decision_source", None),
             )
             if not self._run_live(stamp):
                 await self._discard_stale_result(
@@ -492,16 +493,22 @@ class RealtimeAgentLoop:
             execution_item = latest_after_inference
             if supervised.disposition == DecisionDisposition.EXECUTE:
                 current_item = self._frames.latest() or latest_after_inference
-                is_deterministic_exit = (
+                location_calibrated = (
                     outcome.action is not None
                     and outcome.action.target_label
                     in {"ui_back", "ui_close", "ui_promote"}
                 )
-                if is_deterministic_exit:
+                if location_calibrated:
                     # Calibrated hotspots and OCR-glyph closes carry no
-                    # groundable text; the pixel-change freshness check would
-                    # reject them forever on animated pages.
-                    execution_fresh, execution_reason = True, "deterministic exit control"
+                    # groundable text and sit on animated pages, so pixel
+                    # change is expected.  The shared execution-context guard
+                    # still applies: a recreated or resized window never
+                    # receives a click decided for the previous window.
+                    execution_fresh, execution_reason = (
+                        closed_loop.validate_execution_context(
+                            latest_after_inference.frame, current_item.frame
+                        )
+                    )
                 else:
                     grounding_match = (
                         outcome.action is not None
@@ -672,6 +679,36 @@ class RealtimeAgentLoop:
                 assert supervised.recovery is not None
                 assert self._gui_controller is not None
                 assert self._key_resolver is not None
+                recovery_item = self._frames.latest() or latest_after_inference
+                recovery_context_stable, recovery_context_reason = (
+                    closed_loop.validate_execution_context(
+                        latest_after_inference.frame, recovery_item.frame
+                    )
+                )
+                if not recovery_context_stable:
+                    # A recreated or resized window must never receive the
+                    # recovery exit click: drop this attempt and re-observe;
+                    # the pending recovery stays armed for the next cycle.
+                    await self._events.publish(
+                        EventType.POLICY_INFERENCE_COMPLETED,
+                        "agent.loop",
+                        {
+                            "observation_id": observation.observation_id,
+                            "disposition": "recovery_discarded_stale",
+                            "reason": recovery_context_reason,
+                        },
+                    )
+                    return AgentLoopStep(
+                        observation,
+                        transition,
+                        None,
+                        None,
+                        self._scheduler.tick(),
+                        perception,
+                        planner_outcome,
+                        gui_submission,
+                        supervision,
+                    )
                 recovery_action = closed_loop.to_recovery_gui_action(
                     supervised.recovery, self._key_resolver
                 )

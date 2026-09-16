@@ -43,7 +43,14 @@ from uga.perception.schema import (
     WaitReason,
 )
 from uga.policy.decision_journal import DecisionJournal, DecisionRecord
+from uga.safety.action_gate import (
+    generations_consistent,
+    is_trusted_deterministic_source,
+    point_is_clickable,
+    resolved_click_point,
+)
 from uga.time.clock import ClockBackend, UGATime
+from uga.windows.coordinates import Point
 
 
 class DecisionDisposition(StrEnum):
@@ -264,21 +271,11 @@ class ActionValidator:
         action = outcome.action
         if action is None:
             return False, "ACT decision did not include an action"
-        if (
-            outcome.request_frame_id != decided_snapshot.frame_id
-            or outcome.request_frame_sequence != decided_snapshot.frame_sequence
-            or outcome.window_generation
-            != decided_snapshot.window_identity.window_generation
-            or outcome.geometry_generation != decided_snapshot.geometry_generation
-            or outcome.task_generation != decided_snapshot.task_generation
-            or fresh_snapshot.frame_sequence < decided_snapshot.frame_sequence
-            or outcome.window_generation
-            != fresh_snapshot.window_identity.window_generation
-            or outcome.geometry_generation != fresh_snapshot.geometry_generation
-            or outcome.task_generation != fresh_snapshot.task_generation
-            or decided_snapshot.window_identity != fresh_snapshot.window_identity
-        ):
-            return False, "decision generation became stale"
+        consistent, generation_reason = generations_consistent(
+            outcome, decided_snapshot, fresh_snapshot
+        )
+        if not consistent:
+            return False, generation_reason
         confidence = min(outcome.confidence, action.confidence)
         if confidence <= 0.85 and not secondary_verified:
             return False, "decision requires secondary verification"
@@ -296,13 +293,19 @@ class ActionValidator:
                 return False, "critical action is not explicitly and confidently requested"
         if action.target_box is not None:
             center = action.target_box.center
+            # The gate judges the FINAL click point (offsets applied), not
+            # just the box center: a nonzero pointer offset can move an
+            # otherwise safe center into a forbidden strip.
+            final_point = resolved_click_point(action)
             for region in self._profile.no_click_regions:
                 blocked = NormalizedBox(*region)
-                if blocked.contains(center):
-                    return False, "target center is inside a configured no-click region"
+                if blocked.contains(center) or blocked.contains(final_point):
+                    return False, "target click point is inside a configured no-click region"
             if decoy_click_blocked(
-                fresh_snapshot.visible_text, (center.x, center.y)
-            ) or decoy_click_blocked(decided_snapshot.visible_text, (center.x, center.y)):
+                fresh_snapshot.visible_text, (final_point.x, final_point.y)
+            ) or decoy_click_blocked(
+                decided_snapshot.visible_text, (final_point.x, final_point.y)
+            ):
                 # 广告/运营诱饵横幅（首充礼包、新服冲榜、商城福利…）：无论
                 # 模型给它们贴什么标签，落在诱饵文字上的点击一律拒绝。
                 return False, "click target overlaps an advertising or monetization decoy"
@@ -788,6 +791,8 @@ class ClosedLoopSupervisor:
         decided_frame: Frame,
         fresh_frame: Frame,
         goal: str,
+        *,
+        decision_source: str | None = None,
     ) -> SupervisedDecision:
         if self.is_terminal:
             return SupervisedDecision(
@@ -1015,14 +1020,39 @@ class ClosedLoopSupervisor:
                 "single-step navigation target already produced an effect; refusing repeat",
                 outcome,
             )
-        if outcome.action.target_label in {"ui_back", "ui_close", "ui_promote"} and (
-            self._back_hotspot is not None
-            or self._close_hotspot is not None
-            or self._promote_hotspot is not None
+        if (
+            outcome.action.target_label in {"ui_back", "ui_close", "ui_promote"}
+            and outcome.action.target_box is not None
+            and (
+                self._back_hotspot is not None
+                or self._close_hotspot is not None
+                or self._promote_hotspot is not None
+            )
+            and is_trusted_deterministic_source(decision_source)
         ):
-            # Deterministic fast-path exit controls carry their own calibrated
-            # or OCR-glyph coordinates and no OCR-groundable text: execute them
-            # directly instead of running the grounding validator.
+            # A reserved label is display text, not a permission: it only
+            # reaches this deterministic branch when trusted runtime rule code
+            # assigned the outcome (an ocr_* fast path).  Even then the shared
+            # generation guard and the final-point gate apply — a recreated
+            # window or a forbidden landing point still rejects the click.
+            consistent, generation_reason = generations_consistent(
+                outcome, decided_snapshot, fresh_snapshot
+            )
+            if not consistent:
+                self._stale_results_discarded += 1
+                return SupervisedDecision(
+                    DecisionDisposition.REOBSERVE,
+                    "stale decision discarded; observing the current generation",
+                    outcome,
+                )
+            verdict = point_is_clickable(
+                resolved_click_point(outcome.action),
+                no_click_regions=self._profile.no_click_regions,
+                decided_text=decided_snapshot.visible_text,
+                fresh_text=fresh_snapshot.visible_text,
+            )
+            if not verdict.allowed:
+                return self._retry_or_block(outcome, verdict.reason)
             self._uncertain_retries = 0
             return SupervisedDecision(
                 DecisionDisposition.EXECUTE,
@@ -1034,9 +1064,29 @@ class ClosedLoopSupervisor:
             # on them can never pass OCR grounding and would block-loop the
             # cycle.  Route the model's exit *intent* through the user-
             # confirmed calibrated hotspots instead (alternating as attempts
-            # fail; same trust level as recovery).
+            # fail; same trust level as recovery).  The model's own box is
+            # never executed, and the shared generation and final-point gates
+            # still apply to the routed click.
+            consistent, generation_reason = generations_consistent(
+                outcome, decided_snapshot, fresh_snapshot
+            )
+            if not consistent:
+                self._stale_results_discarded += 1
+                return SupervisedDecision(
+                    DecisionDisposition.REOBSERVE,
+                    "stale decision discarded; observing the current generation",
+                    outcome,
+                )
             label, hotspot, box = self._next_exit()
             assert box is not None and hotspot is not None
+            verdict = point_is_clickable(
+                Point(hotspot[0], hotspot[1]),
+                no_click_regions=self._profile.no_click_regions,
+                decided_text=decided_snapshot.visible_text,
+                fresh_text=fresh_snapshot.visible_text,
+            )
+            if not verdict.allowed:
+                return self._retry_or_block(outcome, verdict.reason)
             outcome = replace(
                 outcome,
                 action=GroundedAction(
@@ -1198,6 +1248,27 @@ class ClosedLoopSupervisor:
             action.target_label,
         )
 
+    def validate_execution_context(
+        self, validated_frame: Frame, execution_frame: Frame
+    ) -> tuple[bool, str]:
+        """Window/geometry identity guard shared by every execution source.
+
+        Recovery exits and calibrated controls skip pixel comparison but
+        never skip this: a recreated window must not receive a click decided
+        for the previous window.
+        """
+        if (
+            execution_frame.capture_timestamp < validated_frame.capture_timestamp
+            or execution_frame.window_identity != validated_frame.window_identity
+            or execution_frame.width != validated_frame.width
+            or execution_frame.height != validated_frame.height
+            or execution_frame.client_rect != validated_frame.client_rect
+            or execution_frame.physical_rect != validated_frame.physical_rect
+        ):
+            self._stale_results_discarded += 1
+            return False, "execution frame generation or geometry changed"
+        return True, "execution frame matches the validated window"
+
     def validate_execution_frame(
         self,
         outcome: PlannerOutcome,
@@ -1210,16 +1281,11 @@ class ClosedLoopSupervisor:
         action = outcome.action
         if action is None:
             raise ContractViolation("execution freshness requires an ACT outcome")
-        if (
-            execution_frame.capture_timestamp < validated_frame.capture_timestamp
-            or execution_frame.window_identity != validated_frame.window_identity
-            or execution_frame.width != validated_frame.width
-            or execution_frame.height != validated_frame.height
-            or execution_frame.client_rect != validated_frame.client_rect
-            or execution_frame.physical_rect != validated_frame.physical_rect
-        ):
-            self._stale_results_discarded += 1
-            return False, "execution frame generation or geometry changed"
+        context_stable, context_reason = self.validate_execution_context(
+            validated_frame, execution_frame
+        )
+        if not context_stable:
+            return False, context_reason
         if execution_frame.frame_id == validated_frame.frame_id:
             return True, "execution frame is the validated frame"
         region = action.target_box or NormalizedBox(0.0, 0.0, 1.0, 1.0)
@@ -1238,17 +1304,24 @@ class ClosedLoopSupervisor:
         now = self._clock.now()
         label, hotspot, _box = self._next_exit()
         if hotspot is not None:
-            # The calibrated visual exit controls are mouse clicks (top-left
-            # ribbon first, then the top-right X as attempts fail); Esc is not
-            # a reliable back in this game.
-            return GuiAction(
-                f"recovery-{label}-{uuid.uuid4().hex[:12]}",
-                GuiActionKind.CLICK,
-                _action_lifetime(now),
-                x=hotspot[0],
-                y=hotspot[1],
-                confidence=1.0,
+            verdict = point_is_clickable(
+                Point(hotspot[0], hotspot[1]),
+                no_click_regions=self._profile.no_click_regions,
             )
+            if verdict.allowed:
+                # The calibrated visual exit controls are mouse clicks (top-left
+                # ribbon first, then the top-right X as attempts fail); Esc is
+                # not a reliable back in this game.
+                return GuiAction(
+                    f"recovery-{label}-{uuid.uuid4().hex[:12]}",
+                    GuiActionKind.CLICK,
+                    _action_lifetime(now),
+                    x=hotspot[0],
+                    y=hotspot[1],
+                    confidence=1.0,
+                )
+            # Fail-closed: a calibrated hotspot that lands inside a forbidden
+            # region must fall back to the confirmed key binding, never click.
         key_codes = key_resolver("back")
         if not key_codes:
             raise ContractViolation(
@@ -1580,23 +1653,23 @@ class ClosedLoopSupervisor:
         return self._goal_action_target in label or label in self._goal_action_target
 
     def _is_back_intent(self, action: GroundedAction) -> bool:
-        """A model TEXT label meaning 'leave this page' (never 退出, which may
-        quit the whole client).  Deterministic ``ui_back``/``ui_close`` labels
-        are handled earlier with their own coordinates; text labels are
-        converted to the alternating calibrated hotspots because graphical
-        exit controls carry no OCR text and would fail grounding."""
+        """A label meaning 'leave this page' (never 退出, which may quit the
+        whole client).  Model TEXT labels are converted to the alternating
+        calibrated hotspots because graphical exit controls carry no OCR text
+        and would fail grounding.  A model-claimed ``ui_back``/``ui_close``
+        label arrives here too: the reserved label alone is not a trusted
+        source, so the click lands on the runtime-owned calibration, never on
+        the model's own box."""
         if self._back_hotspot is None and self._close_hotspot is None:
             return False
         if action.kind not in {GuiActionKind.CLICK, GuiActionKind.LONG_CLICK}:
-            return False
-        if action.target_label in {"ui_back", "ui_close"}:
             return False
         label = normalize_visible_text(action.target_label)
         return (
             "返回" in label
             or "回退" in label
             or "关闭" in label
-            or label in {"back", "return", "close"}
+            or label in {"back", "return", "close", "ui_back", "ui_close"}
         )
 
     def _action_in_recent_failures(self, action: GroundedAction) -> bool:
