@@ -25,7 +25,7 @@
 | F10 | P1 | S | tests_passed(local) | VisionRateLimitedError 未被新闭环统一捕获（只捕 BackendUnavailableError） | `uga/policy/vision_transport.py`（ProviderError 分类，BackendUnavailableError 子类——既有捕获边界全部兼容）；`uga/policy/vlm_planner.py`（fatal 传播） | D08 |
 | F11 | P1 | S+I | tests_passed(local) | 本地结构化校验比声明 Schema 宽松（float() 强转、混合坐标整体除 1000、confidence 无上界/类型检查） | `uga/policy/structured_output.py`（严格数字/置信度/坐标/文本）；`uga/policy/grounded_vlm.py::_parse/_parse_action`、GroundedOutcomeVerifier（接线） | D08、D09 |
 | F12 | P1 | S | tests_passed(local; 运行时部分) | 排队被当真实动作；观察关联过旧（推理前 observation_id；数据侧默认 1s） | `uga/control/execution_receipt.py`（新增回执模块）；`uga/control/scheduler.py`（逐原语发布）；`uga/agent/closed_loop.py`（执行证据门+回执记录）；`uga/core/agent_loop.py`（回执泵+提交接线）；`uga/dataset/processor.py`（数据侧归 D14） | D04、D10、D14 |
-| F13 | P2 | S | open | 正常成功回复未更新 last_raw_reply，看板摘要空/陈旧 | `uga/policy/grounded_vlm.py::GroundedVlmPlanner.decide` | D10 |
+| F13 | P2 | S | tests_passed(local) | 正常成功回复未更新 last_raw_reply，看板摘要空/陈旧 | `uga/policy/grounded_vlm.py::decide`（正常路径先写 last_raw_reply）；另补齐 4 个快路径出口漏打 _last_decision_source | D10 |
 | F14 | P2 | S+I | tests_passed(local) | 高分辨率恢复未真正提高有效分辨率（仅改裁剪 padding） | `uga/policy/grounded_vlm.py::_images`（总览宽度加倍至 1280 封顶+非升级标记） | D05、D09 |
 | F15 | P1 | S/R | tests_passed(local) | 会话持久化无作用域/原子替换/恢复后证据门槛 | `uga/agent/session_state.py`（schema/namespace/原子写/隔离/UNTRUSTED_RESTORED）；`apps/agent/run.py`（profile.game_id 绑定） | D07 |
 | F16 | P2 | S/R | open | CaptureHub 间隔统计无限增长全量排序；发布锁内同步录制 | `uga/capture/hub.py`（_gaps_ns、stats、_publish）；`uga/recording/episode_writer.py`（有界，勿误伤） | D11 |
@@ -117,7 +117,8 @@
 ### F13 正常成功回复未及时更新 last_raw_reply（P2 · S）
 - **触发条件：** 正常有效模型回复，尤其紧随修复/规则快路径。
 - **预期行为：** per-request 回复摘要；修复另设 attempt 字段。
-- **修复提交：** 待 D10。 **关闭证据：** 待 T23 回归。
+- **修复提交：** `872238b`（2026-09-16，未推送）。decide() 正常路径在 client 响应返回后、解析前写 `last_raw_reply = reply`——每次请求的摘要先于解析更新，修复路径原有赋值保留；T23 判别测试：修复后下一次正常决策的 last_raw_reply 必须是当次回复（不含旧 repair 文本）。**同批补齐 4 个快路径出口漏打 `_last_decision_source` 的同类缺陷**（修仙跳转/前往/摆摊物品格/ realms 外的 dialog 已在 D12 修）：来源缺失曾使 D03 可信来源门把规则产出当模型自报、看板来源列显示陈旧值。
+- **关闭证据：** test_valid_first_reply_updates_current_request_summary + test_previous_repair_reply_does_not_leak_to_next_decision（T23）+ test_registered_game_still_fires_its_rule（弹窗取消来源标记判别）；全套件 612 passed + 1 skip + 103 subtests 绿。
 
 ### F14 高分辨率恢复未真正提高总览分辨率（P2 · S+I · EX04 · tests_passed(local)）
 - **触发条件：** 640 宽、无目标裁剪配置进入 HIGH_RESOLUTION。
