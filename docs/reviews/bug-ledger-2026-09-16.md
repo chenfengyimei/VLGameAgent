@@ -23,7 +23,7 @@
 | F09 | P1 | S+I | open | 无 required_evidence 时两次高置信 DONE 即判成功 | `uga/agent/closed_loop.py::GoalVerifier._consider_snapshot` | D05 |
 | F10 | P1 | S | open | VisionRateLimitedError 未被新闭环统一捕获（只捕 BackendUnavailableError） | `uga/policy/vlm_planner.py`（抛出方）；`uga/core/agent_loop.py`、`uga/policy/grounded_vlm.py`（捕获方） | D08 |
 | F11 | P1 | S+I | open | 本地结构化校验比声明 Schema 宽松（float() 强转、混合坐标整体除 1000、confidence 无上界/类型检查） | `uga/policy/grounded_vlm.py`（解析/验证谓词）；`uga/perception/schema.py` | D08、D09 |
-| F12 | P1 | S | open | 排队被当真实动作；观察关联过旧（推理前 observation_id；数据侧默认 1s） | `uga/core/agent_loop.py`（arbiter accepted→start_action）；`uga/control/scheduler.py`、`uga/control/executor.py`、`uga/dataset/processor.py` | D04、D10、D14 |
+| F12 | P1 | S | tests_passed(local; 运行时部分) | 排队被当真实动作；观察关联过旧（推理前 observation_id；数据侧默认 1s） | `uga/control/execution_receipt.py`（新增回执模块）；`uga/control/scheduler.py`（逐原语发布）；`uga/agent/closed_loop.py`（执行证据门+回执记录）；`uga/core/agent_loop.py`（回执泵+提交接线）；`uga/dataset/processor.py`（数据侧归 D14） | D04、D10、D14 |
 | F13 | P2 | S | open | 正常成功回复未更新 last_raw_reply，看板摘要空/陈旧 | `uga/policy/grounded_vlm.py::GroundedVlmPlanner.decide` | D10 |
 | F14 | P2 | S+I | open | 高分辨率恢复未真正提高有效分辨率（仅改裁剪 padding） | `uga/policy/grounded_vlm.py::_images`（high_resolution_retry） | D05、D09 |
 | F15 | P1 | S/R | open | 会话持久化无作用域/原子替换/恢复后证据门槛 | `uga/agent/session_state.py`（持久化）；`apps/agent/run.py`（共享 session_state.json） | D07 |
@@ -102,7 +102,8 @@
 ### F12 排队被当成真实动作；观察关联可能过旧（P1 · S）
 - **触发条件：** 执行器最终拒绝/部分原语失败/慢推理超过 1s。
 - **预期行为：** ExecutionReceipt 逐原语回执；accepted≠executed；效果 pending 仅在收到执行证据后开始且 deadline 基于实际执行时刻；记录 execution_observation 供训练对齐，保留 inference_observation 追溯。
-- **修复提交：** 待 D04/D10/D14。 **关闭证据：** 待 T08/T09/T10 回归。
+- **修复提交：** `d3341c2`（2026-09-16，未推送）。落地内容：(1) 新增 `uga/control/execution_receipt.py`：ExecutionReceipt（action_id/proposal_id/primitive/status/at/target/lease 身份/failure_reason + to_envelope 版本化行）与 aggregate_receipts（executed/partial/主导失败状态；全执行才叫 executed，混合即 partial）；(2) ActionScheduler 逐原语发布终态回执（EXECUTED/REJECTED/EXPIRED/FLUSHED，含异常路径），带界环 1024 + drain_receipts()，并补上此前执行器拒绝原语不进任何计数器的守恒缺口（rejected+=1）；(3) ClosedLoopSupervisor.record_execution_receipts 按 submitted_action_ids 精确匹配、每原语恰记一次、首个 EXECUTED 回执锚定效果时钟；observe() 执行证据门：期望原语未全部执行（含部分执行 PARTIAL、全部拒绝、回执迟到超时）一律解析为 not_executed——绝不进效果成功路径、不喂游戏级无效动作阶梯；连续 3 次未执行 → 有界停下（防失焦无限重提案烧模型调用）；(4) start_action/start_recovery_action 增 submitted_action_ids+expected_primitives（默认空 → 旧行为不变），agent_loop 步首回执泵（record_execution_receipts(drain_receipts())）在 observe 之前喂数据；(5) not_executed_actions/consecutive_not_executed_actions 进 diagnostics。
+- **关闭证据：** 15 项新测试全绿：逐原语恰一条终态回执、守卫拒绝回执+计数守恒（scheduled=executed+rejected+expired+flushed+queued）、EXPIRED 回执、flush 逐项回执、环有界（1024 保留最新）、aggregate 四分类、监督器「全拒绝→无效果声明」「部分点击永不记完整」「效果时钟锚定实际执行时刻（50ms vs 450ms 判别）」「未证实等待→到期 fail-closed」「外来回执忽略」；集成级回执泵判别测试（ineffective=1 且 not_executed=0 证明泵接通）；全套件 544 passed + 1 opt-in skip + 103 subtests；ruff/mypy(179) 绿。**数据侧（execution_observation 供训练对齐、Episode 版本化回执表、旧 Episode legacy 标记）归 D14，未计入本条关闭。**
 
 ### F13 正常成功回复未及时更新 last_raw_reply（P2 · S）
 - **触发条件：** 正常有效模型回复，尤其紧随修复/规则快路径。
