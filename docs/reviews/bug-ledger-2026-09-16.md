@@ -135,8 +135,8 @@
 ### F16 持续运行统计无限增长，录制阻塞采集发布（P2 · S/R）
 - **触发条件：** 长时间运行、频繁看板刷新、编码/磁盘变慢。
 - **预期行为：** 有界统计窗口（滚动 P95，全程值用固定内存估计并标注）；发布与录制解耦（不在发布锁内做编码/磁盘 I/O）；队列条目+字节双上限与背压 deadline；训练录制禁止静默丢记录。
-- **修复提交：** `5cc4c45`（2026-09-16，未推送）。(1) `_gaps_ns` 列表 → `deque(maxlen=512)` 滚动环（P95 用环内窗口估计）+ `_gap_max_ns`/`_gap_count` O(1) 全程累计器——stats() 只对小窗口副本（锁外）排序，max 为全程精确值；(2) 录制回调移出发布锁：`_publish` 在锁内发布+计数，录制回调在独立 `_record_lock` 下串行执行（保持 episode 帧顺序）且不阻塞发布/可见性/统计；docstring 同步更新录制可见性语义。EpisodeWriter 既有内存上限未动。
-- **关闭证据：** test_gap_statistics_stay_bounded_over_long_runs（>612 帧后窗口 ≤512、全程 max 精确、计数守恒）+ test_slow_recorder_does_not_block_latest_frame_publication（录制回调停摆时发布继续前进，accepted 增长判别）。全套件 614 passed + 1 skip + 103 subtests；ruff/mypy(184) 绿。**余项（D11 第二批）：** RecorderChannel 队列条目+字节双上限、训练录制禁止静默丢记录、日志轮转——归 D11 第二批/M4 收尾。
+- **修复提交：** `5cc4c45`（2026-09-16，未推送）。(1) `_gaps_ns` 列表 → `deque(maxlen=512)` 滚动环（P95 用环内窗口估计）+ `_gap_max_ns`/`_gap_count` O(1) 全程累计器——stats() 只对小窗口副本（锁外）排序，max 为全程精确值；(2) 录制回调移出发布锁：`_publish` 在锁内发布+计数，录制回调在独立 `_record_lock` 下串行执行（保持 episode 帧顺序）且不阻塞发布/可见性/统计；docstring 同步更新录制可见性语义。EpisodeWriter 既有内存上限未动。**第二批 `9e83066`（2026-09-17，未推送）：** ArtifactResourceLimits 新增 `max_recorder_queue_entries`(1024)/`max_recorder_queue_bytes`(64MiB) 双上限；RecorderChannel 重写——submit 接受 weight_bytes，字节预算超限即 TimeoutError（训练录制禁静默丢记录：生产者必须重试或失败），stats() 遥测（pending_entries/bytes/completed/rejected）；**关键修复：submit 不再持锁做阻塞 put**（worker 记录完成需同一把锁，否则队列满即死锁——测试曾挂死暴露此点）。日志轮转已在 D13 覆盖 supervisor.log。
+- **关闭证据：** test_gap_statistics_stay_bounded_over_long_runs（>612 帧后窗口 ≤512、全程 max 精确、计数守恒）+ test_slow_recorder_does_not_block_latest_frame_publication（录制回调停摆时发布继续前进，accepted 增长判别）+ test_recorder_channel_declares_pending_bytes_cap / test_recorder_channel_telemetry_tracks_lifecycle / 既有 order-preservation 测试保持绿。全套件 617 passed + 1 skip + 103 subtests；ruff/mypy(184) 绿。
 
 ### F17 当前 CI 的 Windows 路径字符串断言误报（P1 · C · tests_passed(local)）
 - **触发条件：** 临时路径含 RUNNER~1，PowerShell 解析为 runneradmin。
