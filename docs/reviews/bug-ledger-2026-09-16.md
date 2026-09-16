@@ -15,17 +15,17 @@
 | F01 | P0 | S | tests_passed(local) | 真实入口急停未锁存输入失权 | `apps/agent/run.py::request_stop`；`uga/core/agent_loop.py::step`；`uga/safety/shutdown.py::SafetyShutdown`、`uga/safety/watchdog.py::RuntimeWatchdog` 已接入 | D02、D03、D16 |
 | F02 | P0 | S | tests_passed(local) | ui_back/ui_close/ui_promote 标签被当信任依据 | `uga/agent/closed_loop.py::assess`（保留标签分支要求可信来源）；`uga/core/agent_loop.py`（跳过分支已删除）；`uga/policy/grounded_vlm.py::last_decision_source`（运行时赋值公开属性）；`uga/safety/action_gate.py` | D03、D12 |
 | F03 | P1 | S+I | tests_passed(local) | 禁点校验点(框中心)≠最终点击点(含偏移) | `uga/safety/action_gate.py::resolved_click_point`；`uga/agent/closed_loop.py::ActionValidator`（center+最终落点双查） | D03 |
-| F04 | P1 | S+I | open | 效果验证分支提前 return，pending 可能永不超时 | `uga/agent/closed_loop.py::ClosedLoopSupervisor.observe`（像素稳定候选/锚点分支在总超时判断前返回） | D05 |
+| F04 | P1 | S+I | tests_passed(local) | 效果验证提前 return，pending 可能永不超时 | `uga/agent/closed_loop.py::observe`（稳定候选分支受硬 deadline 约束） | D05 |
 | F05 | P1 | S+I | open | 恢复预算不覆盖 BACK；max_recoveries=0 仍可 BACK | `uga/agent/closed_loop.py::ClosedLoopSupervisor._request_recovery` | D06 |
 | F06 | P1 | S | open | continuous 对终止状态统一重建监督器，计数清零 | `uga/core/agent_loop.py`（continuous factory 重建）；`scripts/run_mumu_autoplay.ps1`（非零退出重启） | D02、D06、D13 |
-| F07 | P1 | S+I | open | region_digest `[::16]` 抽样对部分颜色通道失明 | `uga/agent/closed_loop.py::region_digest` | D05 |
+| F07 | P1 | S+I | tests_passed(local) | region_digest `[::16]` 抽样对部分颜色通道失明 | `uga/agent/closed_loop.py::region_digest`（多通道空间降采样） | D05 |
 | F08 | P1 | S | open | 任务记忆 generation 与主循环 _task_generation 未统一 | `uga/agent/session_state.py::GameSessionState`；`uga/core/agent_loop.py::_task_generation` | D07 |
-| F09 | P1 | S+I | open | 无 required_evidence 时两次高置信 DONE 即判成功 | `uga/agent/closed_loop.py::GoalVerifier._consider_snapshot` | D05 |
+| F09 | P1 | S+I | tests_passed(local) | 无 required_evidence 时两次高置信 DONE 即判成功 | `uga/agent/closed_loop.py::GoalVerifier._consider_snapshot`（屏幕证据强制+上下文守卫） | D05 |
 | F10 | P1 | S | open | VisionRateLimitedError 未被新闭环统一捕获（只捕 BackendUnavailableError） | `uga/policy/vlm_planner.py`（抛出方）；`uga/core/agent_loop.py`、`uga/policy/grounded_vlm.py`（捕获方） | D08 |
 | F11 | P1 | S+I | open | 本地结构化校验比声明 Schema 宽松（float() 强转、混合坐标整体除 1000、confidence 无上界/类型检查） | `uga/policy/grounded_vlm.py`（解析/验证谓词）；`uga/perception/schema.py` | D08、D09 |
 | F12 | P1 | S | tests_passed(local; 运行时部分) | 排队被当真实动作；观察关联过旧（推理前 observation_id；数据侧默认 1s） | `uga/control/execution_receipt.py`（新增回执模块）；`uga/control/scheduler.py`（逐原语发布）；`uga/agent/closed_loop.py`（执行证据门+回执记录）；`uga/core/agent_loop.py`（回执泵+提交接线）；`uga/dataset/processor.py`（数据侧归 D14） | D04、D10、D14 |
 | F13 | P2 | S | open | 正常成功回复未更新 last_raw_reply，看板摘要空/陈旧 | `uga/policy/grounded_vlm.py::GroundedVlmPlanner.decide` | D10 |
-| F14 | P2 | S+I | open | 高分辨率恢复未真正提高有效分辨率（仅改裁剪 padding） | `uga/policy/grounded_vlm.py::_images`（high_resolution_retry） | D05、D09 |
+| F14 | P2 | S+I | tests_passed(local) | 高分辨率恢复未真正提高有效分辨率（仅改裁剪 padding） | `uga/policy/grounded_vlm.py::_images`（总览宽度加倍至 1280 封顶+非升级标记） | D05、D09 |
 | F15 | P1 | S/R | open | 会话持久化无作用域/原子替换/恢复后证据门槛 | `uga/agent/session_state.py`（持久化）；`apps/agent/run.py`（共享 session_state.json） | D07 |
 | F16 | P2 | S/R | open | CaptureHub 间隔统计无限增长全量排序；发布锁内同步录制 | `uga/capture/hub.py`（_gaps_ns、stats、_publish）；`uga/recording/episode_writer.py`（有界，勿误伤） | D11 |
 | F17 | P1 | C | tests_passed(local) | CI DLL 路径短名/长名字符串比较误报（RUNNER~1 vs runneradmin） | `tests/windows/test_release_bundle.py::test_clean_bundle_launches_agent_with_pinned_native_library` | D01 |
@@ -58,10 +58,11 @@
 - **修复提交：** `01e9fe9`（2026-09-16，未推送）。ActionValidator 现对框中心与 `resolved_click_point`（偏移+clamp 后）双查禁点，诱饵检查也改用最终落点；EX06 转为正式回归测试（中心 (0.3,0.3) 安全、偏移 (0.25,0.25) 后落点 (0.55,0.55) 进禁区 → 拒绝；同一动作无偏移时通过）。
 - **关闭证据：** test_pointer_offset_moves_final_point_into_no_click_region（修复前中心检查放行、现按最终落点拒绝）；全套件绿。
 
-### F04 效果验证提前返回使 pending 永不超时（P1 · S+I · EX08）
+### F04 效果验证提前返回使 pending 永不超时（P1 · S+I · EX08 · tests_passed(local)）
 - **触发条件：** 目标持续闪烁/OCR 不再锚定且无语义变化。
 - **预期行为：** 所有分支共享绝对 deadline；稳定候选窗口可刷新但绝不刷新总 deadline；到期统一转 INEFFECTIVE/UNKNOWN。
-- **修复提交：** 待 D05。 **关闭证据：** 待 T11 回归。
+- **修复提交：** `a103d8e`（2026-09-16，未推送）。observe() 引入 `deadline_expired`（elapsed ≥ max(minimum, timeout)）：锚点首次翻转、像素瞬变重置、持续性等待三个分支到期后一律放行到统一超时解析；已稳定候选在到期时按 persistent 解析（有证据的成功），永久动画走 ineffective——候选刷新永不延长总期限。
+- **关闭证据：** EX08 回归 test_effect_deadline_expires_under_permanent_pixel_animation（400ms 候选建立→800ms 瞬变刷新→1200ms 到期强制解析：pending False + ineffective=1）。既有 back-streak 测试曾依赖旧缺陷（冻结时钟+无视期限的候选等待），已按真实时间线修正（单调时钟推进到第二次恢复的真实签发时刻）。全套件 553+1 skip+103 subtests；ruff/mypy(179) 绿。
 
 ### F05 恢复预算不覆盖 BACK；0 也不禁用恢复（P1 · S+I · EX03）
 - **触发条件：** max_recoveries=0 且 profile 允许 back；遇无效动作/循环。
@@ -74,20 +75,22 @@
 - **修复提交：** D02 部分 `871cfc4`：安全 trip（含看门狗/急停）在 observe 循环触发 should_stop → 停止而非重建（回归测试 test_continuous_cannot_clear_safety_trip）；重建本身现在推进 run generation。**剩余归 D06：** 终止原因枚举与白名单重试、run 级恢复预算跨重建、启动脚本（run_mumu_autoplay.ps1）的退出码分类与有界退避重启。
 - **关闭证据：** 待 D06 全量落地后回填。
 
-### F07 region_digest 对部分颜色变化失明（P1 · S+I · EX01）
+### F07 region_digest 对部分颜色变化失明（P1 · S+I · EX01 · tests_passed(local)）
 - **触发条件：** 变化主要落在未采样颜色通道/漏采像素。
 - **预期行为：** 多通道空间降采样（整块 RGB 或亮度+色度），忽略 alpha/stride 填充；同尺寸/格式差异函数有规定。
-- **修复提交：** 待 D05。 **关闭证据：** 待 T12 回归。
+- **修复提交：** `a103d8e`（2026-09-16，未推送）。region_digest 替换 `[::16]` 为确定性空间网格采样（步长 isqrt(面积/4096)，采样数有界），每采样像素 2 字节：Rec.601 亮度（(29B+150G+77R)>>8）+ 通道 XOR——任何颜色通道变化必然可见，alpha 与 stride 填充被忽略；同尺寸/格式下摘要长度确定性相等。
+- **关闭证据：** EX01 回归 test_red_green_channel_change_is_detected（B 常量、G↔R 互换：差异 >0.25 且 _target_changed=True——旧 [::16] 只抽到 B 通道完全失明）+ test_alpha_change_is_not_a_target_change（仅 alpha 变化摘要相等）+ test_digest_sampling_stays_bounded_on_huge_regions（1080p 全帧摘要 ≤ 有界采样）。全套件绿。
 
 ### F08 任务记忆 generation 与执行任务代数未统一（P1 · S）
 - **触发条件：** 推理期间主线切换；“达到10级”→“达到20级”等相似文本。
 - **预期行为：** 唯一 task_generation 来源；任务身份（对象/数量/等级）变化推进代数并使旧请求/动作/效果候选一致失效；模糊相似只抗 OCR 抖动不抹数字差异。
 - **修复提交：** 待 D07。 **关闭证据：** 待 T17 回归。
 
-### F09 无外部证据配置时可仅凭两次高置信 DONE 确认完成（P1 · S+I · EX02）
+### F09 无外部证据配置时可仅凭两次高置信 DONE 确认完成（P1 · S+I · EX02 · tests_passed(local)）
 - **触发条件：** 未配置 goal-evidence，模型连续 DONE；compact 路径把 DONE 映射为 succeeded。
 - **预期行为：** 无明确目标谓词→UNVERIFIED，不写 SUCCESS；证据须同 run/task/window/geometry + 单调新鲜 + 至少两次不同采集；显式 required_evidence 路径不受此影响。
-- **修复提交：** 待 D05。 **关闭证据：** 待 T13/T14 回归。
+- **修复提交：** `a103d8e`（2026-09-16，未推送）。GoalVerifier._consider_snapshot：(1) 删除 fallback_evidence 路径——模型自报 visible_text 不再是目标证据，屏幕 OCR 为空即 UNVERIFIED（两次高置信 DONE 什么都不确认）；(2) 一致性要求从「双方皆空也算一致」改为非空交集；(3) 候选携带 WindowIdentity+geometry/task generation，确认帧上下文不匹配则候选重置于新上下文（禁止跨窗口/任务拼接完成证据，T14）；(4) 两次不同帧+确认窗间隔原有要求保留。显式 required_evidence 路径语义不变。
+- **关闭证据：** EX02 回归 test_done_without_screen_evidence_never_confirms + test_model_claimed_visible_text_is_not_goal_evidence + test_goal_evidence_cannot_span_window_or_task_context（窗口重建后候选重置，第 4 帧才在新上下文内确认）+ 更新后的双帧确认/成功转移测试改用屏幕证据。**运行影响：** 默认配置下 DONE 确认现需两帧真实屏幕 OCR 交集；OCR 空帧上的重复 DONE 保持 REOBSERVE（绝不 SUCCESS）。全套件绿。
 
 ### F10 429 异常分类与新闭环调用者不匹配（P1 · S）
 - **触发条件：** 主模型或验证器返回 HTTP 429。
@@ -110,10 +113,11 @@
 - **预期行为：** per-request 回复摘要；修复另设 attempt 字段。
 - **修复提交：** 待 D10。 **关闭证据：** 待 T23 回归。
 
-### F14 高分辨率恢复未真正提高总览分辨率（P2 · S+I · EX04）
+### F14 高分辨率恢复未真正提高总览分辨率（P2 · S+I · EX04 · tests_passed(local)）
 - **触发条件：** 640 宽、无目标裁剪配置进入 HIGH_RESOLUTION。
 - **预期行为：** 重试真正提升有效像素（总览加倍或高清 ROI），记录前后尺寸/字节；已达上限则标无法升级并走不同策略。
-- **修复提交：** 待 D05/D09。 **关闭证据：** 待回归。
+- **修复提交：** `a103d8e`（2026-09-16，未推送）。_images 的 high_resolution_retry 现将决策帧总览宽度升至 min(2×max_image_width, 1280)（1280 为 CLI 校验硬顶）；新增 `last_high_resolution_upgraded` 公开标记：已达上限时记 False（非升级）而非假重试。裁剪 padding 逻辑保留。
+- **关闭证据：** EX04 回归 test_high_resolution_retry_doubles_overview_width（1600px 帧：正常 640 → 重试 1280，PNG IHDR 宽度实测）+ test_high_resolution_retry_at_cap_is_recorded_as_non_upgrade（1280 封顶时 upgraded=False）+ 更新既有 cap 测试（1000px 帧在 1280 预算内按全宽发送）。全套件绿。
 
 ### F15 会话持久化无作用域、无原子替换、无恢复后证据门槛（P1 · S/R）
 - **触发条件：** 多 profile/多窗口；崩溃时写入；只读目录；损坏/过时状态。
