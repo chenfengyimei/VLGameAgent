@@ -492,7 +492,10 @@ class GroundedVlmPlanner:
                 raise
             self._schema_supported = False
             reply = self._client.decide(images=images, instruction=instruction)
-            self.last_raw_reply = reply
+        # F13: every response updates the CURRENT request's raw reply before
+        # parsing — a previous request's summary (or its repair text) must
+        # never leak into this decision's journal rows.
+        self.last_raw_reply = reply
         try:
             outcome = self._parse(reply, snapshot, compact=self._compact_output)
             outcome = self._apply_task_panel_fallback(
@@ -712,6 +715,7 @@ class GroundedVlmPlanner:
                 # 对应界面（owner 确认）。模型反复点"主线"栏目标题不开任务
                 # 行，规则层直接点真实任务行触发跳转，10s 冷却防连点。
                 self._last_xiuxian_jump = now_mono
+                self._last_decision_source = "ocr_xiuxian_path_jump_fast"
                 return self._ocr_action(
                     snapshot,
                     xiuxian_line,
@@ -732,6 +736,7 @@ class GroundedVlmPlanner:
                 # 可点的是每个目标行右下方的"前往"按钮——规则层直接点最
                 # 上方未完成目标行的前往，共享 10s 跳转冷却防连点。
                 self._last_xiuxian_jump = now_mono
+                self._last_decision_source = "ocr_xiuxian_objective_goto_fast"
                 return self._ocr_action(
                     snapshot,
                     objective_goto,
@@ -756,6 +761,7 @@ class GroundedVlmPlanner:
             ):
                 # 摆摊出售页：点物品格子（图标在等级标签上方）打开出售对话框。
                 self._last_stall_item_click = now_mono
+                self._last_decision_source = "ocr_stall_item_fast"
                 return self._ocr_action(
                     snapshot,
                     item_cell,

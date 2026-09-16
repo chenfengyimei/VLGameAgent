@@ -1466,6 +1466,37 @@ class GroundedVlmTests(unittest.TestCase):
         self.assertEqual(outcome.kind, DecisionKind.ABSTAIN)
         self.assertEqual(outcome.goal_status, GoalStatus.UNKNOWN)
 
+    def test_valid_first_reply_updates_current_request_summary(self) -> None:
+        # F13: the journal reply_head must show THIS decision's reply — the
+        # normal first-success path updates last_raw_reply before parsing.
+        reply_text = _reply()
+        client = _Client([reply_text])
+        planner = GroundedVlmPlanner(client)
+
+        planner.decide(snapshot=_snapshot(), frames=(_large_frame(100),), goal="打开设置")
+
+        self.assertEqual(planner.last_raw_reply, reply_text)
+
+    def test_previous_repair_reply_does_not_leak_to_next_decision(self) -> None:
+        # F13: a repair reply from decision N must never surface as decision
+        # N+1's summary — the fast-path reset and the fresh response both
+        # overwrite the per-request state.
+        client = _Client(["not json", "still not json", _reply()])
+        planner = GroundedVlmPlanner(client)
+
+        abstained = planner.decide(
+            snapshot=_snapshot(), frames=(_large_frame(100),), goal="打开设置"
+        )
+        self.assertEqual(abstained.kind, DecisionKind.ABSTAIN)
+        self.assertIn("not json", planner.last_raw_reply or "")
+
+        resolved = planner.decide(
+            snapshot=_snapshot(), frames=(_large_frame(100),), goal="打开设置"
+        )
+        self.assertEqual(resolved.kind, DecisionKind.ACT)
+        self.assertEqual(planner.last_raw_reply, _reply())
+        self.assertNotIn("not json", planner.last_raw_reply or "")
+
     def test_repair_prompt_includes_the_cross_field_validation_error(self) -> None:
         invalid = json.loads(_reply())
         invalid["wait_reason"] = "no_safe_action"

@@ -851,6 +851,10 @@ class GameSessionState:
 
     def to_envelope(self) -> dict[str, object]:
         quest = self.latest_main_task
+        # D10: the dashboard HTTP thread calls this while the agent loop may
+        # append to the deque — iterate a snapshot copy so a concurrent
+        # append cannot raise "deque mutated during iteration".
+        recent = list(self.recent_actions)
         return {
             "latest_main_task": None
             if quest is None
@@ -871,7 +875,7 @@ class GameSessionState:
                     "effect": trace.effect,
                     "physical_point": trace.physical_point,
                 }
-                for trace in self.recent_actions
+                for trace in recent
             ],
             "last_verified_progress_at_ns": self.last_verified_progress_at_ns,
         }
