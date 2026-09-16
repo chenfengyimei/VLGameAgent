@@ -41,6 +41,12 @@ from uga.perception.schema import (
     WaitReason,
 )
 from uga.policy.decision_journal import DecisionJournal, DecisionRecord, NullJournal
+from uga.policy.structured_output import (
+    strict_bounded_text,
+    strict_confidence_value,
+    strict_coordinates,
+    strict_unit_interval_number,
+)
 from uga.policy.vlm_planner import PlannerReplyError, encode_frame_png
 
 GROUNDING_RESPONSE_FORMAT: dict[str, Any] = {
@@ -1465,7 +1471,9 @@ class GroundedVlmPlanner:
             payload = wrapped
         try:
             kind = DecisionKind(str(payload["kind"]))
-            confidence = float(payload["confidence"])
+            # F11: booleans, strings, NaN/Infinity and out-of-range values are
+            # rejected instead of coerced through float().
+            confidence = strict_unit_interval_number(payload["confidence"])
             if compact:
                 goal_status = (
                     GoalStatus.SUCCEEDED
@@ -1532,29 +1540,33 @@ class GroundedVlmPlanner:
         box_raw = value.get("target_bbox")
         box: NormalizedBox | None = None
         if box_raw is not None:
-            if not isinstance(box_raw, list) or len(box_raw) != 4:
-                raise PlannerReplyError("target_bbox must contain four normalized numbers")
             try:
-                coordinates = tuple(float(item) for item in box_raw)
-                if any(item > 1.0 for item in coordinates):
-                    if any(item < 0.0 or item > 1000.0 for item in coordinates):
-                        raise PlannerReplyError("target_bbox is outside normalized or 0-1000 space")
-                    coordinates = tuple(item / 1000.0 for item in coordinates)
+                # F11/EX07: strict numbers only (no bool, no string coercion,
+                # no NaN/Inf) and ONE consistent coordinate space per frame —
+                # a unit fraction next to a 0-1000 pixel value is rejected,
+                # never silently rescaled.
+                coordinates = strict_coordinates(box_raw)
                 box = NormalizedBox(*coordinates)
             except (TypeError, ValueError, ContractViolation) as exc:
-                raise PlannerReplyError("target_bbox is invalid") from exc
+                raise PlannerReplyError(f"target_bbox is invalid: {exc}") from exc
         try:
             key_raw = value.get("key")
             return GroundedAction(
                 GuiActionKind(str(value["kind"])),
-                str(value["target_label"]),
+                strict_bounded_text(
+                    value["target_label"], max_chars=120, field="target_label"
+                ),
                 box,
                 (
                     f"visible state changes after {value['target_label']}"
                     if compact
-                    else str(value["expected_effect"])
+                    else strict_bounded_text(
+                        value["expected_effect"],
+                        max_chars=300,
+                        field="expected_effect",
+                    )
                 ),
-                float(value["confidence"]),
+                strict_unit_interval_number(value["confidence"]),
                 ActionRisk.LOW if compact else ActionRisk(str(value["risk"])),
                 None if key_raw is None else str(key_raw),
             )
@@ -1631,10 +1643,13 @@ class GroundedOutcomeVerifier:
                 response_format=VERIFIER_RESPONSE_FORMAT,
             )
             payload = json.loads(reply)
+            # F11: bool/str/NaN confidences never masquerade as a pass.
+            confidence = strict_confidence_value(payload.get("confidence"))
             return (
                 isinstance(payload, dict)
                 and payload.get("approved") is True
-                and float(payload.get("confidence", -1)) >= self._threshold
+                and confidence is not None
+                and confidence >= self._threshold
                 and isinstance(payload.get("reason"), str)
             )
         except (BackendUnavailableError, TypeError, ValueError, json.JSONDecodeError):

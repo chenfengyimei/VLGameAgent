@@ -34,6 +34,14 @@ from uga.core.errors import BackendUnavailableError, ContractViolation
 from uga.policy.action_chunk import ActionButton, ActionChunk
 from uga.policy.decision_journal import DecisionJournal, DecisionRecord, NullJournal
 from uga.policy.fast_policy import FastPolicyOutput, PolicyContext
+from uga.policy.vision_transport import (
+    ProviderError,
+    ProviderErrorKind,
+    VisionRateLimitedError,
+    classify_provider_failure,
+    redact_error_detail,
+    validate_vision_endpoint,
+)
 from uga.time.clock import ClockBackend, PerfCounterClock, UGATime
 from uga.windows.coordinates import Rect
 
@@ -57,8 +65,10 @@ class PlannerReplyError(ContractViolation):
     """The vision model reply could not be parsed into a valid action."""
 
 
-class VisionRateLimitedError(Exception):
-    """The provider throttled the request; wait longer, do not count a failure."""
+# F10: the historical rate-limit exception is now the unified transport type
+# (a BackendUnavailableError subclass), so existing catch sites keep working
+# while new code branches on ProviderError.kind / .fatal.
+
 
 
 def encode_frame_png(frame: Frame, *, max_width: int = 960) -> bytes:
@@ -185,9 +195,7 @@ class OpenAICompatibleVisionClient:
             raise ContractViolation(
                 "vision client output budget must be an integer within [64, 16384]"
             )
-        root = base_url.rstrip("/")
-        if not root.endswith("/chat/completions"):
-            root = root + "/chat/completions"
+        root = validate_vision_endpoint(base_url)
         self._endpoint = root
         self._model = model
         self._api_key = api_key
@@ -260,42 +268,54 @@ class OpenAICompatibleVisionClient:
                     raise BackendUnavailableError("vision endpoint response is too large")
                 body = json.loads(raw.decode("utf-8"))
         except urllib.error.HTTPError as exc:
-            if exc.code == 429:
-                # Rate limiting is not an outage: the caller must back off and
-                # keep running instead of counting the provider as dead.
-                raise VisionRateLimitedError("vision endpoint rate limited") from exc
-            # The error body carries the provider's reason (e.g. DashScope
-            # Arrearage when the account runs out of credit) — surface it or
-            # the run log hides the actual cause behind a bare status code.
             detail = ""
             with contextlib.suppress(OSError, ValueError):
-                detail = exc.read(MAX_VISION_ERROR_DETAIL_BYTES).decode(
-                    "utf-8", "replace"
-                )[:200]
+                detail = redact_error_detail(
+                    exc.read(MAX_VISION_ERROR_DETAIL_BYTES).decode("utf-8", "replace")
+                )
+            kind, fatal = classify_provider_failure(exc.code, detail)
+            retry_after_s: float | None = None
+            if exc.code == 429 and exc.headers is not None:
+                with contextlib.suppress(TypeError, ValueError):
+                    retry_after_s = max(0.0, float(exc.headers.get("Retry-After", "")))
+            if kind is ProviderErrorKind.RATE_LIMIT:
+                raise VisionRateLimitedError(
+                    "vision endpoint rate limited", retry_after_s=retry_after_s
+                ) from exc
             message = f"vision endpoint returned HTTP {exc.code}: {detail}"
-            if exc.code in {400, 422} and any(
-                token in detail.casefold()
-                for token in ("response_format", "json_schema", "structured output")
-            ):
+            if kind is ProviderErrorKind.UNSUPPORTED_CAPABILITY:
                 message = f"structured output unsupported: {detail}"
-            raise BackendUnavailableError(
-                message
+            raise ProviderError(
+                kind, message, fatal=fatal, status=exc.code
             ) from exc
-        except (urllib.error.URLError, TimeoutError, OSError, ValueError) as exc:
-            raise BackendUnavailableError(f"vision endpoint unreachable: {exc}") from exc
+        except TimeoutError as exc:
+            raise ProviderError(
+                ProviderErrorKind.TIMEOUT, f"vision endpoint timed out: {exc}"
+            ) from exc
+        except (urllib.error.URLError, OSError, ValueError) as exc:
+            raise ProviderError(
+                ProviderErrorKind.UNREACHABLE, f"vision endpoint unreachable: {exc}"
+            ) from exc
         try:
             message = body["choices"][0]["message"]
         except (KeyError, IndexError, TypeError) as exc:
-            raise BackendUnavailableError("vision reply is missing message content") from exc
+            raise ProviderError(
+                ProviderErrorKind.MALFORMED_OUTPUT,
+                "vision reply is missing message content",
+            ) from exc
         if not isinstance(message, dict):
-            raise BackendUnavailableError("vision reply message is malformed")
+            raise ProviderError(
+                ProviderErrorKind.MALFORMED_OUTPUT, "vision reply message is malformed"
+            )
         reply_text = message.get("content")
         if not isinstance(reply_text, str) or not reply_text.strip():
             # Some providers park everything in reasoning_content when the
             # answer never fits; use it as a last resort so the loop can retry.
             reply_text = message.get("reasoning_content")
         if not isinstance(reply_text, str) or not reply_text.strip():
-            raise BackendUnavailableError("vision reply content is empty")
+            raise ProviderError(
+                ProviderErrorKind.MALFORMED_OUTPUT, "vision reply content is empty"
+            )
         return reply_text
 
 
@@ -966,6 +986,11 @@ class VlmPlannerPolicy:
             self._next_decision_at = time.monotonic() + wait_s
             return self._hold_chunk(context, duration=wait_s)
         except Exception as exc:
+            # F10: fatal provider failures (bad credentials, exhausted quota)
+            # stop the run instead of burning the retry ladder on errors that
+            # cannot succeed.
+            if isinstance(exc, ProviderError) and exc.fatal:
+                raise
             reply_head = f"; reply head: {reply.strip()[:120]!r}" if reply else ""
             self._failures += 1
             self._journal.record(
