@@ -19,14 +19,15 @@
 | F05 | P1 | S+I | tests_passed(local) | 恢复预算不覆盖 BACK；max_recoveries=0 仍可 BACK | `uga/agent/recovery_budget.py`（新增 run 级预算）；`uga/agent/closed_loop.py::_request_recovery/_advance_loop_recovery`（预算门） | D06 |
 | F06 | P1 | S | tests_passed(local) | continuous 对终止状态统一重建监督器，计数清零 | `uga/core/agent_loop.py`（预算耗尽门+重建上限 100）；`scripts/run_mumu_autoplay.ps1`（指数退避+最大 10 次+长跑重置） | D02、D06、D13 |
 | F07 | P1 | S+I | tests_passed(local) | region_digest `[::16]` 抽样对部分颜色通道失明 | `uga/agent/closed_loop.py::region_digest`（多通道空间降采样） | D05 |
-| F08 | P1 | S | open | 任务记忆 generation 与主循环 _task_generation 未统一 | `uga/agent/session_state.py::GameSessionState`；`uga/core/agent_loop.py::_task_generation` | D07 |
+| F08 | P1 | S | tests_passed(local) | 任务记忆 generation 与主循环 _task_generation 未统一 | `uga/agent/session_state.py::GameSessionState.task_generation`（单一来源：任务身份变更推进）；`uga/core/agent_loop.py`（步首同步） | D07 |
+| F15 | P1 | S/R | tests_passed(local) | 会话持久化无作用域/原子替换/恢复后证据门槛 | `uga/agent/session_state.py`（schema/namespace/原子写/隔离/UNTRUSTED_RESTORED）；`apps/agent/run.py`（profile.game_id 绑定） | D07 |
 | F09 | P1 | S+I | tests_passed(local) | 无 required_evidence 时两次高置信 DONE 即判成功 | `uga/agent/closed_loop.py::GoalVerifier._consider_snapshot`（屏幕证据强制+上下文守卫） | D05 |
 | F10 | P1 | S | open | VisionRateLimitedError 未被新闭环统一捕获（只捕 BackendUnavailableError） | `uga/policy/vlm_planner.py`（抛出方）；`uga/core/agent_loop.py`、`uga/policy/grounded_vlm.py`（捕获方） | D08 |
 | F11 | P1 | S+I | open | 本地结构化校验比声明 Schema 宽松（float() 强转、混合坐标整体除 1000、confidence 无上界/类型检查） | `uga/policy/grounded_vlm.py`（解析/验证谓词）；`uga/perception/schema.py` | D08、D09 |
 | F12 | P1 | S | tests_passed(local; 运行时部分) | 排队被当真实动作；观察关联过旧（推理前 observation_id；数据侧默认 1s） | `uga/control/execution_receipt.py`（新增回执模块）；`uga/control/scheduler.py`（逐原语发布）；`uga/agent/closed_loop.py`（执行证据门+回执记录）；`uga/core/agent_loop.py`（回执泵+提交接线）；`uga/dataset/processor.py`（数据侧归 D14） | D04、D10、D14 |
 | F13 | P2 | S | open | 正常成功回复未更新 last_raw_reply，看板摘要空/陈旧 | `uga/policy/grounded_vlm.py::GroundedVlmPlanner.decide` | D10 |
 | F14 | P2 | S+I | tests_passed(local) | 高分辨率恢复未真正提高有效分辨率（仅改裁剪 padding） | `uga/policy/grounded_vlm.py::_images`（总览宽度加倍至 1280 封顶+非升级标记） | D05、D09 |
-| F15 | P1 | S/R | open | 会话持久化无作用域/原子替换/恢复后证据门槛 | `uga/agent/session_state.py`（持久化）；`apps/agent/run.py`（共享 session_state.json） | D07 |
+| F15 | P1 | S/R | tests_passed(local) | 会话持久化无作用域/原子替换/恢复后证据门槛 | `uga/agent/session_state.py`（schema/namespace/原子写/隔离/UNTRUSTED_RESTORED）；`apps/agent/run.py`（profile.game_id 绑定） | D07 |
 | F16 | P2 | S/R | open | CaptureHub 间隔统计无限增长全量排序；发布锁内同步录制 | `uga/capture/hub.py`（_gaps_ns、stats、_publish）；`uga/recording/episode_writer.py`（有界，勿误伤） | D11 |
 | F17 | P1 | C | tests_passed(local) | CI DLL 路径短名/长名字符串比较误报（RUNNER~1 vs runneradmin） | `tests/windows/test_release_bundle.py::test_clean_bundle_launches_agent_with_pinned_native_library` | D01 |
 | G18 | P1 | C/S | tests_passed(local) | Python 作业缺 DLL，5 项 Native 测试静默 skip | `.github/workflows/ci.yml`（新增 native-python-integration 作业） | D01、D16 |
@@ -85,7 +86,8 @@
 ### F08 任务记忆 generation 与执行任务代数未统一（P1 · S）
 - **触发条件：** 推理期间主线切换；“达到10级”→“达到20级”等相似文本。
 - **预期行为：** 唯一 task_generation 来源；任务身份（对象/数量/等级）变化推进代数并使旧请求/动作/效果候选一致失效；模糊相似只抗 OCR 抖动不抹数字差异。
-- **修复提交：** 待 D07。 **关闭证据：** 待 T17 回归。
+- **修复提交：** `4cc5dc9`（2026-09-16，未推送）。GameSessionState 新增 `task_generation`（单一来源）：任务采纳/身份变更（模糊同任务但 quest_level_target 不同，或对象变更）推进；agent_loop 步首同步 `self._task_generation = max(loop, session)`，随后 perception/请求/结果全部携带新代数——旧 outcome 经 generations_consistent 判 stale 丢弃；进度类变化（0/1→1/1）不推进；OCR 抖动走 _same_quest 同任务路径不推进。
+- **关闭证据：** test_level_target_change_advances_the_task_generation（10级→20级两帧推进）、test_object_change_advances_the_task_generation、test_ocr_jitter_does_not_advance、test_progress_change_keeps_the_task_generation、test_stale_outcome_after_task_bump_is_discarded（pre-bump outcome vs post-bump snapshot → "stale" 丢弃，T17）。全套件 574 passed + 1 skip + 103 subtests；ruff/mypy(180) 绿。
 
 ### F09 无外部证据配置时可仅凭两次高置信 DONE 确认完成（P1 · S+I · EX02 · tests_passed(local)）
 - **触发条件：** 未配置 goal-evidence，模型连续 DONE；compact 路径把 DONE 映射为 succeeded。
@@ -120,10 +122,11 @@
 - **修复提交：** `a103d8e`（2026-09-16，未推送）。_images 的 high_resolution_retry 现将决策帧总览宽度升至 min(2×max_image_width, 1280)（1280 为 CLI 校验硬顶）；新增 `last_high_resolution_upgraded` 公开标记：已达上限时记 False（非升级）而非假重试。裁剪 padding 逻辑保留。
 - **关闭证据：** EX04 回归 test_high_resolution_retry_doubles_overview_width（1600px 帧：正常 640 → 重试 1280，PNG IHDR 宽度实测）+ test_high_resolution_retry_at_cap_is_recorded_as_non_upgrade（1280 封顶时 upgraded=False）+ 更新既有 cap 测试（1000px 帧在 1280 预算内按全宽发送）。全套件绿。
 
-### F15 会话持久化无作用域、无原子替换、无恢复后证据门槛（P1 · S/R）
+### F15 会话持久化无作用域、无原子替换、无恢复后证据门槛（P1 · S/R · tests_passed(local)）
 - **触发条件：** 多 profile/多窗口；崩溃时写入；只读目录；损坏/过时状态。
 - **预期行为：** profile_hash+namespace 隔离；版本化 JSON+大小上限；临时文件→fsync→os.replace 原子写；写失败可观察；恢复状态标 UNTRUSTED_RESTORED，未获两张新鲜帧证实不得触发操作。
-- **修复提交：** 待 D07。 **关闭证据：** 待 T27 回归。
+- **修复提交：** `4cc5dc9`（2026-09-16，未推送）。_save_quest_memory：临时文件→flush/fsync→os.replace 原子替换，失败写 last_persistence_error（可观察不静默）；_load_quest_memory：64KiB 大小上限、`uga.session-state/1` schema 校验、profile_id 命名空间隔离（不匹配即忽略）、损坏/超限文件隔离为 `.corrupt-<ns>` 诊断证据并从空会话启动；恢复任务标 restored=True + verified_frames=0，restored_task_unverified 直到两帧新鲜同文本确认；agent_loop 在证实前不向规划器传 quest_text/quest_target_level（快路径无法被未证实记忆触发），context_summary 标注「未在本次运行中证实——仅参考」；run.py 绑定 profile.game_id 命名空间。
+- **关闭证据：** test_atomic_write_leaves_no_torn_state（无残留 tmp、schema/namespace 落盘）、test_corrupt_state_is_quarantined_and_session_starts_empty、test_oversized_state_is_quarantined、test_profile_namespace_isolation、test_restored_task_verifies_after_two_fresh_frames、test_failed_save_is_observable_not_silent（T27）。全套件 574+1 skip+103 subtests 绿。**R 级余项：** 实机崩溃时写入的中间态、只读安装目录，仍需故障注入验证（保持 S/R）。
 
 ### F16 持续运行统计无限增长，录制阻塞采集发布（P2 · S/R）
 - **触发条件：** 长时间运行、频繁看板刷新、编码/磁盘变慢。
