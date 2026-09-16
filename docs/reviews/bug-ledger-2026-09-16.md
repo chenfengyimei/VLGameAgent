@@ -13,7 +13,7 @@
 | 编号 | 优先级 | 证据 | 状态 | 问题 | 主符号/文件 | 修复任务 |
 |---|---|---|---|---|---|---|
 | F01 | P0 | S | tests_passed(local) | 真实入口急停未锁存输入失权 | `apps/agent/run.py::request_stop`；`uga/core/agent_loop.py::step`；`uga/safety/shutdown.py::SafetyShutdown`、`uga/safety/watchdog.py::RuntimeWatchdog` 已接入 | D02、D03、D16 |
-| F02 | P0 | S | tests_passed(local) | ui_back/ui_close/ui_promote 标签被当信任依据 | `uga/agent/closed_loop.py::assess`（保留标签分支要求可信来源）；`uga/core/agent_loop.py`（跳过分支已删除）；`uga/policy/grounded_vlm.py::last_decision_source`（运行时赋值公开属性）；`uga/safety/action_gate.py` | D03、D12 |
+| F02 | P0 | S | tests_passed(local) | ui_back/ui_close/ui_promote 标签被当信任依据 | `uga/agent/closed_loop.py::assess`（保留标签分支要求可信来源）；`uga/core/agent_loop.py`（跳过分支已删除）；`uga/policy/grounded_vlm.py::last_decision_source`（运行时赋值公开属性）；`uga/safety/action_gate.py`；`uga/agent/strategies/`（D12 规则清单化） | D03、D12 |
 | F03 | P1 | S+I | tests_passed(local) | 禁点校验点(框中心)≠最终点击点(含偏移) | `uga/safety/action_gate.py::resolved_click_point`；`uga/agent/closed_loop.py::ActionValidator`（center+最终落点双查） | D03 |
 | F04 | P1 | S+I | tests_passed(local) | 效果验证提前 return，pending 可能永不超时 | `uga/agent/closed_loop.py::observe`（稳定候选分支受硬 deadline 约束） | D05 |
 | F05 | P1 | S+I | tests_passed(local) | 恢复预算不覆盖 BACK；max_recoveries=0 仍可 BACK | `uga/agent/recovery_budget.py`（新增 run 级预算）；`uga/agent/closed_loop.py::_request_recovery/_advance_loop_recovery`（预算门） | D06 |
@@ -52,6 +52,7 @@
 - **预期行为：** 删除按标签放行与 validate_execution_frame 跳过；可信 DecisionSource 由运行时代码赋值；所有来源过统一安全门（校准热点可豁免 OCR 文字 grounding，不豁免运行状态/窗口身份/任务代数/几何/最终落点/禁点/期限）。
 - **修复提交：** `01e9fe9`（2026-09-16，未推送）。落地内容：(1) 新增 `uga/safety/action_gate.py` 统一门原语：`is_trusted_deterministic_source`（仅 ocr_* 规则来源可信，模型 JSON 自报无权限）、`resolved_click_point`（最终落点）、`point_is_clickable`（禁点+诱饵）、`generations_consistent`（请求/窗口/几何/任务代数一致性，单一实现供所有来源复用）。(2) assess() 保留标签分支现在要求可信来源 + 生成守卫 + 最终落点门，任一失败 REOBSERVE/BLOCK；模型自报 ui_back/ui_close 落入 back-intent 路由→校准热点（模型自己的 box 永不执行）；ui_promote 无可信来源即走正常验证。(3) 主循环删除 validate_execution_frame 跳过分支：location_calibrated 出口改为共享 `validate_execution_context`（窗口身份/几何仍强制，仅豁免像素动画）；RECOVER 恢复点击同样过执行上下文守卫，窗口重建后不执行。(4) to_recovery_gui_action 校准热点过禁点门，不通过则回退键绑定，无键则 fail-closed。(5) GroundedVlmPlanner 暴露 `last_decision_source` 属性（此前 agent_loop getattr 读的是不存在的公开名，永远 None——顺手修复），agent_loop 将其传入 assess。(6) _is_back_intent 增加 ui_back/ui_close 标签集合（无特权来源时路由）。
 - **关闭证据：** 4 项新安全负例全绿：模型自报 ui_back 的原始 box 被丢弃且点击重锚到校准热点、可信来源出口落点进禁区被拒（REOBSERVE）、可信出口在窗口重建（generation 变化）后 REOBSERVE、框中心安全但偏移后落点进禁区被拒（EX06 回归）；全套件 529 passed + 1 opt-in skip + 103 subtests；ruff/mypy(178) 绿。注意：schema 校验 pointer_offset ∈ [-0.25,0.25]，EX06 的"任意偏移进禁区"被限制在合法偏移范围内复现。
+- **D12 补充（`624ea60`，2026-09-16，未推送）：** 新增 `uga/agent/strategies/`——StrategyRule（name/source/game_id/summary/allowed_action/risk/effect/cooldown）+ StrategyRegistry（来源唯一性、game 归属校验、allows_fast_paths）+ registry_for(game_id)（未知游戏=空注册表）；mumu-xianyu 清单 14 条规则数据化（页面前置/允许动作/风险/效果/冷却）。GroundedVlmPlanner 接 `strategy_registry`：None=兼容默认（全部来源，单元测试）；显式注册表按 profile 圈定——run.py 对 mumu-xianyu 传满清单，**通用 profile 得到空注册表，全部游戏快路径禁用**（决策回落视觉模型）。测试证明：空注册表下 MuMu 弹窗取消快路径返回 None，注册后恢复；顺手修复弹窗取消分支漏打 `_last_decision_source` 的来源标记缺失（该来源曾永远显示 model）。
 
 ### F03 禁点校验点与最终点击点不同（P1 · S+I · EX06 · tests_passed(local)）
 - **触发条件：** 目标框配置非零 pointer_offset（协议勾选、物品格规则已使用）。
