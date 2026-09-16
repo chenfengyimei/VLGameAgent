@@ -33,7 +33,7 @@
 | G18 | P1 | C/S | tests_passed(local) | Python 作业缺 DLL，5 项 Native 测试静默 skip | `.github/workflows/ci.yml`（新增 native-python-integration 作业） | D01、D16 |
 | R19 | P1 | R | tests_passed(local; 传输层) | 模型网络出口/秘密/隐私边界不显式 | `uga/policy/vision_transport.py`（HTTPS 强制回环例外/userinfo/凭据 query 拒绝、redact_error_detail 凭据脱敏）；`uga/policy/vlm_planner.py`（接线） | D08、D09、D10、D13 |
 | R20 | P1 | R | open | “确定/提交”类 OCR 快规则缺页面语境授权；协议勾选提案期置位 | `uga/policy/grounded_vlm.py`（快规则）；`uga/agent/session_state.py` | D03、D12 |
-| R21 | P1 | R | open | FFI init/响应/关闭缺外层 deadline（通道等待/线程 join） | `native/crates/uga-capture/src/ffi.rs`；`uga/capture/native_adapter.py` | D16 |
+| R21 | P1 | R | tests_passed(local; 可注入部分) | FFI init/响应/关闭缺外层 deadline（通道等待/线程 join） | `native/crates/uga-capture/src/ffi.rs`（响应 recv_timeout+初始化 deadline+poisoned 会话跳过 join；cargo test 验证）；`uga/capture/native_adapter.py` | D16 |
 | G22 | P1 | S | open | 正式训练/发布能力与证据未完成（CPU smoke≠五阶段真实训练） | `uga/training/behavior_cloning.py`、`uga/training/veomni.py`；`docs/status/uga-v1-status.md` | D14、D15、D18 |
 | C23 | P1 | D/S | open | GLM-5.3-Flash thinking.type 仅支持 enabled，与 --vlm-no-thinking 不兼容 | `scripts/run_mumu_autoplay.ps1`、`apps/agent/run.py`、`uga/policy/{grounded_vlm,vlm_planner}.py` | D09 |
 
@@ -164,7 +164,8 @@
 ### R21 原生调用存在缺少外层期限的阻塞边界（P1 · R）
 - **触发条件：** 驱动/API 卡死、初始化不返回、采集与关闭竞争。
 - **预期行为：** init/响应/关闭均有可观察 deadline；不可取消时受控进程隔离+有限退出；不释放仍在使用的 DLL 句柄。需注入卡住 worker/设备丢失/关闭竞争验证。
-- **修复提交：** 待 D16。 **关闭证据：** 待故障注入（未复现前保持 R）。
+- **修复提交：** `8ab5e9a`（2026-09-16，未推送）。ffi.rs 三处有界化：(1) `capture_frame` 响应等待改 `recv_timeout(timeout_ms + 2s grace)`——超时即置 `poisoned=true` 并断开命令通道（后续捕获立即 STATUS_INTERNAL 失败，不再排队于卡死 worker 后），返回 STATUS_TIMEOUT；(2) `create_handle` 初始化等待加 10s deadline——超时 detach worker（迟到的初始化完成会经断开的通道自行退出），返回 INTERNAL；(3) `uga_capture_destroy` 对 poisoned 会话**跳过 worker.join()**——故意泄漏卡死的 OS 线程（其若恢复会经断开通道自行退出），换取调用方有界关闭。
+- **关闭证据（可注入部分）：** 3 项 Rust 故障注入测试（cargo test 7 全过）：无响应 worker→STATUS_TIMEOUT+poisoned（50ms~2.05s 有界）、后续捕获 STATUS_INTERNAL 快速失败（协议失步防护）、poisoned 会话的 destroy 有界返回（parked worker 永不 join）；重建 release DLL 后 Python 侧 5 项 native capture 测试全过。**NOT_RUN（需实机/授权）：** 真实驱动卡死注入、设备丢失注入、DPI/双屏/UIPI 矩阵、采集进程隔离架构（若泄漏线程不可接受）。
 
 ### G22 训练/发布的正式能力与证据尚未完成（P1 · S）
 - **触发条件：** 把 smoke checkpoint/接口 Protocol/历史报告当正式训练或 V1 完成。
