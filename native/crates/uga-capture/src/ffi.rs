@@ -2,8 +2,9 @@ use std::cell::RefCell;
 use std::ffi::{c_char, c_void};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::ptr;
-use std::sync::mpsc::{SyncSender, sync_channel};
+use std::sync::mpsc::{RecvTimeoutError, SyncSender, sync_channel};
 use std::thread::{self, JoinHandle};
+use std::time::Duration;
 
 use windows::Win32::Foundation::HWND;
 
@@ -18,6 +19,11 @@ const STATUS_TARGET_LOST: i32 = 5;
 const STATUS_INTERNAL: i32 = 6;
 const BACKEND_WGC: u32 = 1;
 const BACKEND_DXGI: u32 = 2;
+// R21: bounded waits around every cross-thread capture boundary. A driver
+// that exceeds its own capture timeout by this grace margin is treated as
+// stuck; the session is abandoned instead of hanging the caller forever.
+const RESPONSE_GRACE_MS: u64 = 2_000;
+const INIT_DEADLINE_MS: u64 = 10_000;
 
 thread_local! {
     static LAST_ERROR: RefCell<String> = const { RefCell::new(String::new()) };
@@ -122,6 +128,10 @@ impl From<CaptureError> for NativeError {
 pub struct NativeCaptureHandle {
     commands: SyncSender<CaptureCommand>,
     worker: Option<JoinHandle<()>>,
+    // R21: set when a capture response exceeded its bounded wait. The worker
+    // thread is deliberately abandoned (it may be stuck inside a driver call)
+    // and the session is marked unusable — bounded failure, never a hang.
+    poisoned: bool,
 }
 
 fn set_last_error(message: impl Into<String>) {
@@ -174,27 +184,38 @@ fn create_handle(backend: u32, hwnd: isize) -> Result<NativeCaptureHandle, Nativ
             status: STATUS_INTERNAL,
             message: format!("failed to start capture worker: {error}"),
         })?;
-    match init_receiver.recv() {
+    match init_receiver.recv_timeout(Duration::from_millis(INIT_DEADLINE_MS)) {
         Ok(Ok(())) => Ok(NativeCaptureHandle {
             commands,
             worker: Some(worker),
+            poisoned: false,
         }),
         Ok(Err(error)) => {
             let _ = worker.join();
             Err(error)
         }
-        Err(error) => {
+        Err(RecvTimeoutError::Timeout) => {
+            // R21: bounded initialization. The worker may be stuck inside a
+            // driver call; detach it (a late completion exits on its own via
+            // the dropped channel) instead of hanging the caller forever.
+            drop(worker);
+            Err(NativeError {
+                status: STATUS_INTERNAL,
+                message: "capture worker initialization exceeded the bounded deadline".to_string(),
+            })
+        }
+        Err(RecvTimeoutError::Disconnected) => {
             let _ = worker.join();
             Err(NativeError {
                 status: STATUS_INTERNAL,
-                message: format!("capture worker initialization channel failed: {error}"),
+                message: "capture worker initialization channel failed".to_string(),
             })
         }
     }
 }
 
 fn capture_frame(
-    handle: &NativeCaptureHandle,
+    handle: &mut NativeCaptureHandle,
     timeout_ms: u32,
 ) -> Result<CapturedBgraFrame, NativeError> {
     let (response, receiver) = sync_channel(1);
@@ -208,10 +229,32 @@ fn capture_frame(
             status: STATUS_INTERNAL,
             message: format!("capture worker is unavailable: {error}"),
         })?;
-    receiver.recv().map_err(|error| NativeError {
-        status: STATUS_INTERNAL,
-        message: format!("capture worker response failed: {error}"),
-    })?
+    // R21: bound the response wait. The worker's own capture carries
+    // timeout_ms; a driver that exceeds it by the grace margin is stuck, and
+    // the session must fail bounded instead of hanging the caller forever.
+    let bounded_ms = u64::from(timeout_ms).saturating_add(RESPONSE_GRACE_MS);
+    match receiver.recv_timeout(Duration::from_millis(bounded_ms)) {
+        Ok(result) => result,
+        Err(RecvTimeoutError::Timeout) => {
+            handle.poisoned = true;
+            // Disconnect the command channel: further captures fail fast
+            // instead of queueing behind a stuck worker.
+            let (dead_tx, dead_rx) = sync_channel::<CaptureCommand>(0);
+            drop(dead_rx);
+            handle.commands = dead_tx;
+            Err(NativeError {
+                status: STATUS_TIMEOUT,
+                message: "capture worker did not respond within the bounded wait; session abandoned".to_string(),
+            })
+        }
+        Err(RecvTimeoutError::Disconnected) => {
+            handle.poisoned = true;
+            Err(NativeError {
+                status: STATUS_INTERNAL,
+                message: "capture worker response channel failed".to_string(),
+            })
+        }
+    }
 }
 
 fn export_frame(frame: CapturedBgraFrame) -> UgaCaptureFrame {
@@ -287,7 +330,7 @@ pub unsafe extern "C" fn uga_capture_next(
     }
     match catch_unwind(AssertUnwindSafe(|| {
         // SAFETY: pointers were checked and the caller owns the live handle/output.
-        let capture = unsafe { &*handle };
+        let capture = unsafe { &mut *handle };
         capture_frame(capture, timeout_ms)
     })) {
         Ok(Ok(frame)) => {
@@ -336,6 +379,14 @@ pub unsafe extern "C" fn uga_capture_destroy(handle: *mut NativeCaptureHandle) {
     }
     // SAFETY: ownership of this allocation returns from the caller.
     let mut handle = unsafe { Box::from_raw(handle) };
+    if handle.poisoned {
+        // R21: bounded shutdown. The worker was already abandoned after a
+        // bounded capture wait (it may be stuck inside a driver call);
+        // deliberately leak the stuck OS thread instead of hanging the
+        // caller. If it ever unblocks, the disconnected command channel
+        // makes the worker exit on its own.
+        return;
+    }
     let _ = handle.commands.send(CaptureCommand::Stop);
     if let Some(worker) = handle.worker.take() {
         let _ = worker.join();
@@ -363,4 +414,93 @@ pub unsafe extern "C" fn uga_capture_last_error(buffer: *mut c_char, capacity: u
         }
         bytes.len()
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // R21: a stuck worker (driver never answers) must fail the capture
+    // within the bounded wait and poison the session — never hang the caller.
+    #[test]
+    fn unresponsive_worker_times_out_and_poisons_the_session() {
+        let (commands, receiver) = sync_channel::<CaptureCommand>(1);
+        let worker = thread::Builder::new()
+            .spawn(move || {
+                // Consume the capture command, hold its response channel and
+                // park forever: a driver stuck inside an OS call.
+                if let Ok(CaptureCommand::Capture { response, .. }) = receiver.recv() {
+                    std::mem::forget(response);
+                    loop {
+                        thread::park();
+                    }
+                }
+            })
+            .unwrap();
+        let mut handle = NativeCaptureHandle {
+            commands,
+            worker: Some(worker),
+            poisoned: false,
+        };
+
+        let started = std::time::Instant::now();
+        let error = capture_frame(&mut handle, 50).unwrap_err();
+        let elapsed = started.elapsed();
+
+        assert_eq!(error.status, STATUS_TIMEOUT);
+        assert!(handle.poisoned);
+        assert!(elapsed >= Duration::from_millis(50));
+        assert!(elapsed < Duration::from_secs(5));
+
+        // The poisoned session fails fast (disconnected commands) instead of
+        // queueing behind the stuck worker.
+        let followup = capture_frame(&mut handle, 50).unwrap_err();
+        assert_eq!(followup.status, STATUS_INTERNAL);
+    }
+
+    #[test]
+    fn poisoned_handle_capture_fails_fast_without_worker() {
+        let (commands, receiver) = sync_channel::<CaptureCommand>(1);
+        let _unused = receiver;  // the dead peer is the point of this fixture
+        let mut handle = NativeCaptureHandle {
+            commands,
+            worker: None,
+            poisoned: true,
+        };
+
+        let started = std::time::Instant::now();
+        let error = capture_frame(&mut handle, 50).unwrap_err();
+
+        // The command channel has no live receiver, so the bounded response
+        // wait expires: the failure is a timeout, and it is bounded by
+        // timeout_ms + RESPONSE_GRACE_MS instead of hanging forever.
+        assert_eq!(error.status, STATUS_TIMEOUT);
+        assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    // R21: destroy must have a bounded duration even for a poisoned session
+    // whose worker thread is parked forever (deliberate leak instead of a
+    // hanging join).
+    #[test]
+    fn destroy_poisoned_handle_is_bounded() {
+        let (commands, receiver) = sync_channel::<CaptureCommand>(1);
+        let _live_receiver = receiver;  // keep the worker's recv() alive
+        let worker = thread::Builder::new()
+            .spawn(|| loop {
+                std::thread::park();
+            })
+            .unwrap();
+        let handle = NativeCaptureHandle {
+            commands,
+            worker: Some(worker),
+            poisoned: true,
+        };
+        let ptr = Box::into_raw(Box::new(handle));
+
+        let started = std::time::Instant::now();
+        // SAFETY: the pointer comes from Box::into_raw immediately above.
+        unsafe { uga_capture_destroy(ptr) };
+
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
+    }
 }
