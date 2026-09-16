@@ -16,8 +16,8 @@
 | F02 | P0 | S | tests_passed(local) | ui_back/ui_close/ui_promote 标签被当信任依据 | `uga/agent/closed_loop.py::assess`（保留标签分支要求可信来源）；`uga/core/agent_loop.py`（跳过分支已删除）；`uga/policy/grounded_vlm.py::last_decision_source`（运行时赋值公开属性）；`uga/safety/action_gate.py` | D03、D12 |
 | F03 | P1 | S+I | tests_passed(local) | 禁点校验点(框中心)≠最终点击点(含偏移) | `uga/safety/action_gate.py::resolved_click_point`；`uga/agent/closed_loop.py::ActionValidator`（center+最终落点双查） | D03 |
 | F04 | P1 | S+I | tests_passed(local) | 效果验证提前 return，pending 可能永不超时 | `uga/agent/closed_loop.py::observe`（稳定候选分支受硬 deadline 约束） | D05 |
-| F05 | P1 | S+I | open | 恢复预算不覆盖 BACK；max_recoveries=0 仍可 BACK | `uga/agent/closed_loop.py::ClosedLoopSupervisor._request_recovery` | D06 |
-| F06 | P1 | S | open | continuous 对终止状态统一重建监督器，计数清零 | `uga/core/agent_loop.py`（continuous factory 重建）；`scripts/run_mumu_autoplay.ps1`（非零退出重启） | D02、D06、D13 |
+| F05 | P1 | S+I | tests_passed(local) | 恢复预算不覆盖 BACK；max_recoveries=0 仍可 BACK | `uga/agent/recovery_budget.py`（新增 run 级预算）；`uga/agent/closed_loop.py::_request_recovery/_advance_loop_recovery`（预算门） | D06 |
+| F06 | P1 | S | tests_passed(local) | continuous 对终止状态统一重建监督器，计数清零 | `uga/core/agent_loop.py`（预算耗尽门+重建上限 100）；`scripts/run_mumu_autoplay.ps1`（指数退避+最大 10 次+长跑重置） | D02、D06、D13 |
 | F07 | P1 | S+I | tests_passed(local) | region_digest `[::16]` 抽样对部分颜色通道失明 | `uga/agent/closed_loop.py::region_digest`（多通道空间降采样） | D05 |
 | F08 | P1 | S | open | 任务记忆 generation 与主循环 _task_generation 未统一 | `uga/agent/session_state.py::GameSessionState`；`uga/core/agent_loop.py::_task_generation` | D07 |
 | F09 | P1 | S+I | tests_passed(local) | 无 required_evidence 时两次高置信 DONE 即判成功 | `uga/agent/closed_loop.py::GoalVerifier._consider_snapshot`（屏幕证据强制+上下文守卫） | D05 |
@@ -64,16 +64,17 @@
 - **修复提交：** `a103d8e`（2026-09-16，未推送）。observe() 引入 `deadline_expired`（elapsed ≥ max(minimum, timeout)）：锚点首次翻转、像素瞬变重置、持续性等待三个分支到期后一律放行到统一超时解析；已稳定候选在到期时按 persistent 解析（有证据的成功），永久动画走 ineffective——候选刷新永不延长总期限。
 - **关闭证据：** EX08 回归 test_effect_deadline_expires_under_permanent_pixel_animation（400ms 候选建立→800ms 瞬变刷新→1200ms 到期强制解析：pending False + ineffective=1）。既有 back-streak 测试曾依赖旧缺陷（冻结时钟+无视期限的候选等待），已按真实时间线修正（单调时钟推进到第二次恢复的真实签发时刻）。全套件 553+1 skip+103 subtests；ruff/mypy(179) 绿。
 
-### F05 恢复预算不覆盖 BACK；0 也不禁用恢复（P1 · S+I · EX03）
-- **触发条件：** max_recoveries=0 且 profile 允许 back；遇无效动作/循环。
+### F05 恢复预算不覆盖 BACK；0 也不禁用恢复（P1 · S+I · EX03 · tests_passed(local)）
+- **触发条件：** 配置允许 back，且遇到无效动作或循环。
 - **预期行为：** run 级预算由组合根持有，所有恢复（含 BACK、高分辨率重试）共用；0=禁用全部恢复。
-- **修复提交：** 待 D06。 **关闭证据：** 待 T15 回归。
+- **修复提交：** `0e398c2`（2026-09-16，未推送）。新增 `uga/agent/recovery_budget.py`（fail-closed 计数器，limit=0 拒绝一切，1/2 覆盖每一种实际恢复）；ClosedLoopSupervisor 构造器接 `recovery_budget`（未传入时用 max_recoveries 建本地预算，语义不变）；_request_recovery 与 _advance_loop_recovery 的每个实际恢复（HIGH_RESOLUTION 与 BACK）在签发前消费预算，耗尽即 _stop_blocked（理由含 consumed/limit）；组合根 run.py 创建共享预算传入监督器与 agent_loop——监督器重建继承同一预算，会计不可重置。
+- **关闭证据：** EX03 回归 test_zero_budget_blocks_every_recovery_including_back（max=0 + back 绑定 → BLOCKED、无 BACK 指令）+ test_budget_survives_supervisor_rebuild（重建后预算仍耗尽→blocked）+ 预算单元测试 + 诊断暴露 consumed/limit/exhausted。全套件 562 passed + 1 skip + 103 subtests；ruff/mypy(180) 绿。
 
-### F06 continuous 对终止状态统一重建监督器（P1 · S · open；安全锁存部分已由 D02 关闭）
+### F06 continuous 对终止状态统一重建监督器（P1 · S · tests_passed(local)）
 - **触发条件：** 反复 BLOCKED/FAILED；启动脚本非零退出无限重启。
 - **预期行为：** 按终止原因分类（SUCCESS/USER_STOP/SAFETY_TRIP/MANUAL_REQUIRED/AUTH_FAILURE/TRANSIENT_FAILURE/RECOVERY_EXHAUSTED）；安全停止与预算耗尽不得自动复位。
-- **修复提交：** D02 部分 `871cfc4`：安全 trip（含看门狗/急停）在 observe 循环触发 should_stop → 停止而非重建（回归测试 test_continuous_cannot_clear_safety_trip）；重建本身现在推进 run generation。**剩余归 D06：** 终止原因枚举与白名单重试、run 级恢复预算跨重建、启动脚本（run_mumu_autoplay.ps1）的退出码分类与有界退避重启。
-- **关闭证据：** 待 D06 全量落地后回填。
+- **修复提交：** D02 部分 `871cfc4`（安全 trip 不清零）；D06 部分 `0e398c2`：(1) continuous 重建门——预算耗尽且终止态非 SUCCEEDED 时停止（防止以观察频率自旋重建 blocked 监督器），重建硬上限 100 次/运行；(2) `scripts/run_mumu_autoplay.ps1` 崩溃重启改指数退避+抖动+最大 10 次，长跑（≥300s）后崩溃重置预算，退出 0 仍为用户停止。**剩余归 D13：** 终止原因完整枚举的看板呈现。
+- **关闭证据：** test_continuous_budget_exhaustion_stops_the_rebuild_loop（工厂仅调用 1 次=拒绝重建）+ test_continuous_rebuilds_are_bounded（上限 3 → 工厂共 4 次=初始+3 重建后停止）+ D02 的 test_continuous_cannot_clear_safety_trip。全套件 562+1 skip+103 subtests 绿。
 
 ### F07 region_digest 对部分颜色变化失明（P1 · S+I · EX01 · tests_passed(local)）
 - **触发条件：** 变化主要落在未采样颜色通道/漏采像素。
