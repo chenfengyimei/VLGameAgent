@@ -12,9 +12,12 @@ from uga.agent.closed_loop import (
     RecoveryDirective,
     SupervisedDecision,
     TerminalStatus,
+    _digest_difference,
+    region_digest,
 )
 from uga.agent.session_state import GameSessionState, ScreenType, page_anchor_signature
 from uga.agent.task_graph import RetryPolicy, TaskGraph, TaskNode, TaskStatus
+from uga.capture.frame import BufferHandle
 from uga.control.lease import ControlMode
 from uga.core.errors import ContractViolation
 from uga.environment.profile import PerceptionProfile
@@ -104,19 +107,140 @@ def outcome(
     )
 
 
+class RegionDigestTests(unittest.TestCase):
+    @staticmethod
+    def _bgra_frame(
+        number: int, blue: int, green: int, red: int, alpha: int = 255
+    ):  # type: ignore[no-untyped-def]
+        source = frame(number)
+        pixel = bytes((blue, green, red, alpha))
+        payload = pixel * (source.width * source.height)
+        return replace(
+            source,
+            buffer_handle=BufferHandle(
+                source.buffer_handle.handle_id,
+                source.buffer_handle.kind,
+                len(payload),
+                payload,
+            ),
+        )
+
+    def test_red_green_channel_change_is_detected(self) -> None:
+        # EX01 regression: the old [::16] byte stride sampled one colour
+        # channel of every fourth pixel, so a red↔green swap with constant
+        # blue stayed invisible to every freshness and effect comparison.
+        box = NormalizedBox(0.0, 0.0, 1.0, 1.0)
+        blue_frame = self._bgra_frame(1, 10, 200, 30)
+        swapped = self._bgra_frame(2, 10, 30, 200)
+        difference = _digest_difference(
+            region_digest(blue_frame, box), region_digest(swapped, box)
+        )
+        self.assertGreater(difference, 0.25)
+        self.assertTrue(ActionValidator._target_changed(box, blue_frame, swapped))
+
+    def test_alpha_change_is_not_a_target_change(self) -> None:
+        # Alpha and stride padding must not fake (or mask) progress.
+        box = NormalizedBox(0.0, 0.0, 1.0, 1.0)
+        opaque = self._bgra_frame(1, 10, 200, 30, 255)
+        transparent = self._bgra_frame(2, 10, 200, 30, 0)
+        self.assertEqual(region_digest(opaque, box), region_digest(transparent, box))
+        self.assertFalse(ActionValidator._target_changed(box, opaque, transparent))
+
+    def test_digest_sampling_stays_bounded_on_huge_regions(self) -> None:
+        box = NormalizedBox(0.0, 0.0, 1.0, 1.0)
+        source = frame(1)
+        width = 1920
+        height = 1080
+        payload = bytes([64]) * (width * height * 4)
+        huge = replace(
+            source,
+            width=width,
+            height=height,
+            stride_bytes=width * 4,
+            buffer_handle=BufferHandle(
+                source.buffer_handle.handle_id,
+                source.buffer_handle.kind,
+                len(payload),
+                payload,
+            ),
+        )
+        digest = region_digest(huge, box)
+        # Two bytes per sampled pixel on a bounded grid: never the raw frame.
+        self.assertLessEqual(len(digest), 2 * 4096 * 4)
+        self.assertGreater(len(digest), 0)
+
+
 class GoalVerifierTests(unittest.TestCase):
     def test_done_requires_two_fresh_frames_separated_by_stability_window(self) -> None:
         verifier = GoalVerifier(confirmation_ns=500_000_000)
 
-        self.assertFalse(verifier.consider(outcome(1, kind=DecisionKind.DONE), snapshot(1, 0)))
         self.assertFalse(
             verifier.consider(
-                outcome(2, kind=DecisionKind.DONE), snapshot(2, 499_999_999)
+                outcome(1, kind=DecisionKind.DONE),
+                snapshot(1, 0, visible_text=("任务完成",)),
+            )
+        )
+        self.assertFalse(
+            verifier.consider(
+                outcome(2, kind=DecisionKind.DONE),
+                snapshot(2, 499_999_999, visible_text=("任务完成",)),
             )
         )
         self.assertTrue(
             verifier.consider(
-                outcome(3, kind=DecisionKind.DONE), snapshot(3, 500_000_000)
+                outcome(3, kind=DecisionKind.DONE),
+                snapshot(3, 500_000_000, visible_text=("任务完成",)),
+            )
+        )
+
+    def test_done_without_screen_evidence_never_confirms(self) -> None:
+        # EX02 regression: two high-confidence DONE replies on an OCR-empty
+        # screen used to confirm the goal.  The screen itself must carry the
+        # evidence — a model claim is never proof.
+        verifier = GoalVerifier(confirmation_ns=500_000_000)
+        for number, timestamp in ((1, 0), (2, 600_000_000), (3, 1_200_000_000)):
+            self.assertFalse(
+                verifier.consider(
+                    outcome(number, kind=DecisionKind.DONE), snapshot(number, timestamp)
+                )
+            )
+
+    def test_model_claimed_visible_text_is_not_goal_evidence(self) -> None:
+        # outcome().visible_text is the model's own claim; with the screen
+        # OCR-empty, confirmation must never happen no matter how confident
+        # the reply is.
+        verifier = GoalVerifier(confirmation_ns=500_000_000)
+        for number, timestamp in ((1, 0), (2, 600_000_000)):
+            self.assertFalse(
+                verifier.consider(
+                    outcome(number, kind=DecisionKind.DONE), snapshot(number, timestamp)
+                )
+            )
+
+    def test_goal_evidence_cannot_span_window_or_task_context(self) -> None:
+        # T14 regression: completion evidence must not be spliced across a
+        # window recreation — the new context re-establishes the candidate.
+        verifier = GoalVerifier(confirmation_ns=500_000_000)
+        self.assertFalse(
+            verifier.consider(
+                outcome(1, kind=DecisionKind.DONE),
+                snapshot(1, 0, visible_text=("任务完成",)),
+            )
+        )
+        recreated = snapshot(2, 600_000_000, visible_text=("任务完成",), generation=2)
+        self.assertFalse(
+            verifier.consider(outcome(2, kind=DecisionKind.DONE), recreated)
+        )
+        self.assertFalse(
+            verifier.consider(
+                outcome(3, kind=DecisionKind.DONE),
+                snapshot(3, 700_000_000, visible_text=("任务完成",), generation=2),
+            )
+        )
+        self.assertTrue(
+            verifier.consider(
+                outcome(4, kind=DecisionKind.DONE),
+                snapshot(4, 1_200_000_000, visible_text=("任务完成",), generation=2),
             )
         )
 
@@ -241,6 +365,32 @@ class ClosedLoopSupervisorTests(unittest.TestCase):
             action_effect_timeout_ms=1000,
         )
         self.supervisor = ClosedLoopSupervisor(self.clock, self.profile)
+
+    def test_effect_deadline_expires_under_permanent_pixel_animation(self) -> None:
+        # EX08 regression: a permanently changing target kept refreshing the
+        # stabilization candidate and the wait never ended.  Candidates may
+        # refresh their own window, but the absolute effect deadline must
+        # terminate the wait as ineffective.
+        supervisor = ClosedLoopSupervisor(
+            self.clock, PerceptionProfile(action_effect_timeout_ms=1000)
+        )
+        current = snapshot(1, 0)
+        supervisor.start_action(outcome(1), current, frame(1, 0))
+        self.assertIsNotNone(supervisor._pending)  # type: ignore[attr-defined]
+
+        first = supervisor.observe(snapshot(2, 400_000_000), frame(2, 400_000_000))
+        self.assertTrue(first.pending)
+        self.assertEqual(first.detail, "waiting for target pixel change to stabilize")
+
+        second = supervisor.observe(snapshot(3, 800_000_000), frame(3, 800_000_000))
+        self.assertTrue(second.pending)
+        self.assertEqual(second.detail, "transient target pixels are still changing")
+
+        third = supervisor.observe(snapshot(4, 1_200_000_000), frame(4, 1_200_000_000))
+        self.assertFalse(third.pending)
+        self.assertFalse(third.effect_observed)
+        diagnostics = supervisor.diagnostics()
+        self.assertEqual(diagnostics["ineffective_actions"], 1)
 
     def test_wait_never_becomes_an_executable_action(self) -> None:
         current = snapshot(1, 0)
@@ -783,9 +933,10 @@ class ClosedLoopSupervisorTests(unittest.TestCase):
         self.assertFalse(effect.effect_observed)
 
     def test_done_transitions_to_success_only_after_confirmation(self) -> None:
-        first = snapshot(1, 0)
-        second = snapshot(2, 500_000_000)
-
+        # F09: the confirmation evidence is the SCREEN OCR on both frames;
+        # a model-claimed DONE alone no longer completes the goal.
+        first = snapshot(1, 0, visible_text=("设置",))
+        second = snapshot(2, 500_000_000, visible_text=("设置",))
         pending = self.supervisor.assess(
             outcome(1, kind=DecisionKind.DONE),
             first,
@@ -1573,6 +1724,10 @@ class ClosedLoopSupervisorTests(unittest.TestCase):
         supervisor.observe(snapshot(2, 1_000_000_000), frame(1, 1_000_000_000))
         self.assertEqual(supervisor.diagnostics()["back_recovery_streak"], 1)
 
+        # F04: the stabilization wait now obeys the absolute deadline, so the
+        # second attempt must carry a realistic issue time — the monotonic
+        # clock reflects when this recovery actually started.
+        self.clock.set(1_000_000_000)
         supervisor.start_recovery_action(current, frame(1, 1_000_000_000))
         candidate = supervisor.observe(
             snapshot(3, 1_400_000_000, signature="world-view"), frame(2, 1_400_000_000)

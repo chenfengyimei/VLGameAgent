@@ -55,6 +55,7 @@ from uga.safety.action_gate import (
 )
 from uga.time.clock import ClockBackend, UGATime
 from uga.windows.coordinates import Point
+from uga.windows.window_identity import WindowIdentity
 
 
 class DecisionDisposition(StrEnum):
@@ -139,7 +140,9 @@ class GoalVerifier:
         self._confirmation_ns = confirmation_ns
         self._threshold = threshold
         self._required_evidence = tuple(zip(required_evidence, normalized, strict=True))
-        self._candidate: tuple[UGATime, str, frozenset[str]] | None = None
+        self._candidate: tuple[
+            UGATime, str, frozenset[str], WindowIdentity, int, int
+        ] | None = None
         self.last_missing_evidence: tuple[str, ...] = ()
         self.last_evidence_confidence: float | None = None
 
@@ -180,7 +183,6 @@ class GoalVerifier:
             return False
         return self._consider_snapshot(
             snapshot,
-            fallback_evidence=outcome.visible_text,
             decision_confidence=outcome.confidence,
         )
 
@@ -196,7 +198,6 @@ class GoalVerifier:
         self,
         snapshot: PerceptionSnapshot,
         *,
-        fallback_evidence: tuple[str, ...] = (),
         decision_confidence: float,
     ) -> bool:
         observed_values = tuple(
@@ -218,17 +219,48 @@ class GoalVerifier:
         if combined_confidence < self._threshold:
             self._candidate = None
             return False
-        evidence = observed or frozenset(
-            normalize_visible_text(value)
-            for value in fallback_evidence
-            if normalize_visible_text(value)
-        )
-        if self._candidate is None:
-            self._candidate = (snapshot.captured_at, snapshot.frame_id, evidence)
+        # F09: only the screen itself is goal evidence.  The model's claimed
+        # visible_text is self-report, and an OCR-empty frame means the goal
+        # is UNVERIFIED — two confident DONE replies confirm nothing.
+        if not observed:
+            self._candidate = None
             return False
-        timestamp, frame_id, previous = self._candidate
+        if self._candidate is None:
+            self._candidate = (
+                snapshot.captured_at,
+                snapshot.frame_id,
+                observed,
+                snapshot.window_identity,
+                snapshot.geometry_generation,
+                snapshot.task_generation,
+            )
+            return False
+        (
+            timestamp,
+            frame_id,
+            previous,
+            previous_window,
+            previous_geometry,
+            previous_task,
+        ) = self._candidate
+        if (
+            snapshot.window_identity != previous_window
+            or snapshot.geometry_generation != previous_geometry
+            or snapshot.task_generation != previous_task
+        ):
+            # T14: completion evidence cannot be spliced across a window,
+            # geometry or task boundary — restart on the new context.
+            self._candidate = (
+                snapshot.captured_at,
+                snapshot.frame_id,
+                observed,
+                snapshot.window_identity,
+                snapshot.geometry_generation,
+                snapshot.task_generation,
+            )
+            return False
         elapsed = snapshot.captured_at.value_ns - timestamp.value_ns
-        consistent = not previous or not evidence or bool(previous & evidence)
+        consistent = bool(previous & observed)
         if frame_id != snapshot.frame_id and elapsed >= self._confirmation_ns and consistent:
             self._candidate = None
             return True
@@ -418,11 +450,25 @@ def region_digest(frame: Frame, box: NormalizedBox) -> bytes:
     right = min(frame.width, max(left + 1, int(box.right * frame.width)))
     top = max(0, int(box.top * frame.height))
     bottom = min(frame.height, max(top + 1, int(box.bottom * frame.height)))
-    rows = [
-        bytes(payload[row * frame.stride_bytes + left * 4 : row * frame.stride_bytes + right * 4])
-        for row in range(top, bottom)
-    ]
-    return b"".join(rows)[::16]
+    # F07: the old [::16] byte stride sampled one colour channel of every
+    # fourth pixel, so a pure red or green state change stayed invisible to
+    # every freshness and effect comparison.  Two bytes per sampled pixel —
+    # luminance plus a channel XOR — always cover every colour channel while
+    # ignoring alpha and stride padding, and the deterministic spatial grid
+    # keeps the sampling bounded on huge regions.
+    width = right - left
+    step = max(1, math.isqrt(max(1, width * (bottom - top)) // 4096))
+    stride = frame.stride_bytes
+    digest = bytearray()
+    for row in range(top, bottom, step):
+        base = row * stride + left * 4
+        for offset in range(0, width * 4, step * 4):
+            blue = payload[base + offset]
+            green = payload[base + offset + 1]
+            red = payload[base + offset + 2]
+            digest.append((29 * blue + 150 * green + 77 * red) >> 8)
+            digest.append(blue ^ green ^ red)
+    return bytes(digest)
 
 
 class ClosedLoopSupervisor:
@@ -728,6 +774,11 @@ class ClosedLoopSupervisor:
             target_changed = _digest_difference(pending.target_digest, current_digest) > 0.1
         if elapsed_ns < minimum_ns:
             return EffectObservation(True, None, "waiting for the minimum action effect window")
+        # F04: stabilization candidates may refresh their own windows, but
+        # the absolute effect deadline is never extended — every waiting branch
+        # below must let the flow fall through to the timeout resolution once
+        # the deadline has passed.
+        deadline_expired = elapsed_ns >= max(minimum_ns, timeout_ns)
         # Page-header anchors (灵宠/召唤/布阵/主线 …) are the most stable page
         # transition signal; confirm a flip across two observations so a single
         # OCR miss cannot fake a page change.
@@ -736,11 +787,15 @@ class ClosedLoopSupervisor:
         anchor_confirmed = False
         if anchor_flip and not semantic_changed and not target_changed:
             if pending.anchor_candidate != current_anchors:
-                pending.anchor_candidate = current_anchors
-                return EffectObservation(
-                    True, None, "waiting for the page anchor change to stabilize"
-                )
-            anchor_confirmed = True
+                if not deadline_expired:
+                    pending.anchor_candidate = current_anchors
+                    return EffectObservation(
+                        True, None, "waiting for the page anchor change to stabilize"
+                    )
+                # At the deadline an unconfirmed single-frame flip resolves
+                # honestly below instead of waiting for a confirming frame.
+            else:
+                anchor_confirmed = True
         elif not anchor_flip:
             pending.anchor_candidate = None
         persistent_target_change = False
@@ -749,22 +804,44 @@ class ClosedLoopSupervisor:
         )
         if target_changed and not semantic_changed and not target_still_grounded:
             if pending.pixel_change_candidate_at is None:
-                pending.pixel_change_candidate_at = snapshot.captured_at
-                pending.pixel_change_candidate_digest = current_digest
-                return EffectObservation(True, None, "waiting for target pixel change to stabilize")
-            stable_ns = (
-                snapshot.captured_at.value_ns - pending.pixel_change_candidate_at.value_ns
-            )
-            candidate_stable = (
-                _digest_difference(pending.pixel_change_candidate_digest, current_digest) <= 0.02
-            )
-            if not candidate_stable:
-                pending.pixel_change_candidate_at = snapshot.captured_at
-                pending.pixel_change_candidate_digest = current_digest
-                return EffectObservation(True, None, "transient target pixels are still changing")
-            persistent_target_change = stable_ns >= minimum_ns
-            if not persistent_target_change:
-                return EffectObservation(True, None, "waiting for target pixel change to persist")
+                if not deadline_expired:
+                    pending.pixel_change_candidate_at = snapshot.captured_at
+                    pending.pixel_change_candidate_digest = current_digest
+                    return EffectObservation(
+                        True, None, "waiting for target pixel change to stabilize"
+                    )
+            else:
+                stable_ns = (
+                    snapshot.captured_at.value_ns
+                    - pending.pixel_change_candidate_at.value_ns
+                )
+                candidate_stable = (
+                    _digest_difference(
+                        pending.pixel_change_candidate_digest, current_digest
+                    )
+                    <= 0.02
+                )
+                if not candidate_stable:
+                    if not deadline_expired:
+                        # Animated pages may refresh the stabilization window,
+                        # but never the absolute deadline: permanent animation
+                        # falls through to the timeout resolution below.
+                        pending.pixel_change_candidate_at = snapshot.captured_at
+                        pending.pixel_change_candidate_digest = current_digest
+                        return EffectObservation(
+                            True, None, "transient target pixels are still changing"
+                        )
+                else:
+                    # A stable candidate is real evidence of change; the
+                    # persistence window cannot be extended past the deadline,
+                    # so an already-stable change resolves as persistent.
+                    persistent_target_change = (
+                        stable_ns >= minimum_ns or deadline_expired
+                    )
+                    if not persistent_target_change:
+                        return EffectObservation(
+                            True, None, "waiting for target pixel change to persist"
+                        )
         elif not target_changed or target_still_grounded:
             pending.pixel_change_candidate_at = None
             pending.pixel_change_candidate_digest = b""

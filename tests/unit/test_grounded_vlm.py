@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import struct
 import unittest
 from dataclasses import replace
 
@@ -24,6 +25,7 @@ from uga.policy.grounded_vlm import (
     GroundedVlmPlanner,
     crop_frame,
 )
+from uga.windows.coordinates import Rect
 
 
 class _Provider:
@@ -87,6 +89,62 @@ def _reply(kind: str = "act") -> str:
 
 
 class GroundedVlmTests(unittest.TestCase):
+    @staticmethod
+    def _wide_frame(number: int):  # type: ignore[no-untyped-def]
+        source = frame(number)
+        width = 1600
+        height = 1600
+        payload = bytes([number % 256]) * (width * height * 4)
+        return replace(
+            source,
+            width=width,
+            height=height,
+            stride_bytes=width * 4,
+            physical_rect=Rect(-100, 20, 1500, 1520),
+            client_rect=Rect(0, 0, width, height),
+            buffer_handle=BufferHandle(
+                source.buffer_handle.handle_id,
+                source.buffer_handle.kind,
+                len(payload),
+                payload,
+            ),
+        )
+
+    def test_high_resolution_retry_doubles_overview_width(self) -> None:
+        # EX04 regression: the retry only widened crop padding, which changes
+        # nothing when no crops are configured — the same pixels were re-sent
+        # while a recovery slot was burned.
+        wide = self._wide_frame(1)
+        planner = GroundedVlmPlanner(
+            _Client([]),
+            max_image_width=640,
+            max_temporal_frames=1,
+            max_target_crops=0,
+        )
+        images, _, _ = planner._images((wide,), _snapshot(), "goal", False)
+        normal_width = struct.unpack(">I", images[0][16:20])[0]
+        self.assertEqual(normal_width, 640)
+
+        retry_images, _, _ = planner._images((wide,), _snapshot(), "goal", True)
+        retry_width = struct.unpack(">I", retry_images[0][16:20])[0]
+        self.assertEqual(retry_width, 1280)
+        self.assertTrue(planner.last_high_resolution_upgraded)
+
+    def test_high_resolution_retry_at_cap_is_recorded_as_non_upgrade(self) -> None:
+        wide = self._wide_frame(1)
+        planner = GroundedVlmPlanner(
+            _Client([]),
+            max_image_width=1280,
+            max_temporal_frames=1,
+            max_target_crops=0,
+        )
+        images, _, _ = planner._images((wide,), _snapshot(), "goal", True)
+        width = struct.unpack(">I", images[0][16:20])[0]
+        self.assertEqual(width, 1280)
+        # At the hard cap the retry is recorded as a non-upgrade instead of
+        # silently re-sending identical pixels.
+        self.assertFalse(planner.last_high_resolution_upgraded)
+
     def test_high_confidence_left_task_panel_bypasses_model(self) -> None:
         compact_wait = json.dumps(
             {
@@ -1390,8 +1448,12 @@ class GroundedVlmTests(unittest.TestCase):
             high_resolution_retry=True,
         )
 
+        # F14: the retry now doubles the overview budget up to the 1280 hard
+        # cap (min(2*640, 1280)); the 1000px frame sits under that budget, so
+        # it travels at full width instead of the normal 640 cap.
         overview = client.calls[0]["images"][0]  # type: ignore[index]
-        self.assertEqual(int.from_bytes(overview[16:20], "big"), 640)
+        self.assertEqual(int.from_bytes(overview[16:20], "big"), 1000)
+        self.assertTrue(planner.last_high_resolution_upgraded)
 
     def test_invalid_reply_gets_one_repair_then_abstains(self) -> None:
         client = _Client(["not json", "still not json"])

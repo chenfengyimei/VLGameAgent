@@ -364,6 +364,7 @@ class GroundedVlmPlanner:
         self._login_agreement_clicked = False
         self._last_image_count = 0
         self._last_decision_source = "model"
+        self.last_high_resolution_upgraded: bool | None = None
 
     @property
     def policy_version(self) -> str:
@@ -1218,11 +1219,22 @@ class GroundedVlmPlanner:
     ) -> tuple[list[bytes], int, int]:
         latest = frames[-1]
         temporal = frames[-self._max_temporal_frames :]
+        # F14: a high-resolution recovery must actually raise the effective
+        # pixel budget of the decision frame — widening crop padding alone
+        # changed nothing when no crops were configured.  The overview
+        # doubles up to the 1280 hard cap; at the cap the retry is recorded
+        # as a non-upgrade instead of silently re-sending identical pixels.
+        overview_width = self._max_image_width
+        if high_resolution_retry:
+            overview_width = min(overview_width * 2, 1280)
+        self.last_high_resolution_upgraded = (
+            high_resolution_retry and overview_width > self._max_image_width
+        )
         images = [
             encode_frame_png(
                 frame,
                 max_width=(
-                    self._max_image_width
+                    overview_width
                     if frame is latest
                     else min(self._max_image_width, 768)
                 ),
