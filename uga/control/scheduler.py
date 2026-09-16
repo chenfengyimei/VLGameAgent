@@ -3,17 +3,19 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import heapq
+from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass
 from threading import Lock
 
 from uga.control.arbiter import ArbiterDecision
+from uga.control.execution_receipt import ExecutionPrimitiveStatus, ExecutionReceipt
 from uga.control.executor import ExecutionReason, InputExecutor
 from uga.control.lease import ControlLease
 from uga.control.lease_manager import ControlLeaseManager
 from uga.control.physical import PhysicalAction
 from uga.core.errors import ContractViolation
-from uga.time.clock import ClockBackend
+from uga.time.clock import ClockBackend, UGATime
 from uga.windows.window_identity import WindowIdentity
 
 
@@ -32,12 +34,22 @@ class _ScheduledAction:
     action: PhysicalAction
     target: WindowIdentity
     lease: ControlLease
+    proposal_id: str
 
 
 class ActionScheduler:
-    """Deterministic 30 Hz queue; only arbiter-approved work may enter it."""
+    """Deterministic 30 Hz queue; only arbiter-approved work may enter it.
+
+    Every primitive that enters the heap leaves exactly one terminal
+    ExecutionReceipt (EXECUTED / REJECTED / EXPIRED / FLUSHED) in a bounded
+    ring, so downstream consumers can distinguish "the arbiter accepted it"
+    from "the OS actually received it".  Proposals rejected by the arbiter or
+    dropped as duplicate ids never enter the heap and produce no receipts —
+    they are only counted in ``stats().rejected``.
+    """
 
     DEFAULT_HZ = 30.0
+    _RECEIPT_RING = 1024
 
     def __init__(
         self,
@@ -55,6 +67,7 @@ class ActionScheduler:
         self._expired = 0
         self._rejected = 0
         self._flushed = 0
+        self._receipts: deque[ExecutionReceipt] = deque(maxlen=self._RECEIPT_RING)
         self._lock = Lock()
         leases.register_authority_loss_handler(self.neutralize)
 
@@ -84,7 +97,7 @@ class ActionScheduler:
                     self._rejected += 1
                     continue
                 self._sequence += 1
-                item = _ScheduledAction(action, target, lease)
+                item = _ScheduledAction(action, target, lease, proposal.proposal_id)
                 heapq.heappush(
                     self._heap,
                     (action.lifetime.effective_from.value_ns, self._sequence, item),
@@ -107,22 +120,48 @@ class ActionScheduler:
         for index, item in enumerate(due):
             try:
                 result = self._executor.execute(item.action, item.target, item.lease)
-            except BaseException:
+            except BaseException as exc:
                 with self._lock:
-                    self._flushed += len(due) - index - 1 + self._clear_locked()
+                    self._rejected += 1
+                    self._flushed += len(due) - index - 1 + len(self._clear_locked(now))
+                    self._publish_receipt_locked(
+                        item,
+                        ExecutionPrimitiveStatus.REJECTED,
+                        now,
+                        failure_reason=f"executor exception: {exc}",
+                    )
+                    self._publish_flushed_receipts_locked(due[index + 1 :], now)
                 raise
             with self._lock:
                 if result.executed:
                     self._executed += 1
+                    self._publish_receipt_locked(
+                        item, ExecutionPrimitiveStatus.EXECUTED, result.executed_at
+                    )
                 elif result.reason == ExecutionReason.EXPIRED:
                     self._expired += 1
-                    self._flushed += len(due) - index - 1 + self._clear_locked()
+                    self._flushed += len(due) - index - 1 + len(self._clear_locked(now))
+                    self._publish_receipt_locked(
+                        item,
+                        ExecutionPrimitiveStatus.EXPIRED,
+                        result.executed_at,
+                        failure_reason="action lifetime expired before execution",
+                    )
+                    self._publish_flushed_receipts_locked(due[index + 1 :], now)
                     break
                 else:
                     # A runtime guard failed. Drop all future input so stale work
                     # cannot resume if focus later returns.
                     unexecuted_due = len(due) - index - 1
-                    self._flushed += unexecuted_due + self._clear_locked()
+                    self._rejected += 1
+                    self._flushed += unexecuted_due + len(self._clear_locked(now))
+                    self._publish_receipt_locked(
+                        item,
+                        ExecutionPrimitiveStatus.REJECTED,
+                        result.executed_at,
+                        failure_reason=str(result.reason),
+                    )
+                    self._publish_flushed_receipts_locked(due[index + 1 :], now)
                     break
         return self.stats()
 
@@ -150,15 +189,22 @@ class ActionScheduler:
 
     def flush(self) -> int:
         with self._lock:
-            count = self._clear_locked()
-            self._flushed += count
-            return count
+            cleared = self._clear_locked(self._clock.now())
+            self._flushed += len(cleared)
+            return len(cleared)
 
     def neutralize(self) -> int:
         """Drop queued work and actively release every stateful input backend."""
         count = self.flush()
         self._executor.release_all()
         return count
+
+    def drain_receipts(self) -> tuple[ExecutionReceipt, ...]:
+        """Pop every terminal receipt published since the last drain."""
+        with self._lock:
+            receipts = tuple(self._receipts)
+            self._receipts.clear()
+            return receipts
 
     def stats(self) -> SchedulerStats:
         with self._lock:
@@ -171,8 +217,37 @@ class ActionScheduler:
                 flushed=self._flushed,
             )
 
-    def _clear_locked(self) -> int:
-        count = len(self._heap)
+    def _publish_receipt_locked(
+        self,
+        item: _ScheduledAction,
+        status: ExecutionPrimitiveStatus,
+        at: UGATime,
+        *,
+        failure_reason: str | None = None,
+    ) -> None:
+        self._receipts.append(
+            ExecutionReceipt(
+                action_id=item.action.action_id,
+                proposal_id=item.proposal_id,
+                primitive=type(item.action).__name__,
+                status=status,
+                at=at,
+                target=item.target,
+                lease_id=item.lease.lease_id,
+                lease_generation=item.lease.generation,
+                failure_reason=failure_reason,
+            )
+        )
+
+    def _publish_flushed_receipts_locked(
+        self, items: list[_ScheduledAction], at: UGATime
+    ) -> None:
+        for item in items:
+            self._publish_receipt_locked(item, ExecutionPrimitiveStatus.FLUSHED, at)
+
+    def _clear_locked(self, at: UGATime) -> list[_ScheduledAction]:
+        cleared = [entry[2] for entry in self._heap]
         self._heap.clear()
         self._action_ids.clear()
-        return count
+        self._publish_flushed_receipts_locked(cleared, at)
+        return cleared

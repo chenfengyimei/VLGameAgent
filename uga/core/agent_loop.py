@@ -275,6 +275,13 @@ class RealtimeAgentLoop:
         )
         if self._recorder is not None and not source_records_frames:
             self._recorder.record_frame(pending.frame)
+        if self._closed_loop is not None:
+            # D04: terminal receipts published since the last step (by this
+            # loop's own tick or the scheduler task) feed execution evidence
+            # before effect verification runs.
+            self._closed_loop.record_execution_receipts(
+                self._scheduler.drain_receipts()
+            )
 
         history_items = tuple(
             value for value in self._frames.snapshot() if value.sequence <= pending.sequence
@@ -655,6 +662,11 @@ class RealtimeAgentLoop:
                                 type(item).__name__
                                 for item in gui_submission.physical_actions
                             ),
+                            submitted_action_ids=frozenset(
+                                item.action_id
+                                for item in gui_submission.physical_actions
+                            ),
+                            expected_primitives=len(gui_submission.physical_actions),
                         )
                     else:
                         closed_loop.fail("grounded GUI proposal was rejected")
@@ -742,6 +754,11 @@ class RealtimeAgentLoop:
                                 type(item).__name__
                                 for item in gui_submission.physical_actions
                             ),
+                            submitted_action_ids=frozenset(
+                                item.action_id
+                                for item in gui_submission.physical_actions
+                            ),
+                            expected_primitives=len(gui_submission.physical_actions),
                         )
                     else:
                         closed_loop.fail("recovery GUI proposal was rejected")

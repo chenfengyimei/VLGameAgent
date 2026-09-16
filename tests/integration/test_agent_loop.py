@@ -298,6 +298,75 @@ class AgentLoopTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.scheduler_stats.executed, 3)
         self.assertEqual(len(backend.actions), 3)
 
+    async def test_execution_receipts_feed_effect_verification(self) -> None:
+        # D04: arbiter acceptance only queues work.  The pending action's
+        # effect clock may only start once the primitives actually executed —
+        # observable here because a working receipt pump routes the timed-out
+        # action into the ineffective path, while a broken pump would route it
+        # into not_executed.
+        clock = ManualClock(100)
+        target = identity()
+        frames = FrameRingBuffer()
+        events = EventBus(clock)
+        leases = ControlLeaseManager(clock)
+        backend = DryRunInputBackend()
+        scheduler = ActionScheduler(
+            clock,
+            InputExecutor(
+                clock,
+                backend,
+                FocusGuard(
+                    FakeWindows(target), FakeIntegrity(), leases, AgentEnableState(True)
+                ),
+                leases,
+            ),
+            leases,
+        )
+        arbiter = ActionArbiter(clock, leases)
+        fixture_profile = profile()
+        loop = RealtimeAgentLoop(
+            clock=clock,
+            capture=FixedVisualCaptureSource(frames, clock),
+            frames=frames,
+            observation_builder=ObservationBuilder(
+                clock, "fixture-game", ObservationInputs("open settings")
+            ),
+            observations=TemporalObservationBuffer(),
+            environment=GenericEnvironment(fixture_profile),
+            mode_classifier=RuleModeClassifier(),
+            mode_router=ModeRouter(
+                ControlMode.GUI, confirmation_frames=1, started_at=UGATime(0)
+            ),
+            policy=None,
+            leases=leases,
+            controller=ActionChunkController(
+                GenericEnvironment(fixture_profile), arbiter, scheduler
+            ),
+            scheduler=scheduler,
+            events=events,
+            grounded_planner=GroundedClickPlanner(),
+            perception_builder=PerceptionBuilder(NullTextProvider()),
+            closed_loop=ClosedLoopSupervisor(clock, fixture_profile.perception),
+            gui_controller=GuiActionController(arbiter, scheduler),
+            key_resolver=lambda _: None,
+        )
+
+        first = await loop.step()
+        assert first.gui_submission is not None
+        self.assertEqual(first.scheduler_stats.executed, 3)
+        self.assertEqual(len(backend.actions), 3)
+
+        clock.set(100 + 4_000_000_000)
+        second = await loop.step()
+        del second
+        diagnostics = loop.closed_loop_diagnostics
+        assert diagnostics is not None
+        # The receipt pump fed the pending action before observe() ran, so
+        # the effect clock ran (and timed out into the ineffective path) —
+        # never the not_executed path.
+        self.assertEqual(diagnostics["ineffective_actions"], 1)
+        self.assertEqual(diagnostics["not_executed_actions"], 0)
+
     async def test_routed_exit_intent_submits_the_calibrated_hotspot(self) -> None:
         # 回归：assess() 的出口路由会替换 proposed action（返回语义 → 校准
         # 热点），但提交层曾用原始 planner outcome——模型把"返回花纹"的框

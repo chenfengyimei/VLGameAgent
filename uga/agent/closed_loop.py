@@ -4,7 +4,7 @@ import math
 import re
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
 from difflib import SequenceMatcher
 from enum import StrEnum
@@ -27,6 +27,10 @@ from uga.agent.session_state import (
 )
 from uga.agent.task_graph import TaskGraph, TaskStatus
 from uga.capture.frame import BufferKind, Frame
+from uga.control.execution_receipt import (
+    ExecutionReceipt,
+    aggregate_receipts,
+)
 from uga.control.lease import ControlMode
 from uga.core.errors import ContractViolation
 from uga.environment.profile import PerceptionProfile
@@ -104,6 +108,15 @@ class _PendingAction:
     anchor_candidate: frozenset[str] | None = None
     pixel_change_candidate_at: UGATime | None = None
     pixel_change_candidate_digest: bytes = b""
+    # Execution evidence (D04): the effect clock may only start once the
+    # primitives actually reached the OS, never at arbiter-acceptance time.
+    submitted_action_ids: frozenset[str] = field(default_factory=frozenset)
+    expected_primitives: int = 0
+    receipts: list[ExecutionReceipt] = field(default_factory=list)
+    executed_primitives: int = 0
+    executed_at: UGATime | None = None
+    execution_status: str | None = None
+    execution_frame_id: str | None = None
 
 
 OutcomeVerifier = Callable[[PlannerOutcome, PerceptionSnapshot, Frame, str], bool]
@@ -519,6 +532,8 @@ class ClosedLoopSupervisor:
         self._logical_actions_issued = 0
         self._verified_effect_actions = 0
         self._ineffective_actions = 0
+        self._not_executed_actions = 0
+        self._consecutive_not_executed = 0
         self._stale_results_discarded = 0
         self._last_ineffective_key: str | None = None
         self._consecutive_same_ineffective = 0
@@ -603,6 +618,8 @@ class ClosedLoopSupervisor:
             "logical_actions_issued": self._logical_actions_issued,
             "verified_effect_actions": self._verified_effect_actions,
             "ineffective_actions": self._ineffective_actions,
+            "not_executed_actions": self._not_executed_actions,
+            "consecutive_not_executed_actions": self._consecutive_not_executed,
             "pending_action": self._pending is not None,
             "stale_results_discarded": self._stale_results_discarded,
             "max_consecutive_same_ineffective_action": (
@@ -642,9 +659,51 @@ class ClosedLoopSupervisor:
         pending = self._pending
         if pending is None:
             return EffectObservation(False, None, "no action awaiting verification")
-        elapsed_ns = snapshot.captured_at.value_ns - pending.issued_at.value_ns
         minimum_ns = 250_000_000
         timeout_ns = self._profile.action_effect_timeout_ms * 1_000_000
+        # D04: queued/accepted never substitutes for executed.  A click whose
+        # primitives only partly reached the OS is PARTIAL, never a
+        # completed action; until every expected primitive carries a terminal
+        # EXECUTED receipt there is no effect clock to run, and an action
+        # still unproven at the deadline completes as not_executed — never as
+        # a verified success.
+        if (
+            pending.expected_primitives
+            and pending.executed_primitives < pending.expected_primitives
+        ):
+            all_terminal = len(pending.receipts) >= pending.expected_primitives
+            if not all_terminal:
+                unproven_elapsed = (
+                    snapshot.captured_at.value_ns - pending.issued_at.value_ns
+                )
+                if unproven_elapsed < timeout_ns:
+                    return EffectObservation(
+                        True, None, "waiting for terminal execution receipts"
+                    )
+            status = pending.execution_status or (
+                "partial" if pending.executed_primitives else "unknown"
+            )
+            self._pending = None
+            self.last_effect_observed = False
+            self._not_executed_actions += 1
+            self._consecutive_not_executed += 1
+            detail = f"execution incomplete ({status}); no effect claim"
+            self._finish_trace(pending, "not_executed", detail)
+            self._journal_effect(pending, "not_executed", detail)
+            if self._consecutive_not_executed >= 3:
+                # The input gateway keeps refusing (focus lost, window gone,
+                # integrity mismatch): re-proposing forever would only burn
+                # model calls, so stand down honestly instead of spinning.
+                self._stop_blocked(
+                    "the input executor refused "
+                    f"{self._consecutive_not_executed} actions in a row"
+                )
+            return EffectObservation(False, False, "action execution was never confirmed")
+        elapsed_ns = snapshot.captured_at.value_ns - (
+            pending.executed_at.value_ns
+            if pending.executed_at is not None
+            else pending.issued_at.value_ns
+        )
         # Numeric-only OCR jitter (counters, timers, ratios) must never fake an
         # effect, so the change comparison runs on digit-stripped anchor tokens.
         semantic_text = stable_anchor_tokens(snapshot.text)
@@ -714,6 +773,7 @@ class ClosedLoopSupervisor:
             self._pending = None
             self.last_effect_observed = True
             self._verified_effect_actions += 1
+            self._consecutive_not_executed = 0
             self._last_ineffective_key = None
             self._consecutive_same_ineffective = 0
             self._reset_no_safe_waits()
@@ -754,6 +814,7 @@ class ClosedLoopSupervisor:
         )
         self._pending = None
         self.last_effect_observed = False
+        self._consecutive_not_executed = 0
         finding = self._record_action_result(
             pending,
             semantic_state,
@@ -1194,6 +1255,8 @@ class ClosedLoopSupervisor:
         source: str | None = None,
         physical_point: tuple[float, float] | None = None,
         primitives: tuple[str, ...] = (),
+        submitted_action_ids: frozenset[str] = frozenset(),
+        expected_primitives: int = 0,
     ) -> None:
         if outcome.action is None:
             raise ContractViolation("cannot verify an outcome without an action")
@@ -1214,7 +1277,12 @@ class ClosedLoopSupervisor:
             )
         trace_id = outcome.decision_id
         self._pending = self._pending_action(
-            action, snapshot, frame, action_id=trace_id
+            action,
+            snapshot,
+            frame,
+            action_id=trace_id,
+            submitted_action_ids=submitted_action_ids,
+            expected_primitives=expected_primitives,
         )
         if self._session is not None:
             self._session.record_trace(
@@ -1247,6 +1315,42 @@ class ClosedLoopSupervisor:
             ),
             action.target_label,
         )
+
+    def record_execution_receipts(self, receipts: Sequence[ExecutionReceipt]) -> None:
+        """Feed the scheduler's terminal primitive receipts into the pending action.
+
+        Receipts for an already-completed or unknown action are ignored and
+        each primitive is recorded at most once.  The FIRST executed receipt
+        anchors the effect clock; once every expected primitive has reported,
+        the aggregate classifies the execution (executed / partial / rejected
+        / expired / flushed) for trace honesty.
+        """
+        pending = self._pending
+        if pending is None or not receipts:
+            return
+        for receipt in receipts:
+            if (
+                not pending.submitted_action_ids
+                or receipt.action_id not in pending.submitted_action_ids
+            ):
+                continue
+            if any(
+                existing.action_id == receipt.action_id for existing in pending.receipts
+            ):
+                continue
+            pending.receipts.append(receipt)
+            if receipt.executed:
+                pending.executed_primitives += 1
+                if (
+                    pending.executed_at is None
+                    or receipt.at.value_ns < pending.executed_at.value_ns
+                ):
+                    pending.executed_at = receipt.at
+            if (
+                pending.expected_primitives
+                and len(pending.receipts) >= pending.expected_primitives
+            ):
+                pending.execution_status = aggregate_receipts(tuple(pending.receipts))
 
     def validate_execution_context(
         self, validated_frame: Frame, execution_frame: Frame
@@ -1344,6 +1448,8 @@ class ClosedLoopSupervisor:
         action_id: str | None = None,
         physical_point: tuple[float, float] | None = None,
         primitives: tuple[str, ...] = (),
+        submitted_action_ids: frozenset[str] = frozenset(),
+        expected_primitives: int = 0,
     ) -> None:
         self._last_started_action_semantic_key = None
         self._consecutive_same_started_action = 0
@@ -1374,7 +1480,14 @@ class ClosedLoopSupervisor:
             self._on_exit_executed()
         self._logical_actions_issued += 1
         trace_id = action_id or f"recovery-{label}-{uuid.uuid4().hex[:8]}"
-        self._pending = self._pending_action(action, snapshot, frame, action_id=trace_id)
+        self._pending = self._pending_action(
+            action,
+            snapshot,
+            frame,
+            action_id=trace_id,
+            submitted_action_ids=submitted_action_ids,
+            expected_primitives=expected_primitives,
+        )
         if self._session is not None:
             self._session.record_trace(
                 ActionTrace(
@@ -1524,6 +1637,8 @@ class ClosedLoopSupervisor:
         frame: Frame,
         *,
         action_id: str | None = None,
+        submitted_action_ids: frozenset[str] = frozenset(),
+        expected_primitives: int = 0,
     ) -> _PendingAction:
         digest = b"" if action.target_box is None else region_digest(frame, action.target_box)
         return _PendingAction(
@@ -1540,6 +1655,9 @@ class ClosedLoopSupervisor:
             self._clock.now(),
             anchors=page_anchor_signature(snapshot.visible_text),
             action_id=action_id,
+            submitted_action_ids=submitted_action_ids,
+            expected_primitives=expected_primitives,
+            execution_frame_id=snapshot.frame_id,
         )
 
     def _stop_blocked(self, reason: str) -> None:
