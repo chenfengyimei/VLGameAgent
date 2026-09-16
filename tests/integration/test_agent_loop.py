@@ -367,6 +367,151 @@ class AgentLoopTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(diagnostics["ineffective_actions"], 1)
         self.assertEqual(diagnostics["not_executed_actions"], 0)
 
+    async def test_continuous_budget_exhaustion_stops_the_rebuild_loop(self) -> None:
+        # F06: a blocked cycle on an exhausted recovery budget must end the
+        # run — rebuilding would spin blocked supervisors at observation rate.
+        from uga.agent.recovery_budget import RecoveryBudget
+
+        clock = ManualClock(100)
+        target = identity()
+        frames = FrameRingBuffer()
+        events = EventBus(clock)
+        leases = ControlLeaseManager(clock)
+        backend = DryRunInputBackend()
+        scheduler = ActionScheduler(
+            clock,
+            InputExecutor(
+                clock,
+                backend,
+                FocusGuard(
+                    FakeWindows(target), FakeIntegrity(), leases, AgentEnableState(True)
+                ),
+                leases,
+            ),
+            leases,
+        )
+        arbiter = ActionArbiter(clock, leases)
+        fixture_profile = profile()
+        budget = RecoveryBudget(0)
+        factory_calls: list[int] = []
+
+        def make_supervisor() -> ClosedLoopSupervisor:
+            factory_calls.append(1)
+            supervisor = ClosedLoopSupervisor(clock, fixture_profile.perception)
+            supervisor.fail("fixture blocked")
+            return supervisor
+
+        loop = RealtimeAgentLoop(
+            clock=clock,
+            capture=FakeCaptureSource(frames),
+            frames=frames,
+            observation_builder=ObservationBuilder(
+                clock, "fixture-game", ObservationInputs("keep progressing")
+            ),
+            observations=TemporalObservationBuffer(),
+            environment=GenericEnvironment(fixture_profile),
+            mode_classifier=RuleModeClassifier(),
+            mode_router=ModeRouter(
+                ControlMode.GUI, confirmation_frames=1, started_at=UGATime(0)
+            ),
+            policy=None,
+            leases=leases,
+            controller=ActionChunkController(
+                GenericEnvironment(fixture_profile), arbiter, scheduler
+            ),
+            scheduler=scheduler,
+            events=events,
+            grounded_planner=GroundedClickPlanner(),
+            perception_builder=PerceptionBuilder(NullTextProvider()),
+            closed_loop=make_supervisor(),
+            gui_controller=GuiActionController(arbiter, scheduler),
+            key_resolver=lambda _: None,
+            continuous_grounded=True,
+            closed_loop_factory=make_supervisor,
+            recovery_budget=budget,
+        )
+
+        stop = asyncio.Event()
+        task = asyncio.create_task(loop.run(stop, observation_hz=100.0))
+        await asyncio.wait_for(task, timeout=5.0)
+
+        # The exhausted budget refused the rebuild: no fresh supervisor, no
+        # reset accounting.
+        self.assertEqual(factory_calls, [1])
+        self.assertTrue(budget.exhausted)
+
+    async def test_continuous_rebuilds_are_bounded(self) -> None:
+        # F06: continuous rebuilds may start new task cycles, but a run that
+        # keeps failing is bounded by an explicit rebuild cap.
+        from uga.agent.recovery_budget import RecoveryBudget
+
+        clock = ManualClock(100)
+        target = identity()
+        frames = FrameRingBuffer()
+        events = EventBus(clock)
+        leases = ControlLeaseManager(clock)
+        backend = DryRunInputBackend()
+        scheduler = ActionScheduler(
+            clock,
+            InputExecutor(
+                clock,
+                backend,
+                FocusGuard(
+                    FakeWindows(target), FakeIntegrity(), leases, AgentEnableState(True)
+                ),
+                leases,
+            ),
+            leases,
+        )
+        arbiter = ActionArbiter(clock, leases)
+        fixture_profile = profile()
+        budget = RecoveryBudget(2)
+        factory_calls: list[int] = []
+
+        def make_supervisor() -> ClosedLoopSupervisor:
+            factory_calls.append(1)
+            supervisor = ClosedLoopSupervisor(clock, fixture_profile.perception)
+            supervisor.fail("fixture blocked")
+            return supervisor
+
+        loop = RealtimeAgentLoop(
+            clock=clock,
+            capture=FakeCaptureSource(frames),
+            frames=frames,
+            observation_builder=ObservationBuilder(
+                clock, "fixture-game", ObservationInputs("keep progressing")
+            ),
+            observations=TemporalObservationBuffer(),
+            environment=GenericEnvironment(fixture_profile),
+            mode_classifier=RuleModeClassifier(),
+            mode_router=ModeRouter(
+                ControlMode.GUI, confirmation_frames=1, started_at=UGATime(0)
+            ),
+            policy=None,
+            leases=leases,
+            controller=ActionChunkController(
+                GenericEnvironment(fixture_profile), arbiter, scheduler
+            ),
+            scheduler=scheduler,
+            events=events,
+            grounded_planner=GroundedClickPlanner(),
+            perception_builder=PerceptionBuilder(NullTextProvider()),
+            closed_loop=make_supervisor(),
+            gui_controller=GuiActionController(arbiter, scheduler),
+            key_resolver=lambda _: None,
+            continuous_grounded=True,
+            closed_loop_factory=make_supervisor,
+            recovery_budget=budget,
+            max_continuous_rebuilds=3,
+        )
+
+        stop = asyncio.Event()
+        task = asyncio.create_task(loop.run(stop, observation_hz=100.0))
+        await asyncio.wait_for(task, timeout=5.0)
+
+        # Initial supervisor + 3 bounded rebuilds, then an honest stop.
+        self.assertEqual(len(factory_calls), 4)
+
     async def test_routed_exit_intent_submits_the_calibrated_hotspot(self) -> None:
         # 回归：assess() 的出口路由会替换 proposed action（返回语义 → 校准
         # 热点），但提交层曾用原始 planner outcome——模型把"返回花纹"的框

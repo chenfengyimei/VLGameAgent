@@ -27,6 +27,7 @@ from types import FrameType
 from apps.agent.dashboard import DecisionDashboard
 from uga.agent.closed_loop import ClosedLoopSupervisor, TerminalStatus
 from uga.agent.mode_router import ModeRouter, RuleModeClassifier
+from uga.agent.recovery_budget import RecoveryBudget
 from uga.agent.session_state import GameSessionState
 from uga.agent.task_graph import RetryPolicy, TaskGraph, TaskNode, TaskStatus
 from uga.capture.dxgi import DXGIDuplicationBackend
@@ -303,6 +304,9 @@ async def _run(args: argparse.Namespace) -> int:
     )
     scheduler = ActionScheduler(clock, executor, leases)
     arbiter = ActionArbiter(clock, leases)
+    # F05/F06: the run-level recovery budget is owned here so supervisor
+    # rebuilds in continuous mode can never reset the accounting.
+    recovery_budget = RecoveryBudget(args.max_recoveries)
     # Latched fail-safe neutralization: disable inputs, revoke leases, flush
     # the scheduler queue, and release held keys — idempotent, first cause
     # wins. Every stop path trips this BEFORE notifying the async loop.
@@ -511,6 +515,7 @@ async def _run(args: argparse.Namespace) -> int:
                 profile.perception,
                 verifier=outcome_verifier,
                 max_recoveries=args.max_recoveries,
+                recovery_budget=recovery_budget,
                 task_graph=task_graph,
                 task_node_id=task_node_id if task_graph is not None else None,
                 goal_evidence=goal_evidence,
@@ -585,6 +590,7 @@ async def _run(args: argparse.Namespace) -> int:
         closed_loop_factory=(make_closed_loop if continuous else None),
         run_context=run_context,
         control_heartbeat=watchdog.heartbeat,
+        recovery_budget=recovery_budget,
     )
 
     if journal is not None and args.dashboard_port > 0:
@@ -907,6 +913,12 @@ async def _run(args: argparse.Namespace) -> int:
                     diagnostics, "max_consecutive_same_ineffective_action"
                 ),
                 "recovery_count": _diagnostic_integer(diagnostics, "recovery_count"),
+                "recovery_budget_consumed": _diagnostic_integer(
+                    diagnostics, "recovery_budget_consumed"
+                ),
+                "recovery_budget_limit": _diagnostic_integer(
+                    diagnostics, "recovery_budget_limit"
+                ),
             }
         )
         result, termination_reason = _episode_outcome(

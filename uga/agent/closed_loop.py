@@ -16,6 +16,7 @@ from uga.agent.progress import (
     ProgressTracker,
     SemanticState,
 )
+from uga.agent.recovery_budget import RecoveryBudget, RecoveryKind
 from uga.agent.session_state import (
     ActionTrace,
     GameSessionState,
@@ -481,6 +482,7 @@ class ClosedLoopSupervisor:
         *,
         verifier: OutcomeVerifier | None = None,
         max_recoveries: int = 2,
+        recovery_budget: RecoveryBudget | None = None,
         task_graph: TaskGraph | None = None,
         task_node_id: str | None = None,
         goal_evidence: tuple[str, ...] = (),
@@ -593,6 +595,10 @@ class ClosedLoopSupervisor:
         self._progress = ProgressTracker()
         self._loops = LoopDetector()
         self._max_recoveries = max_recoveries
+        # F05/F06: the run-level budget is owned by the composition root and
+        # survives supervisor rebuilds; without one, a local budget enforces
+        # the same max_recoveries semantics (0 disables every recovery).
+        self._recovery_budget = recovery_budget or RecoveryBudget(max_recoveries)
         self._recovery_count = 0
         self._pending_recovery: RecoveryDirective | None = None
         self._recovery_in_progress: RecoveryDirective | None = None
@@ -666,6 +672,9 @@ class ClosedLoopSupervisor:
             "ineffective_actions": self._ineffective_actions,
             "not_executed_actions": self._not_executed_actions,
             "consecutive_not_executed_actions": self._consecutive_not_executed,
+            "recovery_budget_consumed": self._recovery_budget.consumed,
+            "recovery_budget_limit": self._recovery_budget.limit,
+            "recovery_budget_exhausted": self._recovery_budget.exhausted,
             "pending_action": self._pending is not None,
             "stale_results_discarded": self._stale_results_discarded,
             "max_consecutive_same_ineffective_action": (
@@ -1644,7 +1653,22 @@ class ClosedLoopSupervisor:
         return SupervisedDecision(DecisionDisposition.BLOCK, reason, outcome)
 
     def _request_recovery(self, reason: str) -> None:
-        if self._recovery_count == 0 and self._max_recoveries >= 1:
+        # F05/F06: every failure recovery — high-resolution re-probe AND the
+        # visual back exit — draws from the run-level budget.  A budget of
+        # zero refuses both; a rebuilt supervisor inherits the same budget
+        # and can never reset the accounting.
+        next_kind = (
+            RecoveryKind.BACK if self._recovery_count else RecoveryKind.HIGH_RESOLUTION
+        )
+        if not self._recovery_budget.consume(next_kind):
+            state = self._recovery_budget.state()
+            self._stop_blocked(
+                reason
+                + f"; recovery budget exhausted ({state.consumed}/{state.limit} used;"
+                " max_recoveries=0 disables every recovery)"
+            )
+            return
+        if self._recovery_count == 0:
             self._recovery_count = 1
             self._pending_recovery = RecoveryDirective.HIGH_RESOLUTION
             self._recovery_in_progress = None
@@ -1659,9 +1683,9 @@ class ClosedLoopSupervisor:
                 f"{self._back_recovery_streak} times in a row"
             )
             return
-        # Leaving the stuck page via the visual back control is an ordinary
-        # state transition: it never consumes the termination budget, so a
-        # normal feature-page stall cannot rebuild the closed loop.
+        # Leaving the stuck page via the visual back control is a failure
+        # recovery like any other: it draws the run-level budget (F05) so a
+        # max_recoveries=0 run can never be steered through back exits.
         self._pending_recovery = RecoveryDirective.BACK
         self._recovery_in_progress = None
 
@@ -1672,6 +1696,14 @@ class ClosedLoopSupervisor:
             "back" in self._profile.recovery_safe_actions
             and self._back_recovery_streak < self._max_failed_back_recoveries
         ):
+            if not self._recovery_budget.consume(RecoveryKind.BACK):
+                state = self._recovery_budget.state()
+                return self._block(
+                    outcome,
+                    reason
+                    + "; recovery budget exhausted "
+                    f"({state.consumed}/{state.limit} used)",
+                )
             self._pending_recovery = None
             self._recovery_in_progress = RecoveryDirective.BACK
             return SupervisedDecision(

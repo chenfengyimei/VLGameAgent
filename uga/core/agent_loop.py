@@ -16,6 +16,7 @@ from uga.agent.closed_loop import (
     TerminalStatus,
 )
 from uga.agent.mode_router import ModeClassifier, ModeRouter, ModeTransition
+from uga.agent.recovery_budget import RecoveryBudget
 from uga.agent.session_state import quest_level_target
 from uga.capture.frame import Frame
 from uga.capture.ring_buffer import FrameRingBuffer, LatestFrameSlot, SequencedFrame
@@ -125,6 +126,8 @@ class RealtimeAgentLoop:
         closed_loop_factory: Callable[[], ClosedLoopSupervisor] | None = None,
         run_context: RunContext | None = None,
         control_heartbeat: Callable[[], object] | None = None,
+        recovery_budget: RecoveryBudget | None = None,
+        max_continuous_rebuilds: int = 100,
     ) -> None:
         grounded_parts = (
             grounded_planner,
@@ -176,6 +179,9 @@ class RealtimeAgentLoop:
         self._closed_loop_factory = closed_loop_factory
         self._run_context = run_context
         self._control_heartbeat = control_heartbeat
+        self._recovery_budget = recovery_budget
+        self._max_continuous_rebuilds = max_continuous_rebuilds
+        self._continuous_rebuilds = 0
         self._next_grounded_inference_ns = 0
         self._grounded_failure_backoff_ns = max(
             self._grounded_decision_interval_ns, 15_000_000_000
@@ -893,6 +899,20 @@ class RealtimeAgentLoop:
                         stop.set()
                         break
                     previous = self._closed_loop
+                    if (
+                        self._recovery_budget is not None
+                        and self._recovery_budget.exhausted
+                        and previous.status is not TerminalStatus.SUCCEEDED
+                    ):
+                        # F06: a blocked run on an exhausted recovery budget
+                        # would spin blocked-supervisor rebuilds at observation
+                        # rate — stand down honestly instead.
+                        stop.set()
+                        break
+                    if self._continuous_rebuilds >= self._max_continuous_rebuilds:
+                        stop.set()
+                        break
+                    self._continuous_rebuilds += 1
                     assert self._closed_loop_factory is not None
                     self._closed_loop = self._closed_loop_factory()
                     # Outstanding requests from the previous cycle die with

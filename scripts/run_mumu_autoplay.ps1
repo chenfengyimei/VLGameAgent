@@ -160,21 +160,42 @@ Write-SupervisorLog "Starting supervisor loop (crash-restart + window rediscover
 # NativeCommandError records; with ErrorActionPreference = Stop that kills
 # the launcher on the first stderr line. Relax it around the agent pipe.
 $ErrorActionPreference = "Continue"
+# F06: crash restarts are bounded — exponential backoff with jitter, a hard
+# attempt cap, and the budget only resets after a long healthy run.
+$maxRestarts = 10
+$restartCount = 0
+$delaySeconds = $RestartDelaySeconds
 while ($true) {
     Write-SupervisorLog "Starting one continuous UGA agent process"
+    $startedAt = Get-Date
     & $Python @agentArgs 2>&1 | ForEach-Object {
         $agentLine = "$_"
         Add-Content -LiteralPath $supervisorLog -Value $agentLine -Encoding utf8
         Write-Host $agentLine
     }
     $agentExitCode = $LASTEXITCODE
-    Write-SupervisorLog "Continuous UGA agent exited with code $agentExitCode"
+    $ranSeconds = [int]((Get-Date) - $startedAt).TotalSeconds
+    Write-SupervisorLog "Continuous UGA agent exited with code $agentExitCode after ${ranSeconds}s"
     if ($agentExitCode -eq 0) {
         # Clean exit means the user stopped the agent (Ctrl+Shift+F12).
         exit 0
     }
-    # A crash (stale window HWND, backend failure, ...) self-heals here: the
-    # fresh process re-discovers the MuMu window before continuing.
-    Write-SupervisorLog "Restarting agent in $RestartDelaySeconds seconds after a crash"
-    Start-Sleep -Seconds $RestartDelaySeconds
+    if ($ranSeconds -ge 300) {
+        # A crash after a long healthy run is a fresh failure, not part of
+        # the previous crash loop: reset the restart budget.
+        if ($restartCount -gt 0) {
+            Write-SupervisorLog "Agent ran ${ranSeconds}s before crashing; restarting the crash budget"
+        }
+        $restartCount = 0
+        $delaySeconds = $RestartDelaySeconds
+    }
+    $restartCount += 1
+    if ($restartCount -gt $maxRestarts) {
+        Write-SupervisorLog "Restart budget exhausted ($maxRestarts consecutive crashes); supervisor standing down"
+        exit 1
+    }
+    $jitter = Get-Random -Minimum 0 -Maximum 3
+    Write-SupervisorLog "Restarting agent in $delaySeconds seconds after a crash (attempt $restartCount/$maxRestarts)"
+    Start-Sleep -Seconds ($delaySeconds + $jitter)
+    $delaySeconds = [Math]::Min($delaySeconds * 2, 300)
 }
