@@ -43,6 +43,9 @@ def main() -> None:
         0,
         0,
         None,
+        # D13: the standalone dashboard never connects to a runtime — render
+        # the command buttons disabled so the UI cannot fake control success.
+        runtime_connected=False,
     )
     if args.serve:
         server = create_dashboard_server(

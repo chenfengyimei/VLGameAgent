@@ -37,11 +37,15 @@ class DashboardState:
     queue_drops: int
     expired_actions: int
     recent_failure: str | None
+    # D13: a disconnected dashboard must say so and disable its command
+    # buttons instead of rendering controls that can only fail (409).
+    runtime_connected: bool = True
 
     def to_payload(self) -> dict[str, object]:
         payload = asdict(self)
         payload["mode"] = self.mode.value
         payload["lease_owner"] = None if self.lease_owner is None else self.lease_owner.name
+        payload["runtime_connected"] = self.runtime_connected
         return payload
 
 
@@ -82,8 +86,20 @@ def render_dashboard(state: DashboardState, *, live: bool = False) -> str:
         f'<dt>{html.escape(label)}</dt><dd data-field="{key}">{html.escape(str(value))}</dd>'
         for key, (label, value) in values.items()
     )
+    if state.runtime_connected:
+        banner = ""
+        button_disabled = ""
+    else:
+        # D13: a disconnected dashboard says so and disables its command
+        # buttons instead of rendering controls that can only fail (409).
+        banner = (
+            '<p id="runtime-not-connected">runtime not connected; '
+            "operator commands are unavailable</p>"
+        )
+        button_disabled = " disabled"
     buttons = "".join(
-        f'<button data-command="{command.value}">{command.value.replace("_", " ")}</button>'
+        f'<button data-command="{command.value}"{button_disabled}>'
+        f"{command.value.replace('_', ' ')}</button>"
         for command in DashboardCommand
     )
     live_script = ""
@@ -96,5 +112,5 @@ def render_dashboard(state: DashboardState, *, live: bool = False) -> str:
         "<style>body{font-family:system-ui;margin:2rem;background:#111;color:#eee}"
         "dl{display:grid;grid-template-columns:max-content 1fr;gap:.5rem 1rem}"
         "button{margin:.25rem;padding:.5rem}</style><h1>UGA Dashboard</h1>"
-        f"{preview}<dl>{cards}</dl><nav>{buttons}</nav>{live_script}</html>"
+        f"{banner}{preview}<dl>{cards}</dl><nav>{buttons}</nav>{live_script}</html>"
     )

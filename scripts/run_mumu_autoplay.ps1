@@ -1,6 +1,6 @@
 ﻿[CmdletBinding()]
 param(
-    [string]$Python = "C:\Users\cy\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe",
+    [string]$Python = "",
     [string]$Model = "glm-4.6v",
     [string]$BaseUrl = "https://open.bigmodel.cn/api/paas/v4",
     [int]$DashboardPort = 8787,
@@ -23,9 +23,6 @@ if ($ModelContextLength -lt 2048) {
 if ($VisionTimeoutSeconds -lt 30) {
     throw "VisionTimeoutSeconds must be at least 30"
 }
-if (-not (Test-Path -LiteralPath $Python -PathType Leaf)) {
-    throw "Python runtime not found: $Python"
-}
 
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $toolingPath = Join-Path $projectRoot ".tooling"
@@ -33,6 +30,31 @@ $captureDll = Join-Path $projectRoot "native\target\release\uga_capture.dll"
 $profilePath = Join-Path $projectRoot "configs\games\mumu-xianyu.yaml"
 $logRoot = Join-Path $projectRoot "runs\live-agent"
 $supervisorLog = Join-Path $logRoot "supervisor.log"
+
+# D13: no user-specific Python default — resolve explicitly (param, project
+# venv, then PATH) so the script is portable across machines and accounts.
+$resolvedPython = $null
+if (-not [string]::IsNullOrWhiteSpace($Python)) {
+    if (-not (Test-Path -LiteralPath $Python -PathType Leaf)) {
+        throw "Python runtime not found: $Python"
+    }
+    $resolvedPython = $Python
+}
+else {
+    $venvPython = Join-Path $projectRoot ".venv\Scripts\python.exe"
+    if (Test-Path -LiteralPath $venvPython -PathType Leaf) {
+        $resolvedPython = $venvPython
+    }
+    else {
+        $fromPath = Get-Command python -ErrorAction SilentlyContinue
+        if ($null -ne $fromPath) {
+            $resolvedPython = $fromPath.Source
+        }
+    }
+    if ($null -eq $resolvedPython) {
+        throw "No Python runtime resolved; pass -Python <path> explicitly"
+    }
+}
 
 foreach ($requiredPath in ($toolingPath, $captureDll, $profilePath)) {
     if (-not (Test-Path -LiteralPath $requiredPath)) {
@@ -55,10 +77,16 @@ $goal = @"
 function Write-SupervisorLog {
     param([Parameter(Mandatory = $true)][string]$Message)
 
+    # D13: rotate the supervisor log before it grows without bound.
+    if ((Test-Path -LiteralPath $supervisorLog) -and ((Get-Item -LiteralPath $supervisorLog).Length -gt 5MB)) {
+        Move-Item -LiteralPath $supervisorLog -Destination "$supervisorLog.1" -Force
+    }
     $line = "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] $Message"
     Add-Content -LiteralPath $supervisorLog -Value $line -Encoding utf8
     Write-Host $line
 }
+
+Write-SupervisorLog "Resolved Python runtime: $resolvedPython"
 
 function Ensure-LocalModel {
     $modelReady = $false
@@ -168,7 +196,7 @@ $delaySeconds = $RestartDelaySeconds
 while ($true) {
     Write-SupervisorLog "Starting one continuous UGA agent process"
     $startedAt = Get-Date
-    & $Python @agentArgs 2>&1 | ForEach-Object {
+    & $resolvedPython @agentArgs 2>&1 | ForEach-Object {
         $agentLine = "$_"
         Add-Content -LiteralPath $supervisorLog -Value $agentLine -Encoding utf8
         Write-Host $agentLine

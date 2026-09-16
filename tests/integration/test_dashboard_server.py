@@ -8,6 +8,7 @@ import unittest
 import urllib.error
 import urllib.request
 
+from apps.dashboard.__main__ import DisconnectedOperatorControl
 from uga.control.lease import ControlMode
 from uga.core.errors import ContractViolation
 from uga.dashboard.controller import DashboardCommandRouter
@@ -61,6 +62,90 @@ def dashboard_state() -> DashboardState:
         0,
         None,
     )
+
+
+    return DashboardState(
+        "frame-1",
+        None,
+        "reach target",
+        None,
+        ControlMode.PLAY_3D,
+        None,
+        None,
+        None,
+        0.9,
+        False,
+        30.0,
+        5.0,
+        25.0,
+        None,
+        0,
+        0,
+        None,
+    )
+
+
+def disconnected_state() -> DashboardState:
+    return DashboardState(
+        None,
+        None,
+        "runtime not connected",
+        None,
+        ControlMode.UNKNOWN,
+        None,
+        None,
+        None,
+        None,
+        False,
+        0.0,
+        0.0,
+        0.0,
+        None,
+        0,
+        0,
+        None,
+        runtime_connected=False,
+    )
+
+
+class DisconnectedDashboardTests(unittest.TestCase):
+    def test_disconnected_dashboard_disables_commands_and_does_not_fake_success(
+        self,
+    ) -> None:
+        # D13: the standalone dashboard (no runtime attached) must say so and
+        # disable its command buttons — every authenticated POST still fails
+        # honestly (409) instead of faking control success.
+        token = "test-token-0123456789abcdef0123456789"
+        server = create_dashboard_server(
+            disconnected_state,
+            DashboardCommandRouter(DisconnectedOperatorControl()),
+            port=0,
+            csrf_token=token,
+        )
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        base = f"http://127.0.0.1:{server.server_address[1]}"
+        try:
+            with urllib.request.urlopen(base, timeout=2) as response:
+                document = response.read().decode("utf-8")
+            self.assertIn("runtime not connected", document)
+            self.assertIn("runtime-not-connected", document)
+            self.assertIn("<button", document)
+            self.assertIn("disabled", document)
+
+            authenticated = urllib.request.Request(
+                f"{base}/api/commands/start",
+                method="POST",
+                headers={"X-UGA-CSRF": token, "Origin": base},
+            )
+            with self.assertRaises(urllib.error.HTTPError) as raised:
+                urllib.request.urlopen(authenticated, timeout=2)
+            self.assertEqual(raised.exception.code, 409)
+            self.assertIn("runtime not connected", raised.exception.read().decode())
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
 
 
 class DashboardServerTests(unittest.TestCase):
