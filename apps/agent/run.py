@@ -44,6 +44,7 @@ from uga.control.windows_input import SendInputBackend
 from uga.core.agent_loop import RealtimeAgentLoop
 from uga.core.errors import BackendUnavailableError, CaptureTimeoutError, ContractViolation
 from uga.core.events import EventBus
+from uga.core.run_context import RunContext
 from uga.environment.generic import GenericEnvironment
 from uga.environment.profile import BindingKind, GameProfile, load_game_profile
 from uga.gui.controller import GuiActionController
@@ -63,6 +64,8 @@ from uga.release.fixture_qualification import _activate
 from uga.release.revision import require_clean_source_revision
 from uga.safety.emergency_stop import Win32EmergencyHotkey
 from uga.safety.focus_guard import AgentEnableState, FocusGuard
+from uga.safety.shutdown import SafetyShutdown, ShutdownCause
+from uga.safety.watchdog import RuntimeWatchdog, RuntimeWatchdogMonitor
 from uga.time.clock import PerfCounterClock
 from uga.windows.backend import Win32WindowBackend, WindowBackend, WindowSnapshot
 from uga.windows.coordinates import Rect
@@ -181,6 +184,11 @@ async def _run(args: argparse.Namespace) -> int:
         raise SystemExit("--qualification-project-root requires --record")
     if not math.isfinite(args.duration_seconds) or args.duration_seconds < 0:
         raise SystemExit("--duration-seconds must be >= 0 (0 = run until stopped)")
+    if (
+        not math.isfinite(args.watchdog_timeout_seconds)
+        or args.watchdog_timeout_seconds <= 0
+    ):
+        raise SystemExit("--watchdog-timeout-seconds must be positive")
     if not math.isfinite(args.tap_delay) or args.tap_delay < 0:
         raise SystemExit("--tap-delay must be >= 0")
     if not math.isfinite(args.tap_interval_seconds) or args.tap_interval_seconds < 0:
@@ -284,7 +292,9 @@ async def _run(args: argparse.Namespace) -> int:
     clock = PerfCounterClock()
     events = EventBus(clock)
     leases = ControlLeaseManager(clock)
-    enabled = AgentEnableState(True)
+    # Inputs stay disabled until the emergency hotkey and watchdog are armed;
+    # arming is an explicit step below, never a constructor default.
+    enabled = AgentEnableState(False)
     executor = InputExecutor(
         clock,
         SendInputBackend(),
@@ -293,6 +303,17 @@ async def _run(args: argparse.Namespace) -> int:
     )
     scheduler = ActionScheduler(clock, executor, leases)
     arbiter = ActionArbiter(clock, leases)
+    # Latched fail-safe neutralization: disable inputs, revoke leases, flush
+    # the scheduler queue, and release held keys — idempotent, first cause
+    # wins. Every stop path trips this BEFORE notifying the async loop.
+    safety = SafetyShutdown(clock, leases, scheduler, executor, enabled)
+    run_context = RunContext(safety)
+    watchdog = RuntimeWatchdog(
+        clock,
+        safety,
+        int(args.watchdog_timeout_seconds * 1_000_000_000),
+    )
+    watchdog_monitor = RuntimeWatchdogMonitor(watchdog)
 
     client = target.client_screen_rect
     tap_x = round(client.left + client.width * args.tap_x_fraction)
@@ -562,6 +583,8 @@ async def _run(args: argparse.Namespace) -> int:
         ),
         continuous_grounded=continuous,
         closed_loop_factory=(make_closed_loop if continuous else None),
+        run_context=run_context,
+        control_heartbeat=watchdog.heartbeat,
     )
 
     if journal is not None and args.dashboard_port > 0:
@@ -698,26 +721,39 @@ async def _run(args: argparse.Namespace) -> int:
     loop_ref = asyncio.get_running_loop()
     stop_state: dict[str, bool] = {"user": False}
 
-    def request_stop() -> None:
-        stop_state["user"] = True
-        print("stop requested (Ctrl+C or Ctrl+Shift+F12) — shutting down", flush=True)
+    def request_stop(
+        cause: ShutdownCause = ShutdownCause.NORMAL_STOP, user: bool = False
+    ) -> None:
+        if user:
+            stop_state["user"] = True
+        # Input de-authorization comes FIRST and is synchronous: disable
+        # inputs, revoke leases, flush the scheduler queue, release held
+        # keys. Printing and the async-loop notification happen only after
+        # the latch has completed neutralization.
+        trip = safety.trip(cause)
+        run_context.cancel()
+        print(f"stop requested ({trip.cause.value}) — shutting down", flush=True)
         with contextlib.suppress(RuntimeError):
             loop_ref.call_soon_threadsafe(stop.set)
 
     for name in ("SIGINT", "SIGTERM"):
         with contextlib.suppress(NotImplementedError, AttributeError):
-            loop_ref.add_signal_handler(getattr(signal, name), request_stop)
+            loop_ref.add_signal_handler(
+                getattr(signal, name), request_stop, ShutdownCause.NORMAL_STOP, True
+            )
 
     def _on_sigint(signum: int, frame: FrameType | None) -> None:
         del signum, frame
-        request_stop()
+        request_stop(ShutdownCause.NORMAL_STOP, True)
 
     previous_handler = None
     if os.name == "nt":
         previous_handler = signal.getsignal(signal.SIGINT)
         signal.signal(signal.SIGINT, _on_sigint)
 
-    hotkey = Win32EmergencyHotkey(request_stop)
+    hotkey = Win32EmergencyHotkey(
+        lambda: request_stop(ShutdownCause.EMERGENCY_HOTKEY, True)
+    )
     try:
         hotkey.start()
     except BaseException:
@@ -736,6 +772,16 @@ async def _run(args: argparse.Namespace) -> int:
             signal.signal(signal.SIGINT, previous_handler)
         raise
 
+    # The emergency latch and watchdog enforcement are live before any
+    # physical input is authorized; only then are inputs armed.
+    watchdog_monitor.start()
+    enabled.set(True)
+    print(
+        f"[safety] emergency hotkey + {args.watchdog_timeout_seconds:.0f}s watchdog "
+        "armed; physical inputs enabled",
+        flush=True,
+    )
+
     started = time.monotonic()
     duration_expired = False
     if args.policy == "vlm":
@@ -753,14 +799,33 @@ async def _run(args: argparse.Namespace) -> int:
         while not task.done():
             if 0 < args.duration_seconds <= time.monotonic() - started:
                 duration_expired = True
+                request_stop(ShutdownCause.NORMAL_STOP)
+                break
+            trip = safety.tripped
+            if trip is not None and trip.cause in (
+                ShutdownCause.WATCHDOG_TIMEOUT,
+                ShutdownCause.RUNTIME_FAILURE,
+            ):
+                # Watchdog-initiated trip: neutralization already happened
+                # inside trip(); stop the loop and surface it as a failure.
+                stop.set()
                 break
             await asyncio.sleep(0.2)
     except (KeyboardInterrupt, asyncio.CancelledError):
-        stop_state["user"] = True
+        request_stop(ShutdownCause.NORMAL_STOP, True)
     except BaseException as exc:
         run_error = exc
     finally:
         stop.set()
+        # Neutralize BEFORE waiting for the in-flight step: a stop must
+        # never depend on the model, the capture backend, or task teardown.
+        if safety.tripped is None:
+            safety.trip(
+                ShutdownCause.RUNTIME_FAILURE
+                if run_error is not None
+                else ShutdownCause.NORMAL_STOP
+            )
+        run_context.cancel()
         try:
             await task
         except asyncio.CancelledError:
@@ -777,6 +842,7 @@ async def _run(args: argparse.Namespace) -> int:
                 if run_error is None:
                     run_error = exc
 
+        cleanup(watchdog_monitor.close)
         cleanup(scheduler.neutralize)
         cleanup(lambda: leases.revoke_all(notify=False))
         if sampler_backend is not None:
@@ -787,6 +853,13 @@ async def _run(args: argparse.Namespace) -> int:
         cleanup(hotkey.close)
         if previous_handler is not None:
             cleanup(lambda: signal.signal(signal.SIGINT, previous_handler))
+    trip = safety.tripped
+    if (
+        trip is not None
+        and run_error is None
+        and trip.cause in (ShutdownCause.WATCHDOG_TIMEOUT, ShutdownCause.RUNTIME_FAILURE)
+    ):
+        run_error = RuntimeError(f"safety shutdown tripped: {trip.cause.value}")
     if not stop_state["user"]:
         if run_error is not None:
             loop.fail_closed_loop("runtime_error")
@@ -826,6 +899,9 @@ async def _run(args: argparse.Namespace) -> int:
                 ),
                 "stale_results_discarded": _diagnostic_integer(
                     diagnostics, "stale_results_discarded"
+                ),
+                "safety_discarded_results": _diagnostic_integer(
+                    diagnostics, "safety_discarded_results"
                 ),
                 "max_consecutive_same_ineffective_action": _diagnostic_integer(
                     diagnostics, "max_consecutive_same_ineffective_action"
@@ -940,6 +1016,15 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=0,
         help="serve the read-only VLM decision dashboard on loopback (0 = disabled)",
+    )
+    parser.add_argument(
+        "--watchdog-timeout-seconds",
+        type=float,
+        default=60.0,
+        help=(
+            "control-plane liveness timeout; a scheduler stall beyond it trips the "
+            "latched safety shutdown"
+        ),
     )
     parser.add_argument("--record", type=Path)
     parser.add_argument(

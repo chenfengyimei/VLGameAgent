@@ -26,6 +26,7 @@ from uga.control.physical import AbsolutePointerAction, PhysicalAction
 from uga.control.scheduler import ActionScheduler, SchedulerStats
 from uga.core.errors import BackendUnavailableError, ContractViolation
 from uga.core.events import Event, EventBus, EventType
+from uga.core.run_context import RunContext, RunStamp
 from uga.environment.adapter import EnvironmentAdapter
 from uga.gui.controller import GuiActionController, GuiActionSubmission
 from uga.gui.schema import GuiActionKind
@@ -122,6 +123,8 @@ class RealtimeAgentLoop:
         dialogue_decision_interval_s: float = 1.0,
         continuous_grounded: bool = False,
         closed_loop_factory: Callable[[], ClosedLoopSupervisor] | None = None,
+        run_context: RunContext | None = None,
+        control_heartbeat: Callable[[], object] | None = None,
     ) -> None:
         grounded_parts = (
             grounded_planner,
@@ -171,11 +174,14 @@ class RealtimeAgentLoop:
         )
         self._continuous_grounded = continuous_grounded
         self._closed_loop_factory = closed_loop_factory
+        self._run_context = run_context
+        self._control_heartbeat = control_heartbeat
         self._next_grounded_inference_ns = 0
         self._grounded_failure_backoff_ns = max(
             self._grounded_decision_interval_ns, 15_000_000_000
         )
         self._planner_failure_count = 0
+        self._safety_discards = 0
         self._last_planner_error: str | None = None
         self._last_supervision_disposition: str | None = None
         self._last_supervision_reason: str | None = None
@@ -224,6 +230,7 @@ class RealtimeAgentLoop:
                 "last_supervision_reason": self._last_supervision_reason,
                 "last_planner_input_frame_id": self._last_planner_input_frame_id,
                 "last_planner_input_age_ns": self._last_planner_input_age_ns,
+                "safety_discarded_results": self._safety_discards,
             }
         )
         return diagnostics
@@ -231,6 +238,28 @@ class RealtimeAgentLoop:
     def fail_closed_loop(self, reason: str) -> None:
         if self._closed_loop is not None and not self._closed_loop.is_terminal:
             self._closed_loop.fail(reason)
+
+    def _run_live(self, stamp: RunStamp | None) -> bool:
+        if self._run_context is None or stamp is None:
+            return True
+        return self._run_context.is_live(stamp)
+
+    async def _discard_stale_result(
+        self, observation: Observation, *, policy: str, phase: str
+    ) -> None:
+        # A latched stop or a generation advance arrived while the request was
+        # in flight: the late result is recorded and dropped, never executed.
+        self._safety_discards += 1
+        await self._events.publish(
+            EventType.POLICY_INFERENCE_COMPLETED,
+            "agent.loop",
+            {
+                "observation_id": observation.observation_id,
+                "policy": policy,
+                "disposition": "discarded_stale",
+                "reason": f"run stopped or generation advanced while {phase}",
+            },
+        )
 
     async def step(self) -> AgentLoopStep:
         item = await self._capture.capture_once()
@@ -341,6 +370,9 @@ class RealtimeAgentLoop:
                 0,
                 self._clock.now().value_ns - perception.captured_at.value_ns,
             )
+            # Stamp the request generation: a stop or supervisor rebuild that
+            # lands while the model thinks must kill this result on arrival.
+            stamp = self._run_context.stamp() if self._run_context is not None else None
             try:
                 session = closed_loop.session
                 outcome = await asyncio.to_thread(
@@ -390,6 +422,18 @@ class RealtimeAgentLoop:
                     stats,
                     perception,
                 )
+            if not self._run_live(stamp):
+                await self._discard_stale_result(
+                    observation, policy="grounded_vlm", phase="model inference was in flight"
+                )
+                return AgentLoopStep(
+                    observation,
+                    transition,
+                    None,
+                    None,
+                    self._scheduler.tick(),
+                    perception,
+                )
             self._last_planner_error = None
             planner_outcome = outcome
             dialogue_cadence = (
@@ -426,6 +470,19 @@ class RealtimeAgentLoop:
                 latest_after_inference.frame,
                 observation.user_goal,
             )
+            if not self._run_live(stamp):
+                await self._discard_stale_result(
+                    observation, policy="grounded_vlm", phase="supervision was in flight"
+                )
+                return AgentLoopStep(
+                    observation,
+                    transition,
+                    None,
+                    None,
+                    self._scheduler.tick(),
+                    perception,
+                    planner_outcome,
+                )
             # assess() may replace the proposed action (model exit intent
             # routed to the calibrated exit hotspots): every downstream
             # consumer must act on the SUPERVISED outcome.  Submitting the
@@ -537,6 +594,23 @@ class RealtimeAgentLoop:
                     },
                 )
             if supervised.disposition == DecisionDisposition.EXECUTE:
+                if not self._run_live(stamp):
+                    await self._discard_stale_result(
+                        observation,
+                        policy="grounded_vlm",
+                        phase="execution was about to be authorized",
+                    )
+                    return AgentLoopStep(
+                        observation,
+                        transition,
+                        None,
+                        None,
+                        self._scheduler.tick(),
+                        perception,
+                        planner_outcome,
+                        gui_submission,
+                        supervision,
+                    )
                 assert self._gui_controller is not None
                 assert self._key_resolver is not None
                 gui_action = closed_loop.to_gui_action(outcome, self._key_resolver)
@@ -578,6 +652,23 @@ class RealtimeAgentLoop:
                     else:
                         closed_loop.fail("grounded GUI proposal was rejected")
             elif supervised.disposition == DecisionDisposition.RECOVER:
+                if not self._run_live(stamp):
+                    await self._discard_stale_result(
+                        observation,
+                        policy="grounded_vlm",
+                        phase="recovery was about to be authorized",
+                    )
+                    return AgentLoopStep(
+                        observation,
+                        transition,
+                        None,
+                        None,
+                        self._scheduler.tick(),
+                        perception,
+                        planner_outcome,
+                        gui_submission,
+                        supervision,
+                    )
                 assert supervised.recovery is not None
                 assert self._gui_controller is not None
                 assert self._key_resolver is not None
@@ -645,6 +736,7 @@ class RealtimeAgentLoop:
                 self._observations.context(),
                 observation.user_goal,
             )
+            stamp = self._run_context.stamp() if self._run_context is not None else None
             output = await asyncio.to_thread(self._policy.infer, context)
             await self._events.publish(
                 EventType.POLICY_INFERENCE_COMPLETED,
@@ -666,6 +758,17 @@ class RealtimeAgentLoop:
                         "observation_id": observation.observation_id,
                         "reason": output.reasoning_reason or "policy_request",
                     },
+                )
+                return AgentLoopStep(
+                    observation,
+                    transition,
+                    output,
+                    None,
+                    self._scheduler.tick(),
+                )
+            if not self._run_live(stamp):
+                await self._discard_stale_result(
+                    observation, policy="fast_policy", phase="policy inference was in flight"
                 )
                 return AgentLoopStep(
                     observation,
@@ -730,9 +833,18 @@ class RealtimeAgentLoop:
                     if not self._continuous_grounded:
                         stop.set()
                         break
+                    if self._run_context is not None and self._run_context.should_stop():
+                        # A latched safety stop is never auto-cleared by a
+                        # supervisor rebuild; the run ends here.
+                        stop.set()
+                        break
                     previous = self._closed_loop
                     assert self._closed_loop_factory is not None
                     self._closed_loop = self._closed_loop_factory()
+                    # Outstanding requests from the previous cycle die with
+                    # the old generation; they must not adopt the new one.
+                    if self._run_context is not None:
+                        self._run_context.advance_generation()
                     self._task_generation += 1
                     self._continuous_cycle_count += 1
                     self._next_grounded_inference_ns = (
@@ -755,7 +867,11 @@ class RealtimeAgentLoop:
             async with asyncio.TaskGroup() as tasks:
                 if isinstance(self._capture, ContinuousCaptureSource):
                     tasks.create_task(self._capture.run(stop))
-                tasks.create_task(self._scheduler.run(stop, frequency_hz=scheduler_hz))
+                tasks.create_task(
+                    self._scheduler.run(
+                        stop, frequency_hz=scheduler_hz, heartbeat=self._control_heartbeat
+                    )
+                )
                 tasks.create_task(observe())
         finally:
             self._leases.revoke_all(notify=False)

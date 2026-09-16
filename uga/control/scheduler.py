@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import heapq
+from collections.abc import Callable
 from dataclasses import dataclass
 from threading import Lock
 
@@ -125,13 +126,23 @@ class ActionScheduler:
                     break
         return self.stats()
 
-    async def run(self, stop: asyncio.Event, *, frequency_hz: float = DEFAULT_HZ) -> None:
+    async def run(
+        self,
+        stop: asyncio.Event,
+        *,
+        frequency_hz: float = DEFAULT_HZ,
+        heartbeat: Callable[[], object] | None = None,
+    ) -> None:
         if frequency_hz <= 0:
             raise ContractViolation("scheduler frequency must be positive")
         period_s = 1.0 / frequency_hz
         try:
             while not stop.is_set():
                 self.tick()
+                if heartbeat is not None:
+                    # Heartbeats ride the control plane: they prove the
+                    # scheduler kept draining, not that a blind timer fired.
+                    heartbeat()
                 with contextlib.suppress(TimeoutError):
                     await asyncio.wait_for(stop.wait(), timeout=period_s)
         finally:
