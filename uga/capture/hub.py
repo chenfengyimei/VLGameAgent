@@ -4,7 +4,7 @@ import asyncio
 import contextlib
 import math
 import time
-from collections import Counter
+from collections import Counter, deque
 from collections.abc import Callable
 from dataclasses import dataclass
 from threading import Lock
@@ -17,6 +17,11 @@ from uga.core.errors import BackendUnavailableError, CaptureTimeoutError, Contra
 
 class SynchronousFrameSource(Protocol):
     def capture(self) -> Frame: ...
+
+
+# F16: the rolling gap window size — long runs accumulate a bounded history
+# instead of an ever-growing list that stats() must re-sort.
+_GAP_WINDOW = 512
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,8 +42,10 @@ class CaptureHub:
 
     The primary source is capture-driven.  The fallback is sampled only after
     the accepted timeline has been quiet for ``fallback_after_s``. Consumers
-    always receive the newest item and may skip obsolete frames, while the
-    recorder callback receives every accepted frame before it becomes visible.
+    always receive the newest item and may skip obsolete frames.  The recorder
+    callback is invoked for every accepted frame, serialised after publication
+    and outside the publish lock (F16): a slow recorder never delays the
+    newest frame's visibility or the capture timeline.
     """
 
     records_frames = True
@@ -82,6 +89,7 @@ class CaptureHub:
         self._consumer_timeout_s = consumer_timeout_s
         self._source_error_backoff_s = source_error_backoff_s
         self._publish_lock = Lock()
+        self._record_lock = Lock()
         self._stats_lock = Lock()
         self._started = asyncio.Event()
         # Scheduling follows when the accepted image was sampled, not when its
@@ -96,7 +104,13 @@ class CaptureHub:
         self._consumer_skipped = 0
         self._sources: Counter[str] = Counter()
         self._source_errors: Counter[str] = Counter()
-        self._gaps_ns: list[int] = []
+        # F16: bounded rolling gap window instead of an unbounded list. The
+        # ring holds the most recent samples for the P95 estimate; the all-time
+        # max and count are O(1) accumulators so stats() never sorts or walks
+        # a history that grows with the run.
+        self._gaps_ns: deque[int] = deque(maxlen=_GAP_WINDOW)
+        self._gap_max_ns = 0
+        self._gap_count = 0
 
     async def run(self, stop: asyncio.Event) -> None:
         self._started.set()
@@ -122,8 +136,12 @@ class CaptureHub:
 
     def stats(self) -> CaptureHubStats:
         with self._stats_lock:
-            ordered = sorted(self._gaps_ns)
-            p95_index = min(round((len(ordered) - 1) * 0.95), len(ordered) - 1)
+            # F16: bounded snapshot read — copy the small rolling window, then
+            # sort the COPY outside the lock so a stats consumer never holds
+            # the capture lock during the sort and never walks an unbounded
+            # history.
+            window = sorted(self._gaps_ns)
+            p95_index = min(round((len(window) - 1) * 0.95), len(window) - 1)
             return CaptureHubStats(
                 accepted_frames=self._accepted,
                 primary_frames=self._sources["primary"],
@@ -132,8 +150,8 @@ class CaptureHub:
                 fallback_errors=self._source_errors["fallback"],
                 stale_source_frames=self._stale,
                 consumer_skipped_frames=self._consumer_skipped,
-                p95_gap_ns=ordered[p95_index] if ordered else 0,
-                max_gap_ns=max(ordered, default=0),
+                p95_gap_ns=window[p95_index] if window else 0,
+                max_gap_ns=self._gap_max_ns,
             )
 
     async def _capture_primary(self, stop: asyncio.Event) -> None:
@@ -219,13 +237,22 @@ class CaptureHub:
                 with self._stats_lock:
                     self._stale += 1
                 return
-            if self._record_frame is not None:
-                self._record_frame(frame)
             self._frames.publish(frame)
             with self._stats_lock:
                 if self._last_capture_timestamp_ns is not None:
-                    self._gaps_ns.append(timestamp_ns - self._last_capture_timestamp_ns)
+                    gap_ns = timestamp_ns - self._last_capture_timestamp_ns
+                    self._gaps_ns.append(gap_ns)
+                    if gap_ns > self._gap_max_ns:
+                        self._gap_max_ns = gap_ns
+                    self._gap_count += 1
                 self._last_capture_timestamp_ns = timestamp_ns
                 self._last_frame_monotonic = sampled_monotonic
                 self._accepted += 1
                 self._sources[source] += 1
+        # F16: the recorder callback runs OUTSIDE the publish lock — a slow
+        # disk/encoder must never delay the newest frame's visibility or the
+        # capture timeline.  A dedicated lock serialises recorder calls
+        # (episode frame order preserved) without blocking publishing.
+        if self._record_frame is not None:
+            with self._record_lock:
+                self._record_frame(frame)

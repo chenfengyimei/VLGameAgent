@@ -218,6 +218,85 @@ class CaptureHubTests(unittest.IsolatedAsyncioTestCase):
         self.assertGreaterEqual(stats.fallback_frames, 3)
         self.assertLess(stats.max_gap_ns, 300_000_000)
 
+    async def test_gap_statistics_stay_bounded_over_long_runs(self) -> None:
+        # F16 regression: the gap history was an unbounded list and stats()
+        # sorted the whole thing under the capture lock.  The rolling window
+        # plus O(1) accumulators keep memory and stats() cost flat no matter
+        # how many frames a run accepts.
+        from uga.capture import hub as hub_module
 
-if __name__ == "__main__":
-    unittest.main()
+        hub = CaptureHub(
+            primary=_Source(period_s=0.001),
+            frames=FrameRingBuffer(),
+            consumer_timeout_s=1.0,
+        )
+        stop = asyncio.Event()
+        task = asyncio.create_task(hub.run(stop))
+
+        deadline = asyncio.get_running_loop().time() + 5.0
+        while (
+            hub.stats().accepted_frames < hub_module._GAP_WINDOW + 100
+            and asyncio.get_running_loop().time() < deadline
+        ):
+            await asyncio.sleep(0.01)
+        stats = hub.stats()
+        stop.set()
+        await task
+
+        self.assertGreater(stats.accepted_frames, hub_module._GAP_WINDOW)
+        window = hub._gaps_ns  # type: ignore[attr-defined]
+        self.assertLessEqual(len(window), hub_module._GAP_WINDOW)
+        self.assertGreater(len(window), 0)
+        self.assertGreaterEqual(hub._gap_count, stats.accepted_frames - 1)  # type: ignore[attr-defined]
+        # The reported max covers the WHOLE run (all-time accumulator), not
+        # just the rolling window.
+        self.assertEqual(stats.max_gap_ns, max(hub._gap_max_ns, 0))  # type: ignore[attr-defined]
+
+    async def test_slow_recorder_does_not_block_latest_frame_publication(self) -> None:
+        # F16: a slow recorder callback must not stall the publish path — the
+        # ring buffer keeps delivering the newest frame while the recorder
+        # catches up.
+        release = threading.Event()
+
+        class _SlowRecorder:
+            def __init__(self) -> None:
+                self.parked = False
+
+            def record_frame(self, frame: Frame) -> None:
+                if not self.parked:
+                    self.parked = True
+                    release.wait(timeout=2.0)
+
+        recorder = _SlowRecorder()
+        hub = CaptureHub(
+            primary=_Source(period_s=0.001),
+            frames=FrameRingBuffer(),
+            record_frame=recorder.record_frame,
+            consumer_timeout_s=1.0,
+        )
+        stop = asyncio.Event()
+        task = asyncio.create_task(hub.run(stop))
+
+        # The first accepted frame parks the recorder callback; the publish
+        # path must keep accepting later frames instead of stalling behind it.
+        deadline = asyncio.get_running_loop().time() + 2.0
+        while (
+            not recorder.parked and asyncio.get_running_loop().time() < deadline
+        ):
+            await asyncio.sleep(0.005)
+        self.assertTrue(recorder.parked)
+        parked_stats = hub.stats()
+        self.assertGreaterEqual(parked_stats.accepted_frames, 1)
+
+        release.set()
+        deadline = asyncio.get_running_loop().time() + 2.0
+        while (
+            hub.stats().accepted_frames <= parked_stats.accepted_frames
+            and asyncio.get_running_loop().time() < deadline
+        ):
+            await asyncio.sleep(0.005)
+        stats = hub.stats()
+        stop.set()
+        await task
+
+        self.assertGreater(stats.accepted_frames, parked_stats.accepted_frames)
