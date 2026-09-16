@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ctypes
 import hashlib
 import os
 import shutil
@@ -20,6 +21,45 @@ def _write_seeded_file(path: Path, size: int, seed: int) -> None:
     material = hashlib.sha256(bytes([seed])).digest()
     payload = (material * (size // len(material) + 1))[:size]
     path.write_bytes(payload)
+
+
+def _parse_launcher_env(env_path: Path) -> dict[str, str]:
+    """Parse the ``DLL=``/``SHA=`` pairs the launcher stub records on launch."""
+    values: dict[str, str] = {}
+    for line in env_path.read_text(encoding="utf-8", errors="replace").splitlines():
+        key, separator, value = line.partition("=")
+        if separator and key and key not in values:
+            values[key] = value.strip()
+    return values
+
+
+def _short_path(path: Path) -> str:
+    """Return the 8.3 short-name spelling of ``path`` when the volume has one."""
+    buffer = ctypes.create_unicode_buffer(1024)
+    length = ctypes.windll.kernel32.GetShortPathNameW(str(path), buffer, len(buffer))
+    if length == 0:
+        return str(path)
+    return buffer.value
+
+
+def _assert_same_dll_file(actual: str, expected: Path) -> None:
+    """Assert two DLL path strings name the same physical file.
+
+    Path identity is the contract the launcher actually provides: one file can
+    legitimately be spelled with 8.3 short names (``C:\\Users\\RUNNER~1\\...``)
+    or expanded long names (``C:\\Users\\runneradmin\\...``) in any letter case,
+    so string equality is a CI-only false failure waiting to happen.
+    """
+    actual_path = Path(actual)
+    if not actual_path.exists() or not Path(expected).exists():
+        raise AssertionError(
+            "DLL paths must exist for identity comparison: "
+            f"actual={actual!r} expected={str(expected)!r}"
+        )
+    if not actual_path.samefile(expected):
+        raise AssertionError(
+            f"launcher pinned a different DLL: actual={actual!r} expected={str(expected)!r}"
+        )
 
 
 @unittest.skipUnless(os.name == "nt", "Windows-only contract")
@@ -125,15 +165,66 @@ class ReleaseBundleLauncherTests(unittest.TestCase):
             marker.is_file(),
         )
 
+    def _launch_and_read_env(
+        self, bundle: Path, *, anchor: str | None = None
+    ) -> tuple[int, bool, dict[str, str]]:
+        code, _, _, launched = self._launch(bundle, anchor=anchor)
+        marker_env = self._temp / f"marker-{bundle.name}-{abs(hash(anchor))}.launched.env"
+        env = _parse_launcher_env(marker_env) if marker_env.is_file() else {}
+        return code, launched, env
+
     def test_clean_bundle_launches_agent_with_pinned_native_library(self) -> None:
-        code, _, _, launched = self._launch(self._good, anchor=self._good_anchor)
+        code, launched, env = self._launch_and_read_env(
+            self._good, anchor=self._good_anchor
+        )
         self.assertEqual(code, 0)
         self.assertTrue(launched)
-        env_text = (
-            self._temp / f"marker-good-{abs(hash(self._good_anchor))}.launched.env"
-        ).read_text(encoding="utf-8", errors="replace")
-        self.assertIn(f"DLL={self._good / 'native' / 'uga_capture.dll'}", env_text)
-        self.assertIn(f"SHA={self._good_dll_sha256}", env_text)
+        self.assertIn("DLL", env)
+        self.assertIn("SHA", env)
+        expected_dll = self._good / "native" / "uga_capture.dll"
+        # File identity, not string equality: the launcher resolves the DLL to
+        # its expanded long-name form while the expected path may carry the
+        # 8.3 short-name form of the same temp directory.
+        _assert_same_dll_file(env["DLL"], expected_dll)
+        # Independent digest check: the pinned SHA must match the bytes of the
+        # file the environment actually names, not merely a stored string.
+        self.assertEqual(env["SHA"], self._good_dll_sha256)
+        self.assertEqual(
+            hashlib.sha256(Path(env["DLL"]).read_bytes()).hexdigest(), env["SHA"]
+        )
+
+    def test_bundle_env_uses_same_file_for_short_and_long_paths(self) -> None:
+        code, launched, env = self._launch_and_read_env(
+            self._good, anchor=self._good_anchor
+        )
+        self.assertEqual(code, 0)
+        self.assertTrue(launched)
+        expected_dll = self._good / "native" / "uga_capture.dll"
+        _assert_same_dll_file(env["DLL"], expected_dll)
+        # Alternate spellings of the same file (8.3 short names, letter case)
+        # must pass identity comparison even though their strings differ.
+        _assert_same_dll_file(_short_path(expected_dll), expected_dll)
+        self.assertNotEqual(str(expected_dll), str(expected_dll).swapcase())
+        _assert_same_dll_file(str(expected_dll).swapcase(), expected_dll)
+        # A DLL stored under a directory with spaces still parses and
+        # compares by identity.
+        spaced = self._temp / "dir with spaces" / "uga_capture.dll"
+        spaced.parent.mkdir(parents=True)
+        shutil.copyfile(expected_dll, spaced)
+        self.addCleanup(shutil.rmtree, spaced.parent, ignore_errors=True)
+        _assert_same_dll_file(str(spaced), spaced)
+
+    def test_bundle_wrong_dll_identity_rejected(self) -> None:
+        expected_dll = self._good / "native" / "uga_capture.dll"
+        with self.assertRaises(AssertionError):
+            _assert_same_dll_file(
+                str(self._good / "uga_test_bundle-0.1.0-py3-none-any.whl"),
+                expected_dll,
+            )
+        with self.assertRaises(AssertionError):
+            _assert_same_dll_file(
+                str(self._temp / "missing" / "uga_capture.dll"), expected_dll
+            )
 
     def test_bundle_without_anchor_launches_in_degraded_mode(self) -> None:
         # Write-Warning does not surface on the captured streams, so the
