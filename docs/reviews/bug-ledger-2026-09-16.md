@@ -28,7 +28,7 @@
 | F13 | P2 | S | tests_passed(local) | 正常成功回复未更新 last_raw_reply，看板摘要空/陈旧 | `uga/policy/grounded_vlm.py::decide`（正常路径先写 last_raw_reply）；另补齐 4 个快路径出口漏打 _last_decision_source | D10 |
 | F14 | P2 | S+I | tests_passed(local) | 高分辨率恢复未真正提高有效分辨率（仅改裁剪 padding） | `uga/policy/grounded_vlm.py::_images`（总览宽度加倍至 1280 封顶+非升级标记） | D05、D09 |
 | F15 | P1 | S/R | tests_passed(local) | 会话持久化无作用域/原子替换/恢复后证据门槛 | `uga/agent/session_state.py`（schema/namespace/原子写/隔离/UNTRUSTED_RESTORED）；`apps/agent/run.py`（profile.game_id 绑定） | D07 |
-| F16 | P2 | S/R | open | CaptureHub 间隔统计无限增长全量排序；发布锁内同步录制 | `uga/capture/hub.py`（_gaps_ns、stats、_publish）；`uga/recording/episode_writer.py`（有界，勿误伤） | D11 |
+| F16 | P2 | S/R | tests_passed(local; hub 部分) | CaptureHub 间隔统计无限增长全量排序；发布锁内同步录制 | `uga/capture/hub.py`（_gaps_ns→有界环+O(1) 累计器、录制回调移出发布锁）；`uga/recording/episode_writer.py`（有界，勿误伤） | D11 |
 | F17 | P1 | C | tests_passed(local) | CI DLL 路径短名/长名字符串比较误报（RUNNER~1 vs runneradmin） | `tests/windows/test_release_bundle.py::test_clean_bundle_launches_agent_with_pinned_native_library` | D01 |
 | G18 | P1 | C/S | tests_passed(local) | Python 作业缺 DLL，5 项 Native 测试静默 skip | `.github/workflows/ci.yml`（新增 native-python-integration 作业） | D01、D16 |
 | R19 | P1 | R | tests_passed(local; 传输层) | 模型网络出口/秘密/隐私边界不显式 | `uga/policy/vision_transport.py`（HTTPS 强制回环例外/userinfo/凭据 query 拒绝、redact_error_detail 凭据脱敏）；`uga/policy/vlm_planner.py`（接线） | D08、D09、D10、D13 |
@@ -135,7 +135,8 @@
 ### F16 持续运行统计无限增长，录制阻塞采集发布（P2 · S/R）
 - **触发条件：** 长时间运行、频繁看板刷新、编码/磁盘变慢。
 - **预期行为：** 有界统计窗口（滚动 P95，全程值用固定内存估计并标注）；发布与录制解耦（不在发布锁内做编码/磁盘 I/O）；队列条目+字节双上限与背压 deadline；训练录制禁止静默丢记录。
-- **修复提交：** 待 D11。 **关闭证据：** 待 T24/T25 回归。
+- **修复提交：** `5cc4c45`（2026-09-16，未推送）。(1) `_gaps_ns` 列表 → `deque(maxlen=512)` 滚动环（P95 用环内窗口估计）+ `_gap_max_ns`/`_gap_count` O(1) 全程累计器——stats() 只对小窗口副本（锁外）排序，max 为全程精确值；(2) 录制回调移出发布锁：`_publish` 在锁内发布+计数，录制回调在独立 `_record_lock` 下串行执行（保持 episode 帧顺序）且不阻塞发布/可见性/统计；docstring 同步更新录制可见性语义。EpisodeWriter 既有内存上限未动。
+- **关闭证据：** test_gap_statistics_stay_bounded_over_long_runs（>612 帧后窗口 ≤512、全程 max 精确、计数守恒）+ test_slow_recorder_does_not_block_latest_frame_publication（录制回调停摆时发布继续前进，accepted 增长判别）。全套件 614 passed + 1 skip + 103 subtests；ruff/mypy(184) 绿。**余项（D11 第二批）：** RecorderChannel 队列条目+字节双上限、训练录制禁止静默丢记录、日志轮转——归 D11 第二批/M4 收尾。
 
 ### F17 当前 CI 的 Windows 路径字符串断言误报（P1 · C · tests_passed(local)）
 - **触发条件：** 临时路径含 RUNNER~1，PowerShell 解析为 runneradmin。
