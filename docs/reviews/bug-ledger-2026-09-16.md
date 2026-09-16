@@ -22,8 +22,8 @@
 | F08 | P1 | S | tests_passed(local) | 任务记忆 generation 与主循环 _task_generation 未统一 | `uga/agent/session_state.py::GameSessionState.task_generation`（单一来源：任务身份变更推进）；`uga/core/agent_loop.py`（步首同步） | D07 |
 | F15 | P1 | S/R | tests_passed(local) | 会话持久化无作用域/原子替换/恢复后证据门槛 | `uga/agent/session_state.py`（schema/namespace/原子写/隔离/UNTRUSTED_RESTORED）；`apps/agent/run.py`（profile.game_id 绑定） | D07 |
 | F09 | P1 | S+I | tests_passed(local) | 无 required_evidence 时两次高置信 DONE 即判成功 | `uga/agent/closed_loop.py::GoalVerifier._consider_snapshot`（屏幕证据强制+上下文守卫） | D05 |
-| F10 | P1 | S | open | VisionRateLimitedError 未被新闭环统一捕获（只捕 BackendUnavailableError） | `uga/policy/vlm_planner.py`（抛出方）；`uga/core/agent_loop.py`、`uga/policy/grounded_vlm.py`（捕获方） | D08 |
-| F11 | P1 | S+I | open | 本地结构化校验比声明 Schema 宽松（float() 强转、混合坐标整体除 1000、confidence 无上界/类型检查） | `uga/policy/grounded_vlm.py`（解析/验证谓词）；`uga/perception/schema.py` | D08、D09 |
+| F10 | P1 | S | tests_passed(local) | VisionRateLimitedError 未被新闭环统一捕获（只捕 BackendUnavailableError） | `uga/policy/vision_transport.py`（ProviderError 分类，BackendUnavailableError 子类——既有捕获边界全部兼容）；`uga/policy/vlm_planner.py`（fatal 传播） | D08 |
+| F11 | P1 | S+I | tests_passed(local) | 本地结构化校验比声明 Schema 宽松（float() 强转、混合坐标整体除 1000、confidence 无上界/类型检查） | `uga/policy/structured_output.py`（严格数字/置信度/坐标/文本）；`uga/policy/grounded_vlm.py::_parse/_parse_action`、GroundedOutcomeVerifier（接线） | D08、D09 |
 | F12 | P1 | S | tests_passed(local; 运行时部分) | 排队被当真实动作；观察关联过旧（推理前 observation_id；数据侧默认 1s） | `uga/control/execution_receipt.py`（新增回执模块）；`uga/control/scheduler.py`（逐原语发布）；`uga/agent/closed_loop.py`（执行证据门+回执记录）；`uga/core/agent_loop.py`（回执泵+提交接线）；`uga/dataset/processor.py`（数据侧归 D14） | D04、D10、D14 |
 | F13 | P2 | S | open | 正常成功回复未更新 last_raw_reply，看板摘要空/陈旧 | `uga/policy/grounded_vlm.py::GroundedVlmPlanner.decide` | D10 |
 | F14 | P2 | S+I | tests_passed(local) | 高分辨率恢复未真正提高有效分辨率（仅改裁剪 padding） | `uga/policy/grounded_vlm.py::_images`（总览宽度加倍至 1280 封顶+非升级标记） | D05、D09 |
@@ -31,7 +31,7 @@
 | F16 | P2 | S/R | open | CaptureHub 间隔统计无限增长全量排序；发布锁内同步录制 | `uga/capture/hub.py`（_gaps_ns、stats、_publish）；`uga/recording/episode_writer.py`（有界，勿误伤） | D11 |
 | F17 | P1 | C | tests_passed(local) | CI DLL 路径短名/长名字符串比较误报（RUNNER~1 vs runneradmin） | `tests/windows/test_release_bundle.py::test_clean_bundle_launches_agent_with_pinned_native_library` | D01 |
 | G18 | P1 | C/S | tests_passed(local) | Python 作业缺 DLL，5 项 Native 测试静默 skip | `.github/workflows/ci.yml`（新增 native-python-integration 作业） | D01、D16 |
-| R19 | P1 | R | open | 模型网络出口/秘密/隐私边界不显式 | `uga/policy/vlm_planner.py`（urllib 默认行为、错误正文入异常）；截图/OCR/日志 | D08、D09、D10、D13 |
+| R19 | P1 | R | tests_passed(local; 传输层) | 模型网络出口/秘密/隐私边界不显式 | `uga/policy/vision_transport.py`（HTTPS 强制回环例外/userinfo/凭据 query 拒绝、redact_error_detail 凭据脱敏）；`uga/policy/vlm_planner.py`（接线） | D08、D09、D10、D13 |
 | R20 | P1 | R | open | “确定/提交”类 OCR 快规则缺页面语境授权；协议勾选提案期置位 | `uga/policy/grounded_vlm.py`（快规则）；`uga/agent/session_state.py` | D03、D12 |
 | R21 | P1 | R | open | FFI init/响应/关闭缺外层 deadline（通道等待/线程 join） | `native/crates/uga-capture/src/ffi.rs`；`uga/capture/native_adapter.py` | D16 |
 | G22 | P1 | S | open | 正式训练/发布能力与证据未完成（CPU smoke≠五阶段真实训练） | `uga/training/behavior_cloning.py`、`uga/training/veomni.py`；`docs/status/uga-v1-status.md` | D14、D15、D18 |
@@ -99,12 +99,14 @@
 ### F10 429 异常分类与新闭环调用者不匹配（P1 · S）
 - **触发条件：** 主模型或验证器返回 HTTP 429。
 - **预期行为：** 统一 ProviderError 分类（rate_limit/auth/quota/timeout/transient5xx/invalid_request/unsupported_capability/malformed_output）；429 有界退避；401/403/配额停止而非无限重试。
-- **修复提交：** 待 D08。 **关闭证据：** 待 T18/T19 回归（本地假服务）。
+- **修复提交：** `74ac447`（2026-09-16，未推送）。新增 `uga/policy/vision_transport.py`：ProviderErrorKind 九类 + ProviderError（**BackendUnavailableError 子类**——既有 except 边界全部兼容，F10 的漏接问题从根上消除）+ classify_provider_failure（401/403=AUTH fatal、429=RATE_LIMIT、402/Arrearage/欠费=QUOTA fatal、408=TIMEOUT、5xx=TRANSIENT、400/422 结构化标记=UNSUPPORTED_CAPABILITY）+ Retry-After 解析 + redact_error_detail 凭据脱敏。客户端 decide() 全部失败路径走分类；VlmPlannerPolicy 通用失败处理对 fatal=True 的 ProviderError 立即重抛（401/403/配额停止而非烧重试阶梯）。VisionRateLimitedError 保留为 RATE_LIMIT 别名（带 Retry-After）。
+- **关闭证据：** test_vision_transport.py 27 项：401→AUTH fatal、429→RATE_LIMIT 带 Retry-After、402/欠费→QUOTA fatal、5xx 非致命、脱敏（Bearer/api_key/sk- 前缀）、后向兼容 isinstance。全套件 610 passed + 1 skip + 103 subtests；ruff/mypy(184) 绿。
 
-### F11 本地结构化校验比声明的 Schema 宽松（P1 · S+I · EX05/EX07）
+### F11 本地结构化校验比声明的 Schema 宽松（P1 · S+I · EX05/EX07 · tests_passed(local)）
 - **触发条件：** bool/字符串数值/NaN/Infinity/confidence>1；混合 [0,1] 与 [0,1000] 坐标。
 - **预期行为：** 严格消费端校验（类型/有限性/上界/额外字段/重复键）；coord_space 显式配置，整框单一坐标系；拒绝后才构造 GroundedAction。
-- **修复提交：** 待 D08。 **关闭证据：** 待 T20 回归。
+- **修复提交：** `74ac447`（2026-09-16，未推送）。新增 `uga/policy/structured_output.py`：strict_finite_number（拒绝 bool/str/NaN/Inf）、strict_unit_interval_number（[0,1] 置信度/坐标）、strict_confidence_value（缺席=None、畸形抛错——验证器 bool 置信度不再当 pass）、strict_coordinates（EX07：整框必须全 [0,1] 或全 (1,1000]，混合空间拒绝而非猜测缩放）、strict_bounded_text（长度上限）。接线：_parse 的 confidence、_parse_action 的 bbox/label/effect/confidence、GroundedOutcomeVerifier 的置信度判定。
+- **关闭证据：** EX05/EX07 回归（bool 置信度拒绝、NaN 拒绝、混合坐标 [0.2,300,0.4,500] 拒绝、千坐标 (100,200,400,500) 正确归一）+ 单元 27 项；全套件 610+1 skip+103 subtests 绿。**额外字段/重复键拒绝归 D09 严格 Schema 阶段（当前 Schema 层未声明额外字段约束，实施需先冻结 Schema 变更）。**
 
 ### F12 排队被当成真实动作；观察关联可能过旧（P1 · S）
 - **触发条件：** 执行器最终拒绝/部分原语失败/慢推理超过 1s。
@@ -154,8 +156,8 @@
 ### R20 低风险快规则缺少页面上下文授权（P1 · R · open；统一安全门已由 D03 落地）
 - **触发条件：** 同名确认按钮出现在交易/协议/删除/登录等语境；协议勾选提案期置位。
 - **预期行为：** 规则先判页面语境再交统一安全门；账户/协议/支付/删除/发送要求当前授权；勾选状态从执行/效果回执更新。补反例测试（支付/协议/删除/登录页）。
-- **修复提交：** D03 部分 `01e9fe9`：所有规则/热点/恢复来源现在必须通过统一动作安全门（可信来源、生成守卫、最终落点、禁点+诱饵），不再有按标签/坐标免检的路径。**剩余归 D12：** 快规则的页面前置条件、风险类别、"确定"在支付/协议页的语境拒绝反例、协议勾选状态从回执更新。
-- **关闭证据：** 待 D12 全量落地后回填。
+- **修复提交：** D03 部分 `01e9fe9`：所有规则/热点/恢复来源现在必须通过统一动作安全门（可信来源、生成守卫、最终落点、禁点+诱饵），不再有按标签/坐标免检的路径。D12 部分 `624ea60`：新增 `uga/agent/strategies/` 规则清单（StrategyRule：名称/来源/页面前置/允许动作/风险/效果/冷却）+ registry_for(game_id)，mumu-xianyu 14 条规则数据化，**通用 profile 得到空注册表、游戏快路径全禁用**；协议勾选规则显式标注 risk="agreement-tick (login page precondition)"（仅登录页同屏 开始游戏+同意用户协议 时适用）。**剩余归 D12 第二批：** 支付/删除页反例语料、协议勾选状态从执行/效果回执更新。
+- **关闭证据：** test_strategies.py 9 项（空注册表禁用快路径、注册游戏规则照常、来源清单完备性、来源唯一/归属校验）+ D03 全部门禁负例保持绿。**支付/协议/删除页反例语料待 D12 第二批（NOT_RUN）。**
 
 ### R21 原生调用存在缺少外层期限的阻塞边界（P1 · R）
 - **触发条件：** 驱动/API 卡死、初始化不返回、采集与关闭竞争。
