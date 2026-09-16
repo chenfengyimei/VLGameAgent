@@ -52,6 +52,7 @@ class CaptureHub:
         record_frame: Callable[[Frame], None] | None = None,
         fallback_after_s: float = 0.25,
         fallback_hz: float = 4.0,
+        primary_hz: float | None = None,
         consumer_timeout_s: float = 10.0,
         source_error_backoff_s: float = 0.05,
     ) -> None:
@@ -59,6 +60,10 @@ class CaptureHub:
             raise ContractViolation("capture fallback delay must be positive")
         if not math.isfinite(fallback_hz) or fallback_hz <= 0 or fallback_hz > 4.0:
             raise ContractViolation("capture fallback frequency must be in (0, 4]")
+        if primary_hz is not None and (
+            not math.isfinite(primary_hz) or primary_hz <= 0 or primary_hz > 60.0
+        ):
+            raise ContractViolation("capture primary frequency must be in (0, 60]")
         if not math.isfinite(consumer_timeout_s) or consumer_timeout_s <= 0:
             raise ContractViolation("capture consumer timeout must be positive")
         if (
@@ -73,6 +78,7 @@ class CaptureHub:
         self._record_frame = record_frame
         self._fallback_after_s = fallback_after_s
         self._fallback_period_s = 1.0 / fallback_hz
+        self._primary_period_s = None if primary_hz is None else 1.0 / primary_hz
         self._consumer_timeout_s = consumer_timeout_s
         self._source_error_backoff_s = source_error_backoff_s
         self._publish_lock = Lock()
@@ -132,12 +138,13 @@ class CaptureHub:
 
     async def _capture_primary(self, stop: asyncio.Event) -> None:
         while not stop.is_set():
+            attempt_started = time.monotonic()
             try:
                 frame = await asyncio.to_thread(self._primary.capture)
             except CaptureTimeoutError:
                 await asyncio.sleep(0)
                 continue
-            except BackendUnavailableError:
+            except (BackendUnavailableError, ContractViolation):
                 # A transient WGC session failure must not cancel the fallback
                 # heartbeat (or the whole AgentLoop TaskGroup). Keep retrying
                 # the primary with bounded backoff while GDI owns the timeline.
@@ -154,6 +161,11 @@ class CaptureHub:
                 "primary",
                 time.monotonic(),
             )
+            if self._primary_period_s is not None:
+                delay = attempt_started + self._primary_period_s - time.monotonic()
+                if delay > 0:
+                    with contextlib.suppress(TimeoutError):
+                        await asyncio.wait_for(stop.wait(), timeout=delay)
 
     async def _capture_fallback(self, stop: asyncio.Event) -> None:
         assert self._fallback is not None
@@ -182,14 +194,14 @@ class CaptureHub:
             attempt_started = time.monotonic()
             try:
                 frame = await asyncio.to_thread(self._fallback.capture)
-            except (CaptureTimeoutError, BackendUnavailableError):
+            except (CaptureTimeoutError, BackendUnavailableError, ContractViolation):
                 # A failed heartbeat did not publish a frame and therefore does
-                # not consume the 4 Hz output budget. Retry promptly so one
-                # transient GDI miss cannot turn a 250 ms primary stall into a
-                # capture gap beyond the 500 ms qualification ceiling.
+                # not consume the 4 Hz output budget.  ContractViolation covers
+                # a stale/recreated target window (invalid HWND): keep the
+                # timeline alive instead of killing the whole process.
                 with self._stats_lock:
                     self._source_errors["fallback"] += 1
-                await asyncio.sleep(min(0.01, self._fallback_period_s / 10.0))
+                await asyncio.sleep(min(0.05, self._fallback_period_s / 10.0))
                 continue
             last_attempt = attempt_started
             await asyncio.to_thread(

@@ -3,10 +3,12 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
 from uga.agent.closed_loop import (
+    ActionValidator,
     ClosedLoopSupervisor,
     DecisionDisposition,
     KeyResolver,
@@ -14,21 +16,24 @@ from uga.agent.closed_loop import (
     TerminalStatus,
 )
 from uga.agent.mode_router import ModeClassifier, ModeRouter, ModeTransition
+from uga.agent.session_state import quest_level_target
 from uga.capture.frame import Frame
 from uga.capture.ring_buffer import FrameRingBuffer, LatestFrameSlot, SequencedFrame
 from uga.control.arbiter import ArbiterDecision
 from uga.control.lease import ControlMode, ControlOwner
 from uga.control.lease_manager import ControlLeaseManager
+from uga.control.physical import AbsolutePointerAction, PhysicalAction
 from uga.control.scheduler import ActionScheduler, SchedulerStats
-from uga.core.errors import ContractViolation
+from uga.core.errors import BackendUnavailableError, ContractViolation
 from uga.core.events import Event, EventBus, EventType
 from uga.environment.adapter import EnvironmentAdapter
 from uga.gui.controller import GuiActionController, GuiActionSubmission
+from uga.gui.schema import GuiActionKind
 from uga.observation.buffer import TemporalObservationBuffer
 from uga.observation.builder import ObservationBuilder
 from uga.observation.schema import Observation
 from uga.perception.builder import PerceptionBuilder
-from uga.perception.schema import PerceptionSnapshot, PlannerOutcome
+from uga.perception.schema import DecisionKind, PerceptionSnapshot, PlannerOutcome
 from uga.policy.chunk_controller import ActionChunkController, ActionChunkSubmission
 from uga.policy.fast_policy import FastPolicy, FastPolicyOutput, PolicyContext
 from uga.recording.episode_writer import EpisodeWriter
@@ -38,6 +43,16 @@ from uga.windows.coordinates import CoordinateTransform, Rect
 
 class CaptureSource(Protocol):
     async def capture_once(self) -> SequencedFrame: ...
+
+
+def _physical_pointer_point(
+    physical_actions: tuple[PhysicalAction, ...],
+) -> tuple[float, float] | None:
+    """The physical screen pixel of the pointer move inside a submission."""
+    for item in physical_actions:
+        if isinstance(item, AbsolutePointerAction):
+            return (float(item.x), float(item.y))
+    return None
 
 
 @runtime_checkable
@@ -59,6 +74,9 @@ class GroundedPlanner(Protocol):
         goal: str,
         high_resolution_retry: bool = False,
         preferred_action_available: bool = True,
+        session_context: str | None = None,
+        quest_target_level: int | None = None,
+        quest_text: str | None = None,
     ) -> PlannerOutcome: ...
 
 
@@ -101,6 +119,9 @@ class RealtimeAgentLoop:
         gui_controller: GuiActionController | None = None,
         key_resolver: KeyResolver | None = None,
         grounded_decision_interval_s: float = 0.0,
+        dialogue_decision_interval_s: float = 1.0,
+        continuous_grounded: bool = False,
+        closed_loop_factory: Callable[[], ClosedLoopSupervisor] | None = None,
     ) -> None:
         grounded_parts = (
             grounded_planner,
@@ -113,6 +134,12 @@ class RealtimeAgentLoop:
             raise ContractViolation("agent loop requires a fast or grounded policy")
         if grounded_decision_interval_s < 0:
             raise ContractViolation("grounded decision interval cannot be negative")
+        if dialogue_decision_interval_s < 0:
+            raise ContractViolation("dialogue decision interval cannot be negative")
+        if continuous_grounded and closed_loop_factory is None:
+            raise ContractViolation("continuous grounded mode requires a closed-loop factory")
+        if closed_loop_factory is not None and closed_loop is None:
+            raise ContractViolation("closed-loop factory requires a grounded closed loop")
         if any(item is not None for item in grounded_parts) and not all(
             item is not None for item in grounded_parts
         ):
@@ -139,7 +166,22 @@ class RealtimeAgentLoop:
         self._grounded_decision_interval_ns = round(
             grounded_decision_interval_s * 1_000_000_000
         )
+        self._dialogue_decision_interval_ns = round(
+            dialogue_decision_interval_s * 1_000_000_000
+        )
+        self._continuous_grounded = continuous_grounded
+        self._closed_loop_factory = closed_loop_factory
         self._next_grounded_inference_ns = 0
+        self._grounded_failure_backoff_ns = max(
+            self._grounded_decision_interval_ns, 15_000_000_000
+        )
+        self._planner_failure_count = 0
+        self._last_planner_error: str | None = None
+        self._last_supervision_disposition: str | None = None
+        self._last_supervision_reason: str | None = None
+        self._last_planner_input_frame_id: str | None = None
+        self._last_planner_input_age_ns: int | None = None
+        self._continuous_cycle_count = 1
         self._task_generation = 1
         self._geometry_generation = 0
         self._geometry_key: tuple[object, ...] | None = None
@@ -169,7 +211,22 @@ class RealtimeAgentLoop:
 
     @property
     def closed_loop_diagnostics(self) -> dict[str, object] | None:
-        return None if self._closed_loop is None else self._closed_loop.diagnostics()
+        if self._closed_loop is None:
+            return None
+        diagnostics = self._closed_loop.diagnostics()
+        diagnostics.update(
+            {
+                "continuous_mode": self._continuous_grounded,
+                "continuous_cycle_count": self._continuous_cycle_count,
+                "planner_failure_count": self._planner_failure_count,
+                "last_planner_error": self._last_planner_error,
+                "last_supervision_disposition": self._last_supervision_disposition,
+                "last_supervision_reason": self._last_supervision_reason,
+                "last_planner_input_frame_id": self._last_planner_input_frame_id,
+                "last_planner_input_age_ns": self._last_planner_input_age_ns,
+            }
+        )
+        return diagnostics
 
     def fail_closed_loop(self, reason: str) -> None:
         if self._closed_loop is not None and not self._closed_loop.is_terminal:
@@ -279,17 +336,71 @@ class RealtimeAgentLoop:
                 "agent.loop",
                 {"observation_id": observation.observation_id, "policy": "grounded_vlm"},
             )
-            outcome = await asyncio.to_thread(
-                grounded_planner.decide,
-                snapshot=perception,
-                frames=history[-3:],
-                goal=observation.user_goal,
-                high_resolution_retry=closed_loop.high_resolution_retry,
-                preferred_action_available=closed_loop.preferred_action_available,
+            self._last_planner_input_frame_id = perception.frame_id
+            self._last_planner_input_age_ns = max(
+                0,
+                self._clock.now().value_ns - perception.captured_at.value_ns,
             )
+            try:
+                session = closed_loop.session
+                outcome = await asyncio.to_thread(
+                    grounded_planner.decide,
+                    snapshot=perception,
+                    frames=history[-3:],
+                    goal=observation.user_goal,
+                    high_resolution_retry=closed_loop.high_resolution_retry,
+                    preferred_action_available=closed_loop.preferred_action_available,
+                    session_context=(
+                        None if session is None else session.context_summary()
+                    ),
+                    quest_target_level=(
+                        None
+                        if session is None or session.latest_main_task is None
+                        else quest_level_target(session.latest_main_task.raw_text)
+                    ),
+                    quest_text=(
+                        None
+                        if session is None or session.latest_main_task is None
+                        else session.latest_main_task.raw_text
+                    ),
+                )
+            except BackendUnavailableError as exc:
+                self._planner_failure_count += 1
+                self._last_planner_error = str(exc)
+                self._next_grounded_inference_ns = (
+                    self._clock.now().value_ns + self._grounded_failure_backoff_ns
+                )
+                await self._events.publish(
+                    EventType.POLICY_INFERENCE_COMPLETED,
+                    "agent.loop",
+                    {
+                        "observation_id": observation.observation_id,
+                        "policy": "grounded_vlm",
+                        "disposition": "retry",
+                        "reason": self._last_planner_error,
+                        "retry_after_ns": self._grounded_failure_backoff_ns,
+                    },
+                )
+                stats = self._scheduler.tick()
+                return AgentLoopStep(
+                    observation,
+                    transition,
+                    None,
+                    None,
+                    stats,
+                    perception,
+                )
+            self._last_planner_error = None
             planner_outcome = outcome
-            self._next_grounded_inference_ns = (
-                self._clock.now().value_ns + self._grounded_decision_interval_ns
+            dialogue_cadence = (
+                outcome.kind == DecisionKind.ACT
+                and outcome.action is not None
+                and outcome.action.target_label in {"对话继续", "5秒后自动继续"}
+            )
+            self._next_grounded_inference_ns = self._clock.now().value_ns + (
+                self._dialogue_decision_interval_ns
+                if dialogue_cadence
+                else self._grounded_decision_interval_ns
             )
             latest_after_inference = self._frames.latest() or pending
             if latest_after_inference.sequence == pending.sequence:
@@ -315,14 +426,55 @@ class RealtimeAgentLoop:
                 latest_after_inference.frame,
                 observation.user_goal,
             )
+            # assess() may replace the proposed action (model exit intent
+            # routed to the calibrated exit hotspots): every downstream
+            # consumer must act on the SUPERVISED outcome.  Submitting the
+            # raw planner proposal once sent a routed exit's original box —
+            # parked on MuMu's own title-bar close button — to SendInput.
+            outcome = supervised.outcome
             execution_item = latest_after_inference
             if supervised.disposition == DecisionDisposition.EXECUTE:
                 current_item = self._frames.latest() or latest_after_inference
-                execution_fresh, execution_reason = closed_loop.validate_execution_frame(
-                    outcome,
-                    latest_after_inference.frame,
-                    current_item.frame,
+                is_deterministic_exit = (
+                    outcome.action is not None
+                    and outcome.action.target_label
+                    in {"ui_back", "ui_close", "ui_promote"}
                 )
+                if is_deterministic_exit:
+                    # Calibrated hotspots and OCR-glyph closes carry no
+                    # groundable text; the pixel-change freshness check would
+                    # reject them forever on animated pages.
+                    execution_fresh, execution_reason = True, "deterministic exit control"
+                else:
+                    grounding_match = (
+                        outcome.action is not None
+                        and ActionValidator._ocr_target_grounding(
+                            outcome.action, fresh_perception
+                        )
+                        == "match"
+                    )
+                    decided_missing = (
+                        outcome.action is not None
+                        and ActionValidator._ocr_target_grounding(
+                            outcome.action, perception
+                        )
+                        == "missing"
+                    )
+                    visual_only = (
+                        not grounding_match
+                        and decided_missing
+                        and outcome.action is not None
+                        and outcome.action.confidence >= 0.85
+                        and outcome.action.kind == GuiActionKind.CLICK
+                    )
+                    execution_fresh, execution_reason = closed_loop.validate_execution_frame(
+                        outcome,
+                        latest_after_inference.frame,
+                        current_item.frame,
+                        # Graphical animated buttons (晋升 medallion) tolerate
+                        # dynamic pixels exactly like OCR-grounded targets.
+                        target_was_ocr_grounded=grounding_match or visual_only,
+                    )
                 if not execution_fresh:
                     supervised = SupervisedDecision(
                         DecisionDisposition.REOBSERVE,
@@ -332,6 +484,8 @@ class RealtimeAgentLoop:
                 else:
                     execution_item = current_item
             supervision = supervised
+            self._last_supervision_disposition = supervised.disposition.value
+            self._last_supervision_reason = supervised.reason
             await self._events.publish(
                 EventType.POLICY_INFERENCE_COMPLETED,
                 "agent.loop",
@@ -410,6 +564,16 @@ class RealtimeAgentLoop:
                             outcome,
                             fresh_perception,
                             execution_item.frame,
+                            source=getattr(
+                                grounded_planner, "last_decision_source", None
+                            ),
+                            physical_point=_physical_pointer_point(
+                                gui_submission.physical_actions
+                            ),
+                            primitives=tuple(
+                                type(item).__name__
+                                for item in gui_submission.physical_actions
+                            ),
                         )
                     else:
                         closed_loop.fail("grounded GUI proposal was rejected")
@@ -440,7 +604,16 @@ class RealtimeAgentLoop:
                     await self._publish_decision(gui_submission.decision)
                     if gui_submission.decision.accepted:
                         closed_loop.start_recovery_action(
-                            fresh_perception, latest_after_inference.frame
+                            fresh_perception,
+                            latest_after_inference.frame,
+                            action_id=recovery_action.action_id,
+                            physical_point=_physical_pointer_point(
+                                gui_submission.physical_actions
+                            ),
+                            primitives=tuple(
+                                type(item).__name__
+                                for item in gui_submission.physical_actions
+                            ),
                         )
                     else:
                         closed_loop.fail("recovery GUI proposal was rejected")
@@ -554,8 +727,27 @@ class RealtimeAgentLoop:
             while not stop.is_set():
                 await self.step()
                 if self._closed_loop is not None and self._closed_loop.is_terminal:
-                    stop.set()
-                    break
+                    if not self._continuous_grounded:
+                        stop.set()
+                        break
+                    previous = self._closed_loop
+                    assert self._closed_loop_factory is not None
+                    self._closed_loop = self._closed_loop_factory()
+                    self._task_generation += 1
+                    self._continuous_cycle_count += 1
+                    self._next_grounded_inference_ns = (
+                        self._clock.now().value_ns + self._grounded_failure_backoff_ns
+                    )
+                    await self._events.publish(
+                        EventType.AGENT_STUCK,
+                        "agent.loop",
+                        {
+                            "status": previous.status.value,
+                            "reason": previous.termination_reason or "closed_loop_terminal",
+                            "disposition": "reset_and_continue",
+                            "cycle": self._continuous_cycle_count,
+                        },
+                    )
                 with contextlib.suppress(TimeoutError):
                     await asyncio.wait_for(stop.wait(), timeout=period_s)
 

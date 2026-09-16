@@ -27,6 +27,7 @@ class BindingKind(StrEnum):
     VIRTUAL_KEY = "virtual_key"
     MOUSE_BUTTON = "mouse_button"
     GAMEPAD_BUTTON = "gamepad_button"
+    NORMALIZED_HOTSPOT = "normalized_hotspot"
 
 
 @dataclass(frozen=True, slots=True)
@@ -35,14 +36,31 @@ class ControlBinding:
     kind: BindingKind
     code: int | str
     confirmed: bool
+    hotspot: tuple[float, float] | None = None
 
     def __post_init__(self) -> None:
         if not self.action.strip():
             raise ContractViolation("control binding action cannot be blank")
-        if isinstance(self.code, str) and not self.code.strip():
-            raise ContractViolation("control binding code cannot be blank")
         if type(self.confirmed) is not bool:
             raise ContractViolation("control binding confirmation must be a boolean")
+        if self.kind == BindingKind.NORMALIZED_HOTSPOT:
+            if self.hotspot is None:
+                raise ContractViolation(
+                    "normalized hotspot binding requires x/y coordinates"
+                )
+            if not all(
+                math.isfinite(value) and 0.0 <= value <= 1.0 for value in self.hotspot
+            ):
+                raise ContractViolation(
+                    "normalized hotspot coordinates must be in [0, 1]"
+                )
+            return
+        if self.hotspot is not None:
+            raise ContractViolation(
+                "hotspot coordinates are only valid on normalized_hotspot bindings"
+            )
+        if isinstance(self.code, str) and not self.code.strip():
+            raise ContractViolation("control binding code cannot be blank")
 
 
 @dataclass(frozen=True, slots=True)
@@ -186,13 +204,27 @@ def game_profile_from_dict(raw: dict[str, Any]) -> GameProfile:
     bindings: list[ControlBinding] = []
     for action, value in controls_raw.items():
         item = _mapping(value, f"controls.{action}")
-        code: int | str = item["code"]
+        kind = BindingKind(str(item.get("kind", BindingKind.SCAN_CODE)))
+        hotspot: tuple[float, float] | None = None
+        raw_code = item.get("code")
+        if kind == BindingKind.NORMALIZED_HOTSPOT:
+            if "x" not in item or "y" not in item:
+                raise ContractViolation(
+                    f"controls.{action} normalized_hotspot requires x and y"
+                )
+            hotspot = (float(item["x"]), float(item["y"]))
+            code: int | str = "" if raw_code is None else raw_code
+        else:
+            if raw_code is None:
+                raise ContractViolation(f"controls.{action}.code is required")
+            code = raw_code
         bindings.append(
             ControlBinding(
                 str(action),
-                BindingKind(str(item.get("kind", BindingKind.SCAN_CODE))),
+                kind,
                 code,
                 _strict_bool(item.get("confirmed", False), f"controls.{action}.confirmed"),
+                hotspot,
             )
         )
     return GameProfile(

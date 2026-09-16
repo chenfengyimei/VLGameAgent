@@ -84,6 +84,14 @@ def cli() -> None:
         help="0 = run until stopped (Ctrl+C or the Ctrl+Shift+F12 emergency hotkey)",
     )
     run_parser.add_argument(
+        "--continuous",
+        action="store_true",
+        help=(
+            "keep one VLM process alive by retrying transient planner failures and "
+            "starting a fresh closed-loop cycle after blocked or completed states"
+        ),
+    )
+    run_parser.add_argument(
         "--tap-delay", type=float, default=2.0, help="seconds before the scripted tap"
     )
     run_parser.add_argument(
@@ -105,6 +113,12 @@ def cli() -> None:
         help="tap point as a vertical fraction of the client area",
     )
     run_parser.add_argument("--observation-hz", type=float, default=2.0)
+    run_parser.add_argument(
+        "--capture-hz",
+        type=float,
+        default=10.0,
+        help="maximum continuous capture frequency",
+    )
     run_parser.add_argument("--record", help="optional episode recording root directory")
     run_parser.add_argument(
         "--qualification-project-root",
@@ -145,9 +159,46 @@ def cli() -> None:
         help="maximum generated tokens for one structured vision decision",
     )
     run_parser.add_argument(
+        "--vlm-temporal-frames",
+        type=int,
+        choices=range(1, 4),
+        default=3,
+        metavar="{1,2,3}",
+        help="number of recent overview frames sent per decision",
+    )
+    run_parser.add_argument(
+        "--vlm-image-width",
+        type=int,
+        default=1280,
+        help="maximum overview image width sent to the vision model",
+    )
+    run_parser.add_argument(
+        "--vlm-target-crops",
+        type=int,
+        choices=range(0, 3),
+        default=2,
+        metavar="{0,1,2}",
+        help="additional OCR target crops attached after overview images",
+    )
+    run_parser.add_argument(
+        "--vlm-compact-output",
+        action="store_true",
+        help="request only the minimal action fields for small local models",
+    )
+    run_parser.add_argument(
+        "--vlm-ocr-task-fallback",
+        action="store_true",
+        help="replace WAIT or unrelated actions with a high-confidence OCR task-panel click",
+    )
+    run_parser.add_argument(
         "--vlm-no-thinking",
         action="store_true",
         help="ask thinking-style models (GLM-4.xV) to answer without a reasoning pass",
+    )
+    run_parser.add_argument(
+        "--vlm-json-object",
+        action="store_true",
+        help="use provider JSON-object mode instead of a JSON Schema response format",
     )
     run_parser.add_argument(
         "--vlm-extra-body",

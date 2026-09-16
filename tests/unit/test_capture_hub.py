@@ -70,6 +70,25 @@ class _TimestampedSlowSource(_Source):
 
 
 class CaptureHubTests(unittest.IsolatedAsyncioTestCase):
+    async def test_primary_capture_can_be_throttled_for_lightweight_agents(self) -> None:
+        source = _Source(period_s=0.001)
+        hub = CaptureHub(
+            primary=source,
+            frames=FrameRingBuffer(),
+            primary_hz=10.0,
+            consumer_timeout_s=1.0,
+        )
+        stop = asyncio.Event()
+        task = asyncio.create_task(hub.run(stop))
+
+        await hub.capture_once()
+        await asyncio.sleep(0.22)
+        stop.set()
+        await task
+
+        self.assertGreaterEqual(hub.stats().primary_frames, 2)
+        self.assertLessEqual(hub.stats().primary_frames, 3)
+
     async def test_capture_continues_while_consumer_is_slow(self) -> None:
         source = _Source()
         frames = FrameRingBuffer(capacity=64)

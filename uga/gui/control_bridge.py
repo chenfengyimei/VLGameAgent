@@ -17,6 +17,7 @@ from uga.control.physical import (
 from uga.control.proposal import ActionProposal
 from uga.core.errors import ContractViolation
 from uga.gui.schema import GuiAction, GuiActionKind
+from uga.time.clock import UGATime
 from uga.windows.coordinates import CoordinateSpace, CoordinateTransform, Point
 
 
@@ -72,6 +73,27 @@ class GuiControlBridge:
                 ),
                 MouseButtonAction(
                     f"{action.action_id}:up", action.lifetime, MouseButton.LEFT, False
+                ),
+            )
+        if action.kind == GuiActionKind.LONG_CLICK:
+            release_at = UGATime(
+                min(
+                    action.lifetime.expires_at.value_ns,
+                    action.lifetime.effective_from.value_ns + 700_000_000,
+                )
+            )
+            release_lifetime = ActionLifetime(
+                action.lifetime.created_at,
+                release_at,
+                action.lifetime.expires_at,
+            )
+            return (
+                move,
+                MouseButtonAction(
+                    f"{action.action_id}:down", action.lifetime, MouseButton.LEFT, True
+                ),
+                MouseButtonAction(
+                    f"{action.action_id}:up", release_lifetime, MouseButton.LEFT, False
                 ),
             )
         button = MouseButton.RIGHT if action.kind == GuiActionKind.RIGHT_CLICK else MouseButton.LEFT

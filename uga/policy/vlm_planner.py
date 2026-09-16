@@ -170,6 +170,7 @@ class OpenAICompatibleVisionClient:
         timeout_s: float = 30.0,
         max_output_tokens: int = DEFAULT_VISION_MAX_OUTPUT_TOKENS,
         disable_thinking: bool = False,
+        json_object_mode: bool = False,
         extra_body: dict[str, Any] | None = None,
     ) -> None:
         if not base_url.strip() or not model.strip():
@@ -193,6 +194,7 @@ class OpenAICompatibleVisionClient:
         self._timeout_s = timeout_s
         self._max_output_tokens = max_output_tokens
         self._disable_thinking = disable_thinking
+        self._json_object_mode = json_object_mode
         self._extra_body = dict(extra_body) if extra_body else None
 
     def decide(
@@ -237,7 +239,11 @@ class OpenAICompatibleVisionClient:
             # {"enable_thinking": false} or sampling overrides.
             payload.update(self._extra_body)
         if response_format is not None:
-            payload["response_format"] = response_format
+            payload["response_format"] = (
+                {"type": "json_object"}
+                if self._json_object_mode
+                else response_format
+            )
         headers = {"Content-Type": "application/json"}
         if self._api_key:
             headers["Authorization"] = f"Bearer {self._api_key}"

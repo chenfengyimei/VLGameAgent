@@ -18,14 +18,36 @@ perception:
     gui: [设置, 确定, 取消, 返回]
     dead: [死亡, 重生, respawn]
   recovery_safe_actions: [back]
-  critical_action_terms: [登录, 删除, 支付, 发送, 安装, login, delete, pay, send, install]
-  no_click_regions: []
+  # 实名登记/防沉迷是账号级法定门禁（含个人身份信息）：agent 绝不点击
+  critical_action_terms: [登录, 删除, 支付, 发送, 安装, 充值, 首充, 实名, 防沉迷, 身份证, login, delete, pay, send, install]
+  # MuMu 标题栏条带（窗口按钮/标签页）是模拟器 UI 不是游戏内容，禁止点击。
+  # 标题栏定高约 45 物理像素：窗口高 740 时占 0.061，取 0.065 留出余量
+  no_click_regions: [[0, 0, 1, 0.065]]
   page_stable_ms: 500
   action_effect_timeout_ms: 3000
 controls:
   interact: {kind: mouse_button, code: "left", confirmed: true}
   menu: {kind: virtual_key, code: 27, confirmed: true}
-  back: {kind: virtual_key, code: 27, confirmed: true}
+  # 视觉返回控件：功能页左上角的卷云返回花纹（Esc 在本游戏不可靠，禁止作为返回）
+  ui_back:
+    kind: normalized_hotspot
+    x: 0.060
+    y: 0.080
+    confirmed: true
+  # 右上角关闭 X（OCR 读到 X 字形时自适应点击精确位置；此热点仅在 X 字形
+  # 不可见时由恢复路径兜底，坐标偏下避开 MuMu 窗口自己的按钮行）
+  ui_close:
+    kind: normalized_hotspot
+    x: 0.881
+    y: 0.186
+    confirmed: true
+  # 境界页中央的晋升奖章（图形控件 OCR 读不出，规则层在目标全完成后点击）
+  ui_promote:
+    kind: normalized_hotspot
+    x: 0.320
+    y: 0.600
+    confirmed: true
+  dialogue_advance: {kind: virtual_key, code: 32, confirmed: true}
 capabilities:
   realtime_3d: true
   gui: true

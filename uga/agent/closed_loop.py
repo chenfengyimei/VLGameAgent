@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import math
 import re
+import time
 import uuid
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
+from difflib import SequenceMatcher
 from enum import StrEnum
 
 from uga.agent.progress import (
@@ -13,13 +16,22 @@ from uga.agent.progress import (
     ProgressTracker,
     SemanticState,
 )
+from uga.agent.session_state import (
+    ActionTrace,
+    GameSessionState,
+    ScreenType,
+    decoy_click_blocked,
+    page_anchor_signature,
+    real_name_gate_active,
+    stable_anchor_tokens,
+)
 from uga.agent.task_graph import TaskGraph, TaskStatus
 from uga.capture.frame import BufferKind, Frame
 from uga.control.lease import ControlMode
 from uga.core.errors import ContractViolation
 from uga.environment.profile import PerceptionProfile
 from uga.gui.schema import GuiAction, GuiActionKind
-from uga.perception.builder import normalize_visible_text, stable_visible_tokens
+from uga.perception.builder import normalize_visible_text
 from uga.perception.schema import (
     ActionRisk,
     DecisionKind,
@@ -30,6 +42,7 @@ from uga.perception.schema import (
     PlannerOutcome,
     WaitReason,
 )
+from uga.policy.decision_journal import DecisionJournal, DecisionRecord
 from uga.time.clock import ClockBackend, UGATime
 
 
@@ -79,6 +92,9 @@ class _PendingAction:
     semantic_state: SemanticState
     target_digest: bytes
     issued_at: UGATime
+    anchors: frozenset[str] = field(default_factory=frozenset)
+    action_id: str | None = None
+    anchor_candidate: frozenset[str] | None = None
     pixel_change_candidate_at: UGATime | None = None
     pixel_change_candidate_digest: bytes = b""
 
@@ -284,14 +300,37 @@ class ActionValidator:
                 blocked = NormalizedBox(*region)
                 if blocked.contains(center):
                     return False, "target center is inside a configured no-click region"
-            if self._target_changed(action.target_box, decided_frame, fresh_frame):
-                return False, "target pixels changed while the model was deciding"
-            if not secondary_verified:
-                grounding = self._ocr_target_grounding(action, fresh_snapshot)
-                if grounding == "missing":
-                    return False, "target no longer exists at the grounded OCR region"
-                if grounding == "conflict":
-                    return False, "OCR and model target grounding conflict"
+            if decoy_click_blocked(
+                fresh_snapshot.visible_text, (center.x, center.y)
+            ) or decoy_click_blocked(decided_snapshot.visible_text, (center.x, center.y)):
+                # 广告/运营诱饵横幅（首充礼包、新服冲榜、商城福利…）：无论
+                # 模型给它们贴什么标签，落在诱饵文字上的点击一律拒绝。
+                return False, "click target overlaps an advertising or monetization decoy"
+            grounding = self._ocr_target_grounding(action, fresh_snapshot)
+            grounding_decided = self._ocr_target_grounding(action, decided_snapshot)
+            # A graphical control (晋升 medallion, icon buttons) carries no OCR
+            # text in either frame: OCR grounding cannot judge it.  A high-
+            # confidence visual-only click is allowed and bounded afterwards by
+            # effect verification plus the ineffective-action escape.  A box
+            # that HAD matching text in the decided frame but lost it is a
+            # stale text target and stays rejected.
+            visual_only = (
+                grounding == "missing"
+                and grounding_decided == "missing"
+                and action.confidence >= _VISUAL_CLICK_MIN_CONFIDENCE
+                and action.kind == GuiActionKind.CLICK
+            )
+            if not visual_only:
+                if (
+                    self._target_changed(action.target_box, decided_frame, fresh_frame)
+                    and grounding != "match"
+                ):
+                    return False, "target pixels changed while the model was deciding"
+                if not secondary_verified:
+                    if grounding == "missing":
+                        return False, "target no longer exists at the grounded OCR region"
+                    if grounding == "conflict":
+                        return False, "OCR and model target grounding conflict"
             for element in fresh_snapshot.ui_elements:
                 if (
                     action.target_box.intersection_ratio(element.box) >= 0.35
@@ -312,13 +351,28 @@ class ActionValidator:
         overlapping = tuple(
             region
             for region in snapshot.visible_text
-            if action.target_box.intersection_ratio(region.box) >= 0.35
+            if max(
+                action.target_box.intersection_ratio(region.box),
+                region.box.intersection_ratio(action.target_box),
+            )
+            >= 0.35
         )
         if not overlapping:
             return "missing"
         for region in overlapping:
             text = normalize_visible_text(region.text)
-            labels_match = bool(target and text and (target in text or text in target))
+            labels_match = bool(
+                target
+                and text
+                and (
+                    target in text
+                    or text in target
+                    or (
+                        min(len(target), len(text)) >= 4
+                        and SequenceMatcher(None, target, text).ratio() >= 0.72
+                    )
+                )
+            )
             if labels_match and region.confidence >= 0.5:
                 return "match"
         return "conflict"
@@ -369,14 +423,80 @@ class ClosedLoopSupervisor:
         task_node_id: str | None = None,
         goal_evidence: tuple[str, ...] = (),
         goal_action_target: str | None = None,
+        back_hotspot: tuple[float, float] | None = None,
+        close_hotspot: tuple[float, float] | None = None,
+        promote_hotspot: tuple[float, float] | None = None,
+        available_keys: frozenset[str] | None = None,
+        session: GameSessionState | None = None,
+        journal: DecisionJournal | None = None,
+        max_failed_back_recoveries: int = 2,
+        max_stuck_waits: int = 10,
+        on_exit_executed: Callable[[], None] | None = None,
     ) -> None:
         if not 0 <= max_recoveries <= 2:
             raise ContractViolation("closed-loop recoveries must be within [0, 2]")
         if (task_graph is None) != (task_node_id is None):
             raise ContractViolation("task graph and active node must be configured together")
+        for name, hotspot in (
+            ("back", back_hotspot),
+            ("close", close_hotspot),
+            ("promote", promote_hotspot),
+        ):
+            if hotspot is not None and (
+                len(hotspot) != 2
+                or not all(
+                    math.isfinite(value) and 0.0 <= value <= 1.0 for value in hotspot
+                )
+            ):
+                raise ContractViolation(
+                    f"{name} hotspot must be two normalized coordinates"
+                )
+        if available_keys is not None and (
+            not isinstance(available_keys, frozenset)
+            or any(not isinstance(key, str) or not key.strip() for key in available_keys)
+        ):
+            raise ContractViolation("available keys must be a frozenset of key names")
+        if not 1 <= max_failed_back_recoveries <= 8:
+            raise ContractViolation("failed back recovery bound must be within [1, 8]")
+        if not 2 <= max_stuck_waits <= 100:
+            raise ContractViolation("stuck-wait bound must be within [2, 100]")
         self._clock = clock
         self._profile = profile
         self._verifier = verifier
+        if back_hotspot is None:
+            self._back_hotspot: tuple[float, float] | None = None
+        else:
+            hotspot_x, hotspot_y = back_hotspot
+            self._back_hotspot = (float(hotspot_x), float(hotspot_y))
+        self._back_box = None if self._back_hotspot is None else _hotspot_box(self._back_hotspot)
+        if close_hotspot is None:
+            self._close_hotspot: tuple[float, float] | None = None
+        else:
+            close_x, close_y = close_hotspot
+            self._close_hotspot = (float(close_x), float(close_y))
+        self._close_box = (
+            None if self._close_hotspot is None else _hotspot_box(self._close_hotspot)
+        )
+        if promote_hotspot is None:
+            self._promote_hotspot: tuple[float, float] | None = None
+        else:
+            promote_x, promote_y = promote_hotspot
+            self._promote_hotspot = (float(promote_x), float(promote_y))
+        self._promote_box = (
+            None
+            if self._promote_hotspot is None
+            else _hotspot_box(self._promote_hotspot)
+        )
+        self._available_keys = available_keys
+        self._session = session
+        self._journal = journal
+        self._max_failed_back_recoveries = max_failed_back_recoveries
+        self._max_stuck_waits = max_stuck_waits
+        if on_exit_executed is not None and not callable(on_exit_executed):
+            raise ContractViolation("on_exit_executed must be callable")
+        self._on_exit_executed = on_exit_executed
+        self._escaped_action_keys: dict[str, float] = {}
+        self._back_recovery_streak = 0
         self._goal = GoalVerifier(
             confirmation_ns=profile.page_stable_ms * 1_000_000,
             threshold=0.85,
@@ -400,8 +520,12 @@ class ClosedLoopSupervisor:
         self._last_ineffective_key: str | None = None
         self._consecutive_same_ineffective = 0
         self._max_consecutive_same_ineffective = 0
+        self._last_started_action_semantic_key: str | None = None
+        self._consecutive_same_started_action = 0
         self._no_safe_state_signature: str | None = None
         self._no_safe_state_repeats = 0
+        self._wait_state_signature: str | None = None
+        self._wait_state_repeats = 0
         self._progress = ProgressTracker()
         self._loops = LoopDetector()
         self._max_recoveries = max_recoveries
@@ -431,6 +555,17 @@ class ClosedLoopSupervisor:
         return self.status != TerminalStatus.RUNNING
 
     @property
+    def session(self) -> GameSessionState | None:
+        return self._session
+
+    @property
+    def back_hotspot(self) -> tuple[float, float] | None:
+        if self._back_hotspot is None:
+            return None
+        x, y = self._back_hotspot
+        return (x, y)
+
+    @property
     def recovery_count(self) -> int:
         return self._recovery_count
 
@@ -457,6 +592,10 @@ class ClosedLoopSupervisor:
             "preferred_action_consumed": self._preferred_action_consumed,
             "consumed_target_rejections": self._consumed_target_rejections,
             "recovery_count": self._recovery_count,
+            "back_recovery_streak": self._back_recovery_streak,
+            "back_hotspot": self._back_hotspot,
+            "stuck_wait_repeats": self._wait_state_repeats,
+            "session": None if self._session is None else self._session.to_envelope(),
             "last_effect_observed": self.last_effect_observed,
             "logical_actions_issued": self._logical_actions_issued,
             "verified_effect_actions": self._verified_effect_actions,
@@ -466,6 +605,7 @@ class ClosedLoopSupervisor:
             "max_consecutive_same_ineffective_action": (
                 self._max_consecutive_same_ineffective
             ),
+            "consecutive_same_started_action": self._consecutive_same_started_action,
             "no_safe_state_repeats": self._no_safe_state_repeats,
             "task_status": (
                 None
@@ -494,13 +634,17 @@ class ClosedLoopSupervisor:
         }
 
     def observe(self, snapshot: PerceptionSnapshot, frame: Frame) -> EffectObservation:
+        if self._session is not None:
+            self._session.observe_snapshot(snapshot, snapshot.captured_at.value_ns)
         pending = self._pending
         if pending is None:
             return EffectObservation(False, None, "no action awaiting verification")
         elapsed_ns = snapshot.captured_at.value_ns - pending.issued_at.value_ns
         minimum_ns = 250_000_000
         timeout_ns = self._profile.action_effect_timeout_ms * 1_000_000
-        semantic_text = frozenset(stable_visible_tokens(snapshot.text))
+        # Numeric-only OCR jitter (counters, timers, ratios) must never fake an
+        # effect, so the change comparison runs on digit-stripped anchor tokens.
+        semantic_text = stable_anchor_tokens(snapshot.text)
         ui_state = tuple(
             (normalize_visible_text(element.label), element.enabled, element.selected)
             for element in snapshot.ui_elements
@@ -522,6 +666,21 @@ class ClosedLoopSupervisor:
             target_changed = _digest_difference(pending.target_digest, current_digest) > 0.1
         if elapsed_ns < minimum_ns:
             return EffectObservation(True, None, "waiting for the minimum action effect window")
+        # Page-header anchors (灵宠/召唤/布阵/主线 …) are the most stable page
+        # transition signal; confirm a flip across two observations so a single
+        # OCR miss cannot fake a page change.
+        current_anchors = page_anchor_signature(snapshot.visible_text)
+        anchor_flip = current_anchors != pending.anchors
+        anchor_confirmed = False
+        if anchor_flip and not semantic_changed and not target_changed:
+            if pending.anchor_candidate != current_anchors:
+                pending.anchor_candidate = current_anchors
+                return EffectObservation(
+                    True, None, "waiting for the page anchor change to stabilize"
+                )
+            anchor_confirmed = True
+        elif not anchor_flip:
+            pending.anchor_candidate = None
         persistent_target_change = False
         target_still_grounded = (
             ActionValidator._ocr_target_grounding(pending.action, snapshot) == "match"
@@ -547,7 +706,7 @@ class ClosedLoopSupervisor:
         elif not target_changed or target_still_grounded:
             pending.pixel_change_candidate_at = None
             pending.pixel_change_candidate_digest = b""
-        changed = semantic_changed or persistent_target_change
+        changed = semantic_changed or persistent_target_change or anchor_confirmed
         if changed:
             self._pending = None
             self.last_effect_observed = True
@@ -556,6 +715,8 @@ class ClosedLoopSupervisor:
             self._consecutive_same_ineffective = 0
             self._reset_no_safe_waits()
             self._uncertain_retries = 0
+            # A verified page transition proves the back control works again.
+            self._back_recovery_streak = 0
             if self._matches_goal_action_target(pending.action):
                 self._preferred_action_consumed = True
             finding = self._record_action_result(
@@ -571,6 +732,8 @@ class ClosedLoopSupervisor:
                 self._recovery_in_progress = None
                 self._last_failed_action_key = None
             self._ineffective.pop(self._action_key(pending.action), None)
+            self._finish_trace(pending, "verified", str(pending.action.expected_effect))
+            self._journal_effect(pending, "verified", str(pending.action.expected_effect))
             return EffectObservation(False, True, pending.action.expected_effect)
         if elapsed_ns < max(minimum_ns, timeout_ns):
             return EffectObservation(True, None, "waiting for the expected visual effect")
@@ -595,8 +758,22 @@ class ClosedLoopSupervisor:
             target_changed=False,
         )
         self._last_failed_action_key = key
-        if self._recovery_in_progress == RecoveryDirective.BACK:
-            self._stop_blocked("safe back recovery produced no verified effect")
+        self._finish_trace(pending, "ineffective", "no verified visual effect")
+        self._journal_effect(pending, "ineffective", "no verified visual effect")
+        is_exit_attempt = pending.action.target_label in {"ui_back", "ui_close"}
+        if is_exit_attempt or self._recovery_in_progress == RecoveryDirective.BACK:
+            # A visual exit (top-left ribbon or top-right X) that changed
+            # nothing alternates to the other control from the freshest frame;
+            # after the bound is exceeded the failure is reported instead of
+            # cycling forever.
+            self._recovery_in_progress = None
+            self._back_recovery_streak += 1
+            if self._back_recovery_streak >= self._max_failed_back_recoveries:
+                self._stop_blocked(
+                    "visual exit controls produced no verified page change in "
+                    f"{self._back_recovery_streak} consecutive attempts "
+                    "(top-left ribbon and top-right X both tried)"
+                )
         elif self._ineffective[key] >= 2 or finding is not None:
             self._request_recovery(
                 finding.detail if finding is not None else "same action failed twice"
@@ -618,12 +795,26 @@ class ClosedLoopSupervisor:
                 self.termination_reason or "loop already stopped",
                 outcome,
             )
+        if real_name_gate_active(fresh_snapshot.visible_text):
+            # 实名登记/防沉迷是账号级法定门禁（个人身份信息）：代理绝不代
+            # 填，也不在这类表单上执行任何动作——挂起全部决策，等 owner
+            # 完成登记后表单消失、自动恢复推进。
+            return SupervisedDecision(
+                DecisionDisposition.WAIT,
+                "real-name registration gate: standing by for the owner",
+                outcome,
+            )
         recovery = self._pending_recovery
         recovering_high_resolution = recovery == RecoveryDirective.HIGH_RESOLUTION
         if recovering_high_resolution:
             self._pending_recovery = None
-        if outcome.kind != DecisionKind.WAIT or outcome.wait_reason != WaitReason.NO_SAFE_ACTION:
+        if outcome.kind != DecisionKind.WAIT:
             self._reset_no_safe_waits()
+        elif outcome.wait_reason != WaitReason.NO_SAFE_ACTION:
+            # A non-no-safe wait breaks the no-safe streak but must keep the
+            # generic identical-state waiting streak alive.
+            self._no_safe_state_signature = None
+            self._no_safe_state_repeats = 0
         if outcome.kind == DecisionKind.DONE:
             if self._goal.consider(outcome, fresh_snapshot):
                 evidence_confidence = self._goal.last_evidence_confidence
@@ -687,13 +878,17 @@ class ClosedLoopSupervisor:
                 )
         if outcome.kind == DecisionKind.WAIT:
             self._goal.consider(outcome, fresh_snapshot)
+            state = self._stable_state_key(fresh_snapshot)
+            if state == self._wait_state_signature:
+                self._wait_state_repeats += 1
+            else:
+                self._wait_state_signature = state
+                self._wait_state_repeats = 1
             if outcome.wait_reason == WaitReason.NO_SAFE_ACTION:
-                state = self._progress.state(fresh_snapshot).loop_signature
-                if state == self._no_safe_state_signature:
-                    self._no_safe_state_repeats += 1
-                else:
-                    self._no_safe_state_signature = state
-                    self._no_safe_state_repeats = 1
+                # Two consecutive no-safe decisions are the signal itself:
+                # OCR jitter used to reset the state-signature match here,
+                # which let animated pages wait forever.
+                self._no_safe_state_repeats += 1
                 if recovering_high_resolution:
                     return self._advance_loop_recovery(
                         outcome,
@@ -714,20 +909,60 @@ class ClosedLoopSupervisor:
                         "re-observing repeated no-safe-action state at high resolution",
                         outcome,
                     )
+            elif recovering_high_resolution and self._wait_state_repeats >= 2:
+                return self._advance_loop_recovery(
+                    outcome,
+                    "high-resolution recovery did not leave the repeatedly waited page",
+                )
+            elif (
+                self._wait_state_repeats >= self._stuck_wait_bound(fresh_snapshot)
+            ):
+                # The handoff contract: identical-state waiting must never run
+                # forever.  Loading/animation waits get a generous bound (the
+                # loader usually resolves); feature pages give up sooner —
+                # one-shot quest steps (洗髓 0/1 style) finish with a single
+                # click and the page must be left afterwards.
+                self._request_recovery(
+                    f"planner waited {self._wait_state_repeats} times on the same state"
+                )
+                if self.is_terminal:
+                    return SupervisedDecision(
+                        DecisionDisposition.BLOCK,
+                        self.termination_reason or "no safe recovery remains",
+                        outcome,
+                    )
+                return SupervisedDecision(
+                    DecisionDisposition.REOBSERVE,
+                    "re-observing long-waited state at high resolution",
+                    outcome,
+                )
             return SupervisedDecision(
                 DecisionDisposition.WAIT,
                 f"planner wait: {outcome.wait_reason.value}",  # type: ignore[union-attr]
                 outcome,
             )
         if recovery == RecoveryDirective.BACK:
-            self._pending_recovery = None
-            self._recovery_in_progress = RecoveryDirective.BACK
-            return SupervisedDecision(
-                DecisionDisposition.RECOVER,
-                "executing configured safe back recovery",
-                outcome,
-                RecoveryDirective.BACK,
-            )
+            if (
+                outcome.kind == DecisionKind.ACT
+                and outcome.action is not None
+                and self._action_key(outcome.action) != self._last_failed_action_key
+                and not self._action_in_recent_failures(outcome.action)
+            ):
+                # The exit was armed because the model kept waiting, but it has
+                # now proposed a concrete action that is not part of a recent
+                # failure pattern: a real proposal beats leaving the page.
+                # Cancel the exit and validate the proposal normally.
+                self._pending_recovery = None
+                self._reset_no_safe_waits()
+            else:
+                self._pending_recovery = None
+                self._recovery_in_progress = RecoveryDirective.BACK
+                return SupervisedDecision(
+                    DecisionDisposition.RECOVER,
+                    "executing configured safe back recovery",
+                    outcome,
+                    RecoveryDirective.BACK,
+                )
         if outcome.kind in {DecisionKind.ABSTAIN, DecisionKind.RECOVER}:
             if recovering_high_resolution:
                 return self._advance_loop_recovery(
@@ -735,6 +970,30 @@ class ClosedLoopSupervisor:
                 )
             return self._retry_or_block(outcome, "planner did not identify a safe action")
         assert outcome.action is not None
+        if (
+            self._available_keys is not None
+            and outcome.action.kind in {GuiActionKind.KEY, GuiActionKind.HOTKEY}
+            and outcome.action.key not in self._available_keys
+        ):
+            # An unbound semantic key must never reach the executor (it would
+            # crash the submission contract); treat it like any other unsafe
+            # proposal and let the bounded retry path handle repetition.
+            return self._retry_or_block(
+                outcome,
+                f"grounded key has no confirmed binding: {outcome.action.key}",
+            )
+        if not recovering_high_resolution and self._should_escape_repeated_action(
+            outcome.action
+        ):
+            self._last_started_action_semantic_key = None
+            self._consecutive_same_started_action = 0
+            self._recovery_in_progress = RecoveryDirective.BACK
+            return SupervisedDecision(
+                DecisionDisposition.RECOVER,
+                "same non-progress control was executed twice; leaving the panel to re-observe",
+                outcome,
+                RecoveryDirective.BACK,
+            )
         if (
             self._goal_action_target is not None
             and not self._matches_goal_action_target(outcome.action)
@@ -756,6 +1015,46 @@ class ClosedLoopSupervisor:
                 "single-step navigation target already produced an effect; refusing repeat",
                 outcome,
             )
+        if outcome.action.target_label in {"ui_back", "ui_close", "ui_promote"} and (
+            self._back_hotspot is not None
+            or self._close_hotspot is not None
+            or self._promote_hotspot is not None
+        ):
+            # Deterministic fast-path exit controls carry their own calibrated
+            # or OCR-glyph coordinates and no OCR-groundable text: execute them
+            # directly instead of running the grounding validator.
+            self._uncertain_retries = 0
+            return SupervisedDecision(
+                DecisionDisposition.EXECUTE,
+                "deterministic exit control executed without OCR grounding",
+                outcome,
+            )
+        if self._is_back_intent(outcome.action):
+            # Graphical back/close controls carry no OCR text, so model boxes
+            # on them can never pass OCR grounding and would block-loop the
+            # cycle.  Route the model's exit *intent* through the user-
+            # confirmed calibrated hotspots instead (alternating as attempts
+            # fail; same trust level as recovery).
+            label, hotspot, box = self._next_exit()
+            assert box is not None and hotspot is not None
+            outcome = replace(
+                outcome,
+                action=GroundedAction(
+                    GuiActionKind.CLICK,
+                    label,
+                    box,
+                    "leave the current page through the calibrated exit control",
+                    outcome.action.confidence,
+                ),
+            )
+            assert outcome.action is not None
+            self._uncertain_retries = 0
+            return SupervisedDecision(
+                DecisionDisposition.EXECUTE,
+                f"model exit intent routed to the calibrated {label} control",
+                outcome,
+            )
+        assert outcome.action is not None
         key = self._action_key(outcome.action)
         if recovering_high_resolution and key == self._last_failed_action_key:
             return self._advance_loop_recovery(
@@ -837,18 +1136,75 @@ class ClosedLoopSupervisor:
         return SupervisedDecision(DecisionDisposition.EXECUTE, reason, outcome)
 
     def start_action(
-        self, outcome: PlannerOutcome, snapshot: PerceptionSnapshot, frame: Frame
+        self,
+        outcome: PlannerOutcome,
+        snapshot: PerceptionSnapshot,
+        frame: Frame,
+        *,
+        source: str | None = None,
+        physical_point: tuple[float, float] | None = None,
+        primitives: tuple[str, ...] = (),
     ) -> None:
         if outcome.action is None:
             raise ContractViolation("cannot verify an outcome without an action")
         self._logical_actions_issued += 1
-        self._pending = self._pending_action(outcome.action, snapshot, frame)
+        semantic_key = self._semantic_action_key(outcome.action)
+        if semantic_key == self._last_started_action_semantic_key:
+            self._consecutive_same_started_action += 1
+        else:
+            self._last_started_action_semantic_key = semantic_key
+            self._consecutive_same_started_action = 1
+        action = outcome.action
+        point: tuple[float, float] | None = None
+        if action.target_box is not None:
+            center = action.target_box.center
+            point = (
+                min(1.0, max(0.0, center.x + action.pointer_offset_x)),
+                min(1.0, max(0.0, center.y + action.pointer_offset_y)),
+            )
+        trace_id = outcome.decision_id
+        self._pending = self._pending_action(
+            action, snapshot, frame, action_id=trace_id
+        )
+        if self._session is not None:
+            self._session.record_trace(
+                ActionTrace(
+                    action_id=trace_id,
+                    source=source or "model",
+                    proposed_label=action.target_label,
+                    proposed_box=_box_tuple(action.target_box),
+                    final_label=action.target_label,
+                    final_box=_box_tuple(action.target_box),
+                    point=point,
+                    physical_point=physical_point,
+                    primitives=primitives,
+                    supervisor_verdict="accepted",
+                    submitted=True,
+                    effect="pending",
+                    detail=str(action.expected_effect),
+                    created_at_ns=time.time_ns(),
+                    updated_at_ns=time.time_ns(),
+                )
+            )
+        self._journal_row(
+            "action_submitted",
+            f"{action.kind.value}({action.target_label})",
+            (
+                f"id={trace_id}; source={source or 'model'}; "
+                f"final_box={_box_tuple(action.target_box)}; point={point}; "
+                f"physical={physical_point}; primitives={','.join(primitives)}; "
+                f"expected={action.expected_effect}"
+            ),
+            action.target_label,
+        )
 
     def validate_execution_frame(
         self,
         outcome: PlannerOutcome,
         validated_frame: Frame,
         execution_frame: Frame,
+        *,
+        target_was_ocr_grounded: bool = False,
     ) -> tuple[bool, str]:
         """Recheck the target immediately before submission to the scheduler."""
         action = outcome.action
@@ -868,6 +1224,8 @@ class ClosedLoopSupervisor:
             return True, "execution frame is the validated frame"
         region = action.target_box or NormalizedBox(0.0, 0.0, 1.0, 1.0)
         if ActionValidator._target_changed(region, validated_frame, execution_frame):
+            if target_was_ocr_grounded:
+                return True, "OCR-grounded target tolerated dynamic pixels before execution"
             self._stale_results_discarded += 1
             return False, "target changed after validation and before execution"
         return True, "target remained stable through the execution frame"
@@ -877,10 +1235,26 @@ class ClosedLoopSupervisor:
     ) -> GuiAction:
         if directive != RecoveryDirective.BACK:
             raise ContractViolation("only back is a physical recovery directive")
+        now = self._clock.now()
+        label, hotspot, _box = self._next_exit()
+        if hotspot is not None:
+            # The calibrated visual exit controls are mouse clicks (top-left
+            # ribbon first, then the top-right X as attempts fail); Esc is not
+            # a reliable back in this game.
+            return GuiAction(
+                f"recovery-{label}-{uuid.uuid4().hex[:12]}",
+                GuiActionKind.CLICK,
+                _action_lifetime(now),
+                x=hotspot[0],
+                y=hotspot[1],
+                confidence=1.0,
+            )
         key_codes = key_resolver("back")
         if not key_codes:
-            raise ContractViolation("safe back recovery has no confirmed binding")
-        now = self._clock.now()
+            raise ContractViolation(
+                "visual exit controls are not configured and no confirmed back "
+                "key binding exists"
+            )
         return GuiAction(
             f"recovery-back-{uuid.uuid4().hex[:12]}",
             GuiActionKind.KEY,
@@ -890,18 +1264,74 @@ class ClosedLoopSupervisor:
         )
 
     def start_recovery_action(
-        self, snapshot: PerceptionSnapshot, frame: Frame
+        self,
+        snapshot: PerceptionSnapshot,
+        frame: Frame,
+        *,
+        action_id: str | None = None,
+        physical_point: tuple[float, float] | None = None,
+        primitives: tuple[str, ...] = (),
     ) -> None:
-        action = GroundedAction(
-            GuiActionKind.KEY,
-            "back",
-            None,
-            "return to a different recoverable page",
-            1.0,
-            key="back",
-        )
+        self._last_started_action_semantic_key = None
+        self._consecutive_same_started_action = 0
+        label, hotspot, box = self._next_exit()
+        if hotspot is not None and box is not None:
+            action = GroundedAction(
+                GuiActionKind.CLICK,
+                label,
+                box,
+                "leave the current feature page and return to the world view",
+                1.0,
+            )
+        else:
+            action = GroundedAction(
+                GuiActionKind.KEY,
+                "back",
+                None,
+                "return to a different recoverable page",
+                1.0,
+                key="back",
+            )
+        # Mark the back transition in progress regardless of the entry path so
+        # its effect observation always feeds the failure streak.
+        self._recovery_in_progress = RecoveryDirective.BACK
+        if self._on_exit_executed is not None:
+            # Tell the planner its tracker-click cooldown just restarted: the
+            # whole point of this exit is to re-observe the world page.
+            self._on_exit_executed()
         self._logical_actions_issued += 1
-        self._pending = self._pending_action(action, snapshot, frame)
+        trace_id = action_id or f"recovery-{label}-{uuid.uuid4().hex[:8]}"
+        self._pending = self._pending_action(action, snapshot, frame, action_id=trace_id)
+        if self._session is not None:
+            self._session.record_trace(
+                ActionTrace(
+                    action_id=trace_id,
+                    source="recovery_exit",
+                    proposed_label=label,
+                    proposed_box=_box_tuple(action.target_box),
+                    final_label=action.target_label,
+                    final_box=_box_tuple(action.target_box),
+                    point=hotspot,
+                    physical_point=physical_point,
+                    primitives=primitives,
+                    supervisor_verdict="recovery",
+                    submitted=True,
+                    effect="pending",
+                    detail="visual exit recovery",
+                    created_at_ns=time.time_ns(),
+                    updated_at_ns=time.time_ns(),
+                )
+            )
+        self._journal_row(
+            "action_submitted",
+            f"{action.kind.value}({action.target_label})",
+            (
+                f"id={trace_id}; source=recovery_exit; final_box={_box_tuple(action.target_box)}; "
+                f"point={hotspot}; physical={physical_point}; "
+                f"primitives={','.join(primitives)}"
+            ),
+            label,
+        )
 
     def to_gui_action(
         self, outcome: PlannerOutcome, key_resolver: KeyResolver
@@ -917,7 +1347,7 @@ class ClosedLoopSupervisor:
             if not key_codes:
                 raise ContractViolation(f"grounded key has no confirmed binding: {action.key}")
             return GuiAction(
-                f"grounded-{uuid.uuid4().hex[:12]}",
+                f"grounded-{outcome.decision_id[:12]}",
                 action.kind,
                 lifetime,
                 key_codes=key_codes,
@@ -926,11 +1356,11 @@ class ClosedLoopSupervisor:
         assert action.target_box is not None
         center = action.target_box.center
         return GuiAction(
-            f"grounded-{uuid.uuid4().hex[:12]}",
+            f"grounded-{outcome.decision_id[:12]}",
             action.kind,
             lifetime,
-            x=center.x,
-            y=center.y,
+            x=min(1.0, max(0.0, center.x + action.pointer_offset_x)),
+            y=min(1.0, max(0.0, center.y + action.pointer_offset_y)),
             confidence=min(outcome.confidence, action.confidence),
         )
 
@@ -951,37 +1381,43 @@ class ClosedLoopSupervisor:
         return SupervisedDecision(DecisionDisposition.BLOCK, reason, outcome)
 
     def _request_recovery(self, reason: str) -> None:
-        if self._recovery_count >= self._max_recoveries:
-            self._stop_blocked(reason + "; recovery budget exhausted")
+        if self._recovery_count == 0 and self._max_recoveries >= 1:
+            self._recovery_count = 1
+            self._pending_recovery = RecoveryDirective.HIGH_RESOLUTION
+            self._recovery_in_progress = None
             return
-        if self._recovery_count == 0:
-            directive = RecoveryDirective.HIGH_RESOLUTION
-        elif "back" in self._profile.recovery_safe_actions:
-            directive = RecoveryDirective.BACK
-        else:
+        if "back" not in self._profile.recovery_safe_actions:
             self._stop_blocked(reason + "; no distinct safe recovery remains")
             return
-        self._recovery_count += 1
-        self._pending_recovery = directive
+        if self._back_recovery_streak >= self._max_failed_back_recoveries:
+            self._stop_blocked(
+                reason
+                + "; visual back recovery produced no verified effect "
+                f"{self._back_recovery_streak} times in a row"
+            )
+            return
+        # Leaving the stuck page via the visual back control is an ordinary
+        # state transition: it never consumes the termination budget, so a
+        # normal feature-page stall cannot rebuild the closed loop.
+        self._pending_recovery = RecoveryDirective.BACK
         self._recovery_in_progress = None
 
     def _advance_loop_recovery(
         self, outcome: PlannerOutcome, reason: str
     ) -> SupervisedDecision:
         if (
-            self._recovery_count < self._max_recoveries
-            and "back" in self._profile.recovery_safe_actions
+            "back" in self._profile.recovery_safe_actions
+            and self._back_recovery_streak < self._max_failed_back_recoveries
         ):
-            self._recovery_count += 1
             self._pending_recovery = None
             self._recovery_in_progress = RecoveryDirective.BACK
             return SupervisedDecision(
                 DecisionDisposition.RECOVER,
-                reason + "; using configured safe back recovery",
+                reason + "; using the visual back control to leave the stuck page",
                 outcome,
                 RecoveryDirective.BACK,
             )
-        return self._block(outcome, reason + "; recovery budget exhausted")
+        return self._block(outcome, reason + "; no safe recovery remains")
 
     def _record_action_result(
         self,
@@ -1013,12 +1449,14 @@ class ClosedLoopSupervisor:
         action: GroundedAction,
         snapshot: PerceptionSnapshot,
         frame: Frame,
+        *,
+        action_id: str | None = None,
     ) -> _PendingAction:
         digest = b"" if action.target_box is None else region_digest(frame, action.target_box)
         return _PendingAction(
             action,
             snapshot.mode,
-            frozenset(stable_visible_tokens(snapshot.text)),
+            stable_anchor_tokens(snapshot.text),
             snapshot.goal_facts,
             tuple(
                 (normalize_visible_text(element.label), element.enabled, element.selected)
@@ -1027,6 +1465,8 @@ class ClosedLoopSupervisor:
             self._progress.state(snapshot),
             digest,
             self._clock.now(),
+            anchors=page_anchor_signature(snapshot.visible_text),
+            action_id=action_id,
         )
 
     def _stop_blocked(self, reason: str) -> None:
@@ -1042,12 +1482,131 @@ class ClosedLoopSupervisor:
     def _reset_no_safe_waits(self) -> None:
         self._no_safe_state_signature = None
         self._no_safe_state_repeats = 0
+        # Any concrete decision/action also breaks a same-state waiting streak.
+        self._wait_state_signature = None
+        self._wait_state_repeats = 0
+
+    def _stuck_wait_bound(self, snapshot: PerceptionSnapshot) -> int:
+        """Feature pages give up on identical-state waiting much sooner: a
+        one-shot quest step (洗髓 0/1) finishes with a single click and the
+        page must be left instead of waited on."""
+        if self._session is not None and self._session.screen_type == ScreenType.FEATURE:
+            return min(4, self._max_stuck_waits)
+        return self._max_stuck_waits
+
+    def _stable_state_key(self, snapshot: PerceptionSnapshot) -> str:
+        """Animation-proof page identity for repeat counting.
+
+        The perceptual image hash changes on every animated frame, which made
+        identical-state wait/no-safe detection reset forever on glowing pages.
+        Page anchors plus digit-stripped short-region tokens are stable across
+        animation and across scrolling marquees (long sentences excluded).
+        """
+        short_regions = [
+            region for region in snapshot.visible_text if len(region.text) <= 16
+        ]
+        anchors = ",".join(sorted(page_anchor_signature(short_regions)))
+        tokens = ",".join(sorted(stable_anchor_tokens(r.text for r in short_regions)))
+        return f"{snapshot.mode.value}|{anchors}|{tokens}"
+
+    def _next_exit(self) -> tuple[str, tuple[float, float] | None, NormalizedBox | None]:
+        """Alternate the exit control as attempts fail: top-left ribbon first,
+        then the top-right X, then back again.  Both are user-confirmed
+        calibrations, so no OCR grounding is required for either."""
+        prefer_close = self._back_recovery_streak % 2 == 1
+        if prefer_close and self._close_hotspot is not None and self._close_box is not None:
+            return "ui_close", self._close_hotspot, self._close_box
+        if self._back_hotspot is not None and self._back_box is not None:
+            return "ui_back", self._back_hotspot, self._back_box
+        if self._close_hotspot is not None and self._close_box is not None:
+            return "ui_close", self._close_hotspot, self._close_box
+        return "ui_back", None, None
+
+    def _journal_row(
+        self,
+        kind: str,
+        action: str,
+        detail: str,
+        quest_step: str | None,
+    ) -> None:
+        if self._journal is None:
+            return
+        quest = (
+            None
+            if self._session is None or self._session.latest_main_task is None
+            else self._session.latest_main_task.raw_text
+        )
+        self._journal.record(
+            DecisionRecord(
+                timestamp=time.time(),
+                kind=kind,
+                latency_s=None,
+                action=action,
+                detail=detail,
+                quest=quest,
+                quest_step=quest_step,
+                images=None,
+                reply_head=None,
+            )
+        )
+
+    def _journal_effect(
+        self, pending: _PendingAction, effect: str, detail: str
+    ) -> None:
+        trace_id = pending.action_id or "unknown-action"
+        self._journal_row(
+            "action_effect",
+            f"{pending.action.kind.value}({pending.action.target_label})",
+            f"id={trace_id}; effect={effect}; {detail}",
+            None,
+        )
+
+    def _finish_trace(
+        self, pending: _PendingAction, effect: str, detail: str
+    ) -> None:
+        if self._session is None or pending.action_id is None:
+            return
+        self._session.update_trace(
+            pending.action_id,
+            effect=effect,
+            detail=detail,
+            updated_at_ns=time.time_ns(),
+        )
 
     def _matches_goal_action_target(self, action: GroundedAction) -> bool:
         if self._goal_action_target is None:
             return False
         label = normalize_visible_text(action.target_label)
         return self._goal_action_target in label or label in self._goal_action_target
+
+    def _is_back_intent(self, action: GroundedAction) -> bool:
+        """A model TEXT label meaning 'leave this page' (never 退出, which may
+        quit the whole client).  Deterministic ``ui_back``/``ui_close`` labels
+        are handled earlier with their own coordinates; text labels are
+        converted to the alternating calibrated hotspots because graphical
+        exit controls carry no OCR text and would fail grounding."""
+        if self._back_hotspot is None and self._close_hotspot is None:
+            return False
+        if action.kind not in {GuiActionKind.CLICK, GuiActionKind.LONG_CLICK}:
+            return False
+        if action.target_label in {"ui_back", "ui_close"}:
+            return False
+        label = normalize_visible_text(action.target_label)
+        return (
+            "返回" in label
+            or "回退" in label
+            or "关闭" in label
+            or label in {"back", "return", "close"}
+        )
+
+    def _action_in_recent_failures(self, action: GroundedAction) -> bool:
+        """True when the same action recently failed (loop/ineffective ring):
+        such a proposal must not cancel an armed page exit."""
+        key = self._action_key(action)
+        return any(
+            record.action_key == key and not record.effect_observed
+            for record in self._loops.records
+        )
 
     def _complete_task(self, *, success: bool) -> None:
         if self._task_graph is None or self._task_node_id is None:
@@ -1062,11 +1621,67 @@ class ClosedLoopSupervisor:
         label = re.sub(r"\W+", "", action.target_label.casefold())
         return f"{action.kind.value}:{label}:{location}"
 
+    @staticmethod
+    def _semantic_action_key(action: GroundedAction) -> str:
+        label = re.sub(r"\W+", "", normalize_visible_text(action.target_label))
+        return f"{action.kind.value}:{label}:{action.key or ''}"
+
+    def _should_escape_repeated_action(self, action: GroundedAction) -> bool:
+        if (
+            "back" not in self._profile.recovery_safe_actions
+            or action.kind not in {GuiActionKind.CLICK, GuiActionKind.LONG_CLICK}
+            or self._semantic_action_key(action) != self._last_started_action_semantic_key
+        ):
+            return False
+        if action.target_label in {"ui_back", "ui_close", "ui_promote"}:
+            # Exit/promote controls must never trigger another exit escape;
+            # their own failure bound lives in the back recovery streak.
+            return False
+        key = self._semantic_action_key(action)
+        expiry = self._escaped_action_keys.get(key)
+        now = time.monotonic()
+        if expiry is not None:
+            if now < expiry:
+                # Sticky escape: this action already triggered an exit escape
+                # recently — the very next repeat escapes immediately instead
+                # of getting two more fresh attempts.
+                return True
+            del self._escaped_action_keys[key]
+        if self._consecutive_same_started_action < 2:
+            return False
+        self._escaped_action_keys[key] = now + 60.0
+        label = normalize_visible_text(action.target_label)
+        if any(term in label for term in ("继续", "确定", "提交", "下一步", "跳过", "领取")):
+            return False
+        if action.target_box is not None:
+            center = action.target_box.center
+            if center.x <= 0.28 and 0.20 <= center.y <= 0.38:
+                return False
+        return True
+
 
 def _action_lifetime(now: UGATime):  # type: ignore[no-untyped-def]
     from uga.control.lifetime import ActionLifetime
 
     return ActionLifetime(now, now, UGATime(now.value_ns + 1_000_000_000))
+
+
+_CLOSE_GLYPH_AIM_FRACTION = 0.12
+_VISUAL_CLICK_MIN_CONFIDENCE = 0.85
+
+
+def _hotspot_box(hotspot: tuple[float, float]) -> NormalizedBox:
+    """A small verification box centred on the visual back hotspot."""
+    x, y = hotspot
+    left = max(0.0, x - 0.035)
+    top = max(0.0, y - 0.030)
+    right = min(1.0, max(left + 0.01, x + 0.035))
+    bottom = min(1.0, max(top + 0.01, y + 0.030))
+    return NormalizedBox(left, top, right, bottom)
+
+
+def _box_tuple(box: NormalizedBox | None) -> tuple[float, float, float, float] | None:
+    return None if box is None else (box.left, box.top, box.right, box.bottom)
 
 
 def _digest_difference(before: bytes, after: bytes) -> float:

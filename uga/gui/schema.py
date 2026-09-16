@@ -11,6 +11,7 @@ from uga.core.schema import VersionedMixin
 
 class GuiActionKind(StrEnum):
     CLICK = "click"
+    LONG_CLICK = "long_click"
     DOUBLE_CLICK = "double_click"
     RIGHT_CLICK = "right_click"
     DRAG = "drag"
@@ -70,6 +71,7 @@ class GuiAction(VersionedMixin):
         self.lifetime.validate()
         point_kinds = {
             GuiActionKind.CLICK,
+            GuiActionKind.LONG_CLICK,
             GuiActionKind.DOUBLE_CLICK,
             GuiActionKind.RIGHT_CLICK,
             GuiActionKind.DRAG,

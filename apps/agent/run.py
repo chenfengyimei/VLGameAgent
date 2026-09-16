@@ -27,6 +27,7 @@ from types import FrameType
 from apps.agent.dashboard import DecisionDashboard
 from uga.agent.closed_loop import ClosedLoopSupervisor, TerminalStatus
 from uga.agent.mode_router import ModeRouter, RuleModeClassifier
+from uga.agent.session_state import GameSessionState
 from uga.agent.task_graph import RetryPolicy, TaskGraph, TaskNode, TaskStatus
 from uga.capture.dxgi import DXGIDuplicationBackend
 from uga.capture.fallback import GDIFallbackCaptureBackend
@@ -159,6 +160,13 @@ def _current_target_client_rect(
 
 
 async def _run(args: argparse.Namespace) -> int:
+    continuous = bool(getattr(args, "continuous", False))
+    vlm_temporal_frames = int(getattr(args, "vlm_temporal_frames", 3))
+    vlm_image_width = int(getattr(args, "vlm_image_width", 1280))
+    vlm_target_crops = int(getattr(args, "vlm_target_crops", 2))
+    capture_hz = float(getattr(args, "capture_hz", 10.0))
+    vlm_compact_output = bool(getattr(args, "vlm_compact_output", False))
+    vlm_ocr_task_fallback = bool(getattr(args, "vlm_ocr_task_fallback", False))
     qualification_root = getattr(args, "qualification_project_root", None)
     raw_goal_evidence = tuple(getattr(args, "goal_evidence", ()))
     if any(not value.strip() for value in raw_goal_evidence):
@@ -179,6 +187,8 @@ async def _run(args: argparse.Namespace) -> int:
         raise SystemExit("--tap-interval-seconds must be >= 0 (0 = tap once)")
     if not math.isfinite(args.observation_hz) or args.observation_hz <= 0:
         raise SystemExit("--observation-hz must be positive")
+    if not math.isfinite(capture_hz) or not 0.5 <= capture_hz <= 60.0:
+        raise SystemExit("--capture-hz must be within [0.5, 60]")
     if not 0 <= args.dashboard_port <= 65535:
         raise SystemExit("--dashboard-port must be within [0, 65535]")
     if args.policy == "vlm" and (
@@ -191,6 +201,14 @@ async def _run(args: argparse.Namespace) -> int:
         raise SystemExit("vision planner intervals and timeouts must be positive")
     if args.policy == "vlm" and not 0 <= args.max_recoveries <= 2:
         raise SystemExit("--max-recoveries must be within [0, 2]")
+    if args.policy == "vlm" and not 1 <= vlm_temporal_frames <= 3:
+        raise SystemExit("--vlm-temporal-frames must be within [1, 3]")
+    if args.policy == "vlm" and not 320 <= vlm_image_width <= 1280:
+        raise SystemExit("--vlm-image-width must be within [320, 1280]")
+    if args.policy == "vlm" and not 0 <= vlm_target_crops <= 2:
+        raise SystemExit("--vlm-target-crops must be within [0, 2]")
+    if continuous and args.policy != "vlm":
+        raise SystemExit("--continuous requires --policy vlm")
     if args.tap_interval_seconds and args.tap_interval_seconds <= args.tap_delay:
         raise SystemExit("--tap-interval-seconds must exceed --tap-delay")
     extra_body: dict[str, object] | None = None
@@ -211,6 +229,7 @@ async def _run(args: argparse.Namespace) -> int:
             timeout_s=args.vlm_timeout_seconds,
             max_output_tokens=args.vlm_max_output_tokens,
             disable_thinking=args.vlm_no_thinking,
+            json_object_mode=args.vlm_json_object,
             extra_body=extra_body,
         )
         use_verifier = args.vision_mode == "hybrid" or (
@@ -284,20 +303,61 @@ async def _run(args: argparse.Namespace) -> int:
     journal: DecisionJournal | None = None
     grounded_planner: GroundedVlmPlanner | None = None
     ocr_active = False
+    game_session: GameSessionState | None = None
+    back_hotspot: tuple[float, float] | None = None
+    close_hotspot: tuple[float, float] | None = None
+    promote_hotspot: tuple[float, float] | None = None
+    for exit_name in ("ui_back", "ui_close", "ui_promote"):
+        binding = profile.binding(exit_name)
+        if binding is None:
+            continue
+        if binding.kind != BindingKind.NORMALIZED_HOTSPOT or binding.hotspot is None:
+            raise SystemExit(f"profile {exit_name} binding must be a normalized_hotspot")
+        if binding.confirmed:
+            if exit_name == "ui_back":
+                back_hotspot = binding.hotspot
+            elif exit_name == "ui_close":
+                close_hotspot = binding.hotspot
+            else:
+                promote_hotspot = binding.hotspot
+    available_keys = frozenset(
+        binding.action
+        for binding in profile.controls
+        if binding.kind == BindingKind.VIRTUAL_KEY
+        and binding.confirmed
+        and isinstance(binding.code, int)
+    )
 
     if args.policy == "vlm":
         try:
             sampler_backend = GDIFallbackCaptureBackend(windows)
             sampler_backend.start(target.identity)
             journal = DecisionJournal()
+            game_session = GameSessionState()
+            # The tracked quest survives agent restarts: the loop is often
+            # relaunched while the game sits on a feature page whose OCR never
+            # shows the main-quest tracker.
+            game_session.set_persistence(
+                Path(__file__).resolve().parents[2]
+                / "runs"
+                / "live-agent"
+                / "session_state.json"
+            )
             assert vision_client is not None
             grounded_planner = GroundedVlmPlanner(
                 vision_client,
                 structured_output=True,
-                max_image_width=1280,
+                max_image_width=vlm_image_width,
+                max_temporal_frames=vlm_temporal_frames,
+                max_target_crops=vlm_target_crops,
+                compact_output=vlm_compact_output,
+                prefer_ocr_task_panel=vlm_ocr_task_fallback,
                 journal=journal,
                 required_goal_evidence=goal_evidence,
                 preferred_action_target=goal_action_target,
+                back_hotspot=back_hotspot,
+                close_hotspot=close_hotspot,
+                promote_hotspot=promote_hotspot,
             )
             policy: ScriptedTapPolicy | None = None
         except BaseException:
@@ -405,35 +465,51 @@ async def _run(args: argparse.Namespace) -> int:
                 * 1_000_000_000
             ),
         )
-        task_graph = TaskGraph(
-            (
-                TaskNode(
-                    task_node_id,
-                    args.goal,
-                    None,
-                    (),
-                    TaskStatus.PENDING,
-                    (),
-                    None,
-                    "goal verifier confirms success on two fresh frames",
-                    "closed loop blocks, times out, or fails",
-                    timeout_ns,
-                    RetryPolicy(max_attempts=1),
+        if not continuous:
+            task_graph = TaskGraph(
+                (
+                    TaskNode(
+                        task_node_id,
+                        args.goal,
+                        None,
+                        (),
+                        TaskStatus.PENDING,
+                        (),
+                        None,
+                        "goal verifier confirms success on two fresh frames",
+                        "closed loop blocks, times out, or fails",
+                        timeout_ns,
+                        RetryPolicy(max_attempts=1),
+                    ),
+                )
+            )
+
+        def make_closed_loop() -> ClosedLoopSupervisor:
+            return ClosedLoopSupervisor(
+                clock,
+                profile.perception,
+                verifier=outcome_verifier,
+                max_recoveries=args.max_recoveries,
+                task_graph=task_graph,
+                task_node_id=task_node_id if task_graph is not None else None,
+                goal_evidence=goal_evidence,
+                goal_action_target=goal_action_target,
+                back_hotspot=back_hotspot,
+                close_hotspot=close_hotspot,
+                promote_hotspot=promote_hotspot,
+                available_keys=available_keys or None,
+                session=game_session,
+                journal=journal,
+                on_exit_executed=(
+                    (lambda: grounded_planner.refresh_task_panel_cooldown())
+                    if grounded_planner is not None
+                    else None
                 ),
             )
-        )
-        closed_loop = ClosedLoopSupervisor(
-            clock,
-            profile.perception,
-            verifier=outcome_verifier,
-            max_recoveries=args.max_recoveries,
-            task_graph=task_graph,
-            task_node_id=task_node_id,
-            goal_evidence=goal_evidence,
-            goal_action_target=goal_action_target,
-        )
+
+        closed_loop = make_closed_loop()
         gui_controller = GuiActionController(arbiter, scheduler, recorder)
-        if recorder is not None:
+        if recorder is not None and task_graph is not None:
             recorder.record_task(
                 task_node_id,
                 clock.now(),
@@ -456,8 +532,9 @@ async def _run(args: argparse.Namespace) -> int:
         fallback=sampler_backend,
         frames=frames,
         record_frame=None if recorder is None else recorder.record_frame,
-        fallback_after_s=0.25,
-        fallback_hz=4.0,
+        fallback_after_s=max(0.25, 1.5 / capture_hz),
+        fallback_hz=min(capture_hz, 4.0),
+        primary_hz=capture_hz,
         consumer_timeout_s=_CAPTURE_STALL_BUDGET_S,
     )
     loop = RealtimeAgentLoop(
@@ -483,6 +560,8 @@ async def _run(args: argparse.Namespace) -> int:
         grounded_decision_interval_s=(
             args.vlm_decision_interval if grounded_planner is not None else 0.0
         ),
+        continuous_grounded=continuous,
+        closed_loop_factory=(make_closed_loop if continuous else None),
     )
 
     if journal is not None and args.dashboard_port > 0:
@@ -491,14 +570,25 @@ async def _run(args: argparse.Namespace) -> int:
             scheduler_stats = scheduler.stats()
             diagnostics = loop.closed_loop_diagnostics or {}
             latest = frames.latest()
+            events = [
+                row
+                for row in journal.snapshot().get("events", [])
+                if isinstance(row, dict)
+            ]
             latest_action = next(
+                (row.get("action") for row in reversed(events) if row.get("action")),
+                None,
+            )
+            physical = next(
                 (
-                    row.get("action")
-                    for row in reversed(journal.snapshot().get("events", []))
-                    if isinstance(row, dict) and row.get("action")
+                    row
+                    for row in reversed(events)
+                    if row.get("kind") in {"action_submitted", "action_effect"}
                 ),
                 None,
             )
+            session = diagnostics.get("session")
+            sessionEnvelope = dict(session) if isinstance(session, dict) else {}
             return {
                 "status": loop.terminal_status.value,
                 "goal": args.goal,
@@ -519,6 +609,20 @@ async def _run(args: argparse.Namespace) -> int:
                     )
                 ),
                 "current_action": latest_action,
+                "last_physical_action": (
+                    None
+                    if physical is None
+                    else {
+                        "time": physical.get("wall_clock"),
+                        "action": physical.get("action"),
+                        "detail": physical.get("detail"),
+                        "kind": physical.get("kind"),
+                        "quest_step": physical.get("quest_step"),
+                    }
+                ),
+                "session_state": sessionEnvelope,
+                "back_recovery_streak": diagnostics.get("back_recovery_streak", 0),
+                "back_hotspot": diagnostics.get("back_hotspot"),
                 "goal_confidence": loop.goal_confidence,
                 "goal_evidence_confidence": diagnostics.get(
                     "goal_evidence_confidence"
@@ -540,6 +644,30 @@ async def _run(args: argparse.Namespace) -> int:
                 "executed_actions": scheduler_stats.executed,
                 "recovery_count": diagnostics.get("recovery_count", 0),
                 "recent_failure": diagnostics.get("last_loop_finding"),
+                "continuous_mode": diagnostics.get("continuous_mode", False),
+                "continuous_cycle_count": diagnostics.get(
+                    "continuous_cycle_count", 1
+                ),
+                "planner_failure_count": diagnostics.get("planner_failure_count", 0),
+                "last_planner_error": diagnostics.get("last_planner_error"),
+                "last_supervision_disposition": diagnostics.get(
+                    "last_supervision_disposition"
+                ),
+                "last_supervision_reason": diagnostics.get("last_supervision_reason"),
+                "last_planner_input_frame_id": diagnostics.get(
+                    "last_planner_input_frame_id"
+                ),
+                "last_planner_input_age_ms": (
+                    None
+                    if not isinstance(
+                        planner_input_age := diagnostics.get(
+                            "last_planner_input_age_ns"
+                        ),
+                        int,
+                    )
+                    or isinstance(planner_input_age, bool)
+                    else float(planner_input_age) / 1_000_000
+                ),
             }
 
         def dashboard_preview() -> tuple[bytes, str] | None:
@@ -773,6 +901,14 @@ def build_parser() -> argparse.ArgumentParser:
         default=30.0,
         help="0 = run until stopped (Ctrl+C or the Ctrl+Shift+F12 emergency hotkey)",
     )
+    parser.add_argument(
+        "--continuous",
+        action="store_true",
+        help=(
+            "keep one VLM process alive by retrying transient planner failures and "
+            "starting a fresh closed-loop cycle after blocked or completed states"
+        ),
+    )
     parser.add_argument("--tap-delay", type=float, default=2.0)
     parser.add_argument(
         "--tap-interval-seconds",
@@ -793,6 +929,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="tap point as a vertical fraction of the client area",
     )
     parser.add_argument("--observation-hz", type=float, default=2.0)
+    parser.add_argument(
+        "--capture-hz",
+        type=float,
+        default=10.0,
+        help="maximum continuous capture frequency",
+    )
     parser.add_argument(
         "--dashboard-port",
         type=int,
@@ -834,9 +976,46 @@ def build_parser() -> argparse.ArgumentParser:
         help="maximum generated tokens for one structured vision decision",
     )
     parser.add_argument(
+        "--vlm-temporal-frames",
+        type=int,
+        choices=range(1, 4),
+        default=3,
+        metavar="{1,2,3}",
+        help="number of recent overview frames sent per decision",
+    )
+    parser.add_argument(
+        "--vlm-image-width",
+        type=int,
+        default=1280,
+        help="maximum overview image width sent to the vision model",
+    )
+    parser.add_argument(
+        "--vlm-target-crops",
+        type=int,
+        choices=range(0, 3),
+        default=2,
+        metavar="{0,1,2}",
+        help="additional OCR target crops attached after overview images",
+    )
+    parser.add_argument(
+        "--vlm-compact-output",
+        action="store_true",
+        help="request only the minimal action fields for small local models",
+    )
+    parser.add_argument(
+        "--vlm-ocr-task-fallback",
+        action="store_true",
+        help="replace WAIT or unrelated actions with a high-confidence OCR task-panel click",
+    )
+    parser.add_argument(
         "--vlm-no-thinking",
         action="store_true",
         help="ask thinking-style models (GLM-4.xV) to answer without a reasoning pass",
+    )
+    parser.add_argument(
+        "--vlm-json-object",
+        action="store_true",
+        help="use provider JSON-object mode instead of a JSON Schema response format",
     )
     parser.add_argument(
         "--vlm-extra-body",

@@ -87,7 +87,7 @@ _PAGE = """<!doctype html>
 <div class="cards">{health_cards}</div>
 <section class="panel"><h2>决策时间线 <span class="muted">（最新在前，最多 120 条）</span></h2>
 <div class="table-wrap"><table><tr><th>类型</th><th>时间</th><th>耗时</th>
-<th>动作</th><th>监督说明</th><th>步骤</th><th>图像</th><th>模型回复摘要</th></tr>
+<th>最终动作</th><th>监督与效果</th><th>模型提议</th><th>图像</th><th>模型回复摘要</th></tr>
 {rows}</table></div></section>
 <details class="panel"><summary>诊断原始数据</summary><pre>{raw}</pre></details>
 </main></body></html>"""
@@ -100,6 +100,8 @@ _KIND_LABELS = {
     "stale_discard": "过期丢弃",
     "failure": "推理失败",
     "rate_limited": "限流退避",
+    "action_submitted": "物理提交",
+    "action_effect": "效果验证",
 }
 
 
@@ -141,6 +143,26 @@ def _termination_label(value: object) -> str:
     return labels.get(str(value), "—" if value is None else str(value))
 
 
+def _session_quest_label(session: dict[str, Any]) -> str:
+    quest = session.get("latest_main_task")
+    if not isinstance(quest, dict):
+        return "未识别"
+    raw = str(quest.get("raw_text") or "未识别")
+    generation = quest.get("generation")
+    suffix = f"（第{generation}代）" if isinstance(generation, int) else ""
+    return f"{raw}{suffix}"
+
+
+def _last_physical_label(last_physical: object) -> str:
+    if not isinstance(last_physical, dict):
+        return "—"
+    action = str(last_physical.get("action") or "—")
+    clock = last_physical.get("time")
+    kind = last_physical.get("kind")
+    effect = "已验证" if kind == "action_effect" else "已提交"
+    return f"{action} @ {clock} ({effect})" if clock else action
+
+
 def render_page(snapshot: dict[str, Any], *, preview_available: bool = False) -> str:
     stats = snapshot.get("stats", {})
     events = snapshot.get("events", [])
@@ -159,12 +181,34 @@ def render_page(snapshot: dict[str, Any], *, preview_available: bool = False) ->
         "blocked": "已安全阻断",
         "failed": "运行失败",
     }.get(status, "正在启动")
+    raw_session = runtime.get("session_state")
+    session_state: dict[str, Any] = dict(raw_session) if isinstance(raw_session, dict) else {}
     primary_cards = "".join(
         (
-            _card("最新决策", runtime.get("current_action", "等待首个决策")),
+            _card("最新动作提案", runtime.get("current_action", "等待首个决策")),
+            _card(
+                "最后真实物理动作",
+                _last_physical_label(runtime.get("last_physical_action")),
+            ),
+            _card(
+                "当前主线任务",
+                _session_quest_label(session_state),
+            ),
+            _card(
+                "页面类型",
+                str(session_state.get("screen_type") or "未知"),
+            ),
+            _card("最终处置", runtime.get("last_supervision_disposition", "等待校验")),
+            _card("处置原因", _clip(runtime.get("last_supervision_reason"), 60)),
+            _card("真实物理事件", runtime.get("executed_actions", 0)),
+            _card(
+                "模型输入帧年龄",
+                _format_number(runtime.get("last_planner_input_age_ms"), " ms"),
+            ),
             _card("目标置信度", _format_number(runtime.get("goal_confidence"))),
             _card("证据置信度", _format_number(runtime.get("goal_evidence_confidence"))),
             _card("终止原因", _termination_label(runtime.get("termination_reason"))),
+            _card("推理失败", runtime.get("planner_failure_count", 0)),
         )
     )
     runtime_meta = "<dl class=\"runtime-meta\">" + "".join(
@@ -191,6 +235,7 @@ def render_page(snapshot: dict[str, Any], *, preview_available: bool = False) ->
             _card("逻辑动作", runtime.get("logical_actions_issued", 0)),
             _card("物理事件", runtime.get("executed_actions", 0)),
             _card("恢复次数", runtime.get("recovery_count", 0)),
+            _card("返回连败", runtime.get("back_recovery_streak", 0)),
             _card("推理 P50 / 最大", (
                 f"{float(stats.get('latency_p50_s', 0)):.1f} / "
                 f"{float(stats.get('latency_max_s', 0)):.1f} s"

@@ -150,14 +150,22 @@ class GroundedAction:
     confidence: float
     risk: ActionRisk = ActionRisk.NORMAL
     key: str | None = None
+    pointer_offset_x: float = 0.0
+    pointer_offset_y: float = 0.0
 
     def __post_init__(self) -> None:
         if not self.target_label.strip() or not self.expected_effect.strip():
             raise ContractViolation("grounded action requires target and expected effect")
         if not 0.0 <= self.confidence <= 1.0:
             raise ContractViolation("grounded action confidence must be in [0, 1]")
+        if not all(
+            math.isfinite(value) and -0.25 <= value <= 0.25
+            for value in (self.pointer_offset_x, self.pointer_offset_y)
+        ):
+            raise ContractViolation("grounded pointer offsets must be finite and in [-0.25, 0.25]")
         pointer_kinds = {
             GuiActionKind.CLICK,
+            GuiActionKind.LONG_CLICK,
             GuiActionKind.DOUBLE_CLICK,
             GuiActionKind.RIGHT_CLICK,
             GuiActionKind.DRAG,
@@ -173,6 +181,10 @@ class GroundedAction:
             raise ContractViolation("grounded key action requires a key name")
         if self.kind in {GuiActionKind.KEY, GuiActionKind.HOTKEY} and self.target_box is not None:
             raise ContractViolation("grounded key action cannot carry a target box")
+        if self.kind in {GuiActionKind.KEY, GuiActionKind.HOTKEY} and (
+            self.pointer_offset_x != 0.0 or self.pointer_offset_y != 0.0
+        ):
+            raise ContractViolation("grounded key action cannot carry pointer offsets")
 
 
 @dataclass(frozen=True, slots=True)

@@ -31,7 +31,7 @@ from uga.control.input_backend import DryRunInputBackend
 from uga.control.lease import ControlMode, ControlOwner
 from uga.control.lease_manager import ControlLeaseManager
 from uga.control.lifetime import ActionLifetime
-from uga.control.physical import UnicodeTextAction
+from uga.control.physical import MouseButtonAction, UnicodeTextAction
 from uga.control.scheduler import ActionScheduler
 from uga.core.errors import ContractViolation
 from uga.environment.generic import GenericEnvironment
@@ -353,6 +353,20 @@ capability_level: 3
         )
         typed = GuiControlBridge().translate(type_action, transform)
         self.assertIsInstance(typed[0], UnicodeTextAction)
+        long_click = GuiAction(
+            "long-click",
+            GuiActionKind.LONG_CLICK,
+            ActionLifetime(UGATime(0), UGATime(0), UGATime(1_000_000_000)),
+            x=0.5,
+            y=0.5,
+        )
+        held = GuiControlBridge().translate(long_click, transform)
+        self.assertEqual(len(held), 3)
+        self.assertIsInstance(held[1], MouseButtonAction)
+        self.assertIsInstance(held[2], MouseButtonAction)
+        self.assertTrue(held[1].is_down)  # type: ignore[union-attr]
+        self.assertFalse(held[2].is_down)  # type: ignore[union-attr]
+        self.assertEqual(held[2].lifetime.effective_from.value_ns, 700_000_000)
 
     def test_first_vertical_slice_records_replays_and_executes(self) -> None:
         clock = ManualClock(100)

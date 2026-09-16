@@ -407,6 +407,33 @@ class OpenAICompatibleVisionClientTests(unittest.TestCase):
         payload = json.loads(urlopen.call_args.args[0].data.decode("utf-8"))
         self.assertEqual(payload["response_format"], response_format)
 
+    def test_json_object_mode_replaces_json_schema_for_provider(self) -> None:
+        reply_body = json.dumps(
+            {"choices": [{"message": {"content": '{"kind":"wait"}'}}]}
+        ).encode("utf-8")
+
+        class _Response:
+            def read(self, size: int = -1) -> bytes:
+                return reply_body[:size]
+
+            def __enter__(self) -> _Response:
+                return self
+
+            def __exit__(self, *exc: object) -> bool:
+                return False
+
+        client = OpenAICompatibleVisionClient(
+            base_url="https://open.bigmodel.cn/api/paas/v4",
+            model="glm-4.6v",
+            json_object_mode=True,
+        )
+        schema = {"type": "json_schema", "json_schema": {"name": "decision"}}
+        with mock.patch("urllib.request.urlopen", return_value=_Response()) as urlopen:
+            client.decide(images=[b"x"], instruction="go", response_format=schema)
+
+        payload = json.loads(urlopen.call_args.args[0].data.decode("utf-8"))
+        self.assertEqual(payload["response_format"], {"type": "json_object"})
+
     def test_endpoint_suffix_is_not_doubled(self) -> None:
         client = OpenAICompatibleVisionClient(
             base_url="https://api.example.com/v1/chat/completions",

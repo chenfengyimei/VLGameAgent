@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import unittest
 from dataclasses import replace
 
@@ -14,8 +15,10 @@ from uga.control.executor import InputExecutor
 from uga.control.input_backend import DryRunInputBackend
 from uga.control.lease import ControlMode
 from uga.control.lease_manager import ControlLeaseManager
+from uga.control.physical import AbsolutePointerAction
 from uga.control.scheduler import ActionScheduler
 from uga.core.agent_loop import RealtimeAgentLoop
+from uga.core.errors import BackendUnavailableError
 from uga.core.events import EventBus, EventType
 from uga.environment.generic import GenericEnvironment
 from uga.environment.profile import PerceptionProfile
@@ -114,8 +117,12 @@ class GroundedClickPlanner:
         goal: str,
         high_resolution_retry: bool = False,
         preferred_action_available: bool = True,
+        session_context: str | None = None,
+        quest_target_level: int | None = None,
+        quest_text: str | None = None,
     ) -> PlannerOutcome:
-        del frames, goal, preferred_action_available
+        del frames, goal, preferred_action_available, session_context
+        del quest_target_level, quest_text
         self.high_resolution_retries.append(high_resolution_retry)
         return PlannerOutcome(
             f"grounded-decision-{snapshot.frame_sequence}",
@@ -134,6 +141,40 @@ class GroundedClickPlanner:
                 "settings",
                 NormalizedBox(0.25, 0.25, 0.75, 0.75),
                 "settings opens",
+                0.95,
+            ),
+        )
+
+
+class UnavailableGroundedPlanner(GroundedClickPlanner):
+    def decide(self, **kwargs: object) -> PlannerOutcome:
+        del kwargs
+        raise BackendUnavailableError("fixture planner timeout")
+
+
+class StripCloseClickPlanner(GroundedClickPlanner):
+    """Exit-labelled click whose box lands on MuMu's title-bar close button."""
+
+    def decide(self, **kwargs: object) -> PlannerOutcome:
+        snapshot = kwargs["snapshot"]
+        assert isinstance(snapshot, PerceptionSnapshot)
+        return PlannerOutcome(
+            f"grounded-decision-{snapshot.frame_sequence}",
+            snapshot.frame_id,
+            snapshot.frame_sequence,
+            snapshot.window_identity.window_generation,
+            snapshot.geometry_generation,
+            snapshot.task_generation,
+            DecisionKind.ACT,
+            "fixture GUI",
+            (),
+            GoalStatus.IN_PROGRESS,
+            0.95,
+            GroundedAction(
+                GuiActionKind.CLICK,
+                "返回花纹",
+                NormalizedBox(0.972, 0.012, 0.99, 0.04),
+                "the page closes",
                 0.95,
             ),
         )
@@ -257,6 +298,199 @@ class AgentLoopTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.scheduler_stats.executed, 3)
         self.assertEqual(len(backend.actions), 3)
 
+    async def test_routed_exit_intent_submits_the_calibrated_hotspot(self) -> None:
+        # 回归：assess() 的出口路由会替换 proposed action（返回语义 → 校准
+        # 热点），但提交层曾用原始 planner outcome——模型把"返回花纹"的框
+        # 落在 MuMu 标题栏 ✕ 上时，原始坐标直达 SendInput 关掉了模拟器。
+        clock = ManualClock(100)
+        target = identity()
+        frames = FrameRingBuffer()
+        events = EventBus(clock)
+        leases = ControlLeaseManager(clock)
+        backend = DryRunInputBackend()
+        scheduler = ActionScheduler(
+            clock,
+            InputExecutor(
+                clock,
+                backend,
+                FocusGuard(
+                    FakeWindows(target), FakeIntegrity(), leases, AgentEnableState(True)
+                ),
+                leases,
+            ),
+            leases,
+        )
+        arbiter = ActionArbiter(clock, leases)
+        fixture_profile = profile()
+        loop = RealtimeAgentLoop(
+            clock=clock,
+            capture=FakeCaptureSource(frames),
+            frames=frames,
+            observation_builder=ObservationBuilder(
+                clock, "fixture-game", ObservationInputs("open settings")
+            ),
+            observations=TemporalObservationBuffer(),
+            environment=GenericEnvironment(fixture_profile),
+            mode_classifier=RuleModeClassifier(),
+            mode_router=ModeRouter(
+                ControlMode.GUI, confirmation_frames=1, started_at=UGATime(0)
+            ),
+            policy=None,
+            leases=leases,
+            controller=ActionChunkController(
+                GenericEnvironment(fixture_profile), arbiter, scheduler
+            ),
+            scheduler=scheduler,
+            events=events,
+            grounded_planner=StripCloseClickPlanner(),
+            perception_builder=PerceptionBuilder(NullTextProvider()),
+            closed_loop=ClosedLoopSupervisor(
+                clock, fixture_profile.perception, back_hotspot=(0.06, 0.08)
+            ),
+            gui_controller=GuiActionController(arbiter, scheduler),
+            key_resolver=lambda _: None,
+        )
+
+        result = await loop.step()
+
+        assert result.supervision is not None
+        self.assertEqual(result.supervision.disposition, DecisionDisposition.EXECUTE)
+        assert result.gui_submission is not None
+        pointer = next(
+            action
+            for action in result.gui_submission.physical_actions
+            if isinstance(action, AbsolutePointerAction)
+        )
+        # 客户区宽 2px、physical_rect.left=-100：校准热点 x=0.06 → 物理
+        # x≈-100；原始 ✕ 框 x=0.981 → ≈-98。
+        self.assertEqual(pointer.x, -100)
+
+    async def test_grounded_planner_unavailable_is_retried_without_stopping(self) -> None:
+        clock = ManualClock(100)
+        target = identity()
+        frames = FrameRingBuffer()
+        events = EventBus(clock)
+        leases = ControlLeaseManager(clock)
+        backend = DryRunInputBackend()
+        scheduler = ActionScheduler(
+            clock,
+            InputExecutor(
+                clock,
+                backend,
+                FocusGuard(
+                    FakeWindows(target), FakeIntegrity(), leases, AgentEnableState(True)
+                ),
+                leases,
+            ),
+            leases,
+        )
+        fixture_profile = profile()
+        loop = RealtimeAgentLoop(
+            clock=clock,
+            capture=FakeCaptureSource(frames),
+            frames=frames,
+            observation_builder=ObservationBuilder(
+                clock, "fixture-game", ObservationInputs("open settings")
+            ),
+            observations=TemporalObservationBuffer(),
+            environment=GenericEnvironment(fixture_profile),
+            mode_classifier=RuleModeClassifier(),
+            mode_router=ModeRouter(
+                ControlMode.GUI, confirmation_frames=1, started_at=UGATime(0)
+            ),
+            policy=None,
+            leases=leases,
+            controller=ActionChunkController(
+                GenericEnvironment(fixture_profile), ActionArbiter(clock, leases), scheduler
+            ),
+            scheduler=scheduler,
+            events=events,
+            grounded_planner=UnavailableGroundedPlanner(),
+            perception_builder=PerceptionBuilder(NullTextProvider()),
+            closed_loop=ClosedLoopSupervisor(clock, fixture_profile.perception),
+            gui_controller=GuiActionController(ActionArbiter(clock, leases), scheduler),
+            key_resolver=lambda _: None,
+        )
+
+        result = await loop.step()
+
+        self.assertIsNone(result.planner_outcome)
+        self.assertEqual(loop.terminal_status.value, "running")
+        self.assertEqual(loop.closed_loop_diagnostics["planner_failure_count"], 1)  # type: ignore[index]
+        self.assertIn(
+            "fixture planner timeout",
+            str(loop.closed_loop_diagnostics["last_planner_error"]),  # type: ignore[index]
+        )
+
+    async def test_continuous_grounded_mode_resets_terminal_cycle(self) -> None:
+        clock = ManualClock(100)
+        target = identity()
+        frames = FrameRingBuffer()
+        events = EventBus(clock)
+        leases = ControlLeaseManager(clock)
+        backend = DryRunInputBackend()
+        scheduler = ActionScheduler(
+            clock,
+            InputExecutor(
+                clock,
+                backend,
+                FocusGuard(
+                    FakeWindows(target), FakeIntegrity(), leases, AgentEnableState(True)
+                ),
+                leases,
+            ),
+            leases,
+        )
+        fixture_profile = profile()
+
+        def make_supervisor() -> ClosedLoopSupervisor:
+            return ClosedLoopSupervisor(clock, fixture_profile.perception)
+
+        loop = RealtimeAgentLoop(
+            clock=clock,
+            capture=FakeCaptureSource(frames),
+            frames=frames,
+            observation_builder=ObservationBuilder(
+                clock, "fixture-game", ObservationInputs("keep progressing")
+            ),
+            observations=TemporalObservationBuffer(),
+            environment=GenericEnvironment(fixture_profile),
+            mode_classifier=RuleModeClassifier(),
+            mode_router=ModeRouter(
+                ControlMode.GUI, confirmation_frames=1, started_at=UGATime(0)
+            ),
+            policy=None,
+            leases=leases,
+            controller=ActionChunkController(
+                GenericEnvironment(fixture_profile), ActionArbiter(clock, leases), scheduler
+            ),
+            scheduler=scheduler,
+            events=events,
+            grounded_planner=GroundedClickPlanner(),
+            perception_builder=PerceptionBuilder(NullTextProvider()),
+            closed_loop=make_supervisor(),
+            gui_controller=GuiActionController(ActionArbiter(clock, leases), scheduler),
+            key_resolver=lambda _: None,
+            continuous_grounded=True,
+            closed_loop_factory=make_supervisor,
+        )
+        loop.fail_closed_loop("fixture blocked")
+        stop = asyncio.Event()
+        task = asyncio.create_task(loop.run(stop, observation_hz=100.0))
+
+        for _ in range(20):
+            diagnostics = loop.closed_loop_diagnostics
+            if diagnostics is not None and diagnostics["continuous_cycle_count"] >= 2:
+                break
+            await asyncio.sleep(0.01)
+        self.assertFalse(task.done())
+        diagnostics = loop.closed_loop_diagnostics
+        self.assertIsNotNone(diagnostics)
+        self.assertGreaterEqual(diagnostics["continuous_cycle_count"], 2)  # type: ignore[index]
+        self.assertEqual(loop.terminal_status.value, "running")
+        stop.set()
+        await task
+
     async def test_grounded_loop_bounds_retries_then_executes_safe_back(self) -> None:
         clock = ManualClock(1)
         target = identity()
@@ -319,7 +553,9 @@ class AgentLoopTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(second.supervision.disposition, DecisionDisposition.EXECUTE)  # type: ignore[union-attr]
         self.assertEqual(recovered.supervision.disposition, DecisionDisposition.RECOVER)  # type: ignore[union-attr]
         self.assertEqual(planner.high_resolution_retries, [False, False, True])
-        self.assertEqual(supervisor.recovery_count, 2)
+        # The visual/key back recovery is an ordinary state transition and no
+        # longer consumes the second recovery slot.
+        self.assertEqual(supervisor.recovery_count, 1)
         self.assertEqual(len(backend.actions), 8)
 
 

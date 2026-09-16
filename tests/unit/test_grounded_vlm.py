@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import json
 import unittest
+from dataclasses import replace
 
 from tests.helpers import frame
 from uga.capture.frame import BufferHandle
 from uga.capture.ring_buffer import SequencedFrame
 from uga.control.lease import ControlMode
 from uga.core.errors import BackendUnavailableError
+from uga.gui.schema import GuiActionKind
 from uga.perception.builder import PerceptionBuilder
 from uga.perception.schema import (
     DecisionKind,
@@ -17,6 +19,7 @@ from uga.perception.schema import (
     WaitReason,
 )
 from uga.policy.grounded_vlm import (
+    COMPACT_GROUNDING_RESPONSE_FORMAT,
     GROUNDING_RESPONSE_FORMAT,
     GroundedVlmPlanner,
     crop_frame,
@@ -84,6 +87,1121 @@ def _reply(kind: str = "act") -> str:
 
 
 class GroundedVlmTests(unittest.TestCase):
+    def test_high_confidence_left_task_panel_bypasses_model(self) -> None:
+        compact_wait = json.dumps(
+            {
+                "kind": "wait",
+                "confidence": 0.95,
+                "wait_reason": "no_safe_action",
+                "action": None,
+            }
+        )
+        client = _Client([compact_wait])
+        task_box = NormalizedBox(0.04, 0.25, 0.19, 0.30)
+        current = replace(
+            _snapshot(),
+            visible_text=(
+                TextRegion("主线", NormalizedBox(0.04, 0.17, 0.10, 0.20), 0.99),
+                TextRegion("得赶紧回到桃源居", task_box, 0.98),
+            ),
+        )
+
+        outcome = GroundedVlmPlanner(
+            client,
+            max_temporal_frames=1,
+            max_target_crops=0,
+            compact_output=True,
+            prefer_ocr_task_panel=True,
+        ).decide(
+            snapshot=current,
+            frames=(_large_frame(100),),
+            goal="点击左上角具体任务文字",
+        )
+
+        self.assertEqual(outcome.kind, DecisionKind.ACT)
+        self.assertEqual(outcome.action.target_label, "得赶紧回到桃源居")  # type: ignore[union-attr]
+        self.assertEqual(outcome.action.target_box, task_box)  # type: ignore[union-attr]
+        self.assertEqual(client.calls, [])
+
+    def test_mumu_close_confirmation_dialog_cancels_without_model(self) -> None:
+        compact_wait = json.dumps(
+            {
+                "kind": "wait",
+                "confidence": 0.95,
+                "wait_reason": "no_safe_action",
+                "action": None,
+            }
+        )
+        client = _Client([compact_wait])
+        current = replace(
+            _snapshot(),
+            visible_text=(
+                TextRegion(
+                    "确定要关闭 “MuMu安卓设备-1” 吗?",
+                    NormalizedBox(0.36, 0.38, 0.72, 0.43),
+                    0.97,
+                ),
+                TextRegion("不再提示", NormalizedBox(0.38, 0.44, 0.46, 0.47), 0.95),
+                TextRegion("确定", NormalizedBox(0.40, 0.55, 0.50, 0.60), 0.96),
+                TextRegion("取消", NormalizedBox(0.53, 0.55, 0.64, 0.60), 0.96),
+            ),
+        )
+
+        outcome = GroundedVlmPlanner(
+            client,
+            max_temporal_frames=1,
+            max_target_crops=0,
+            compact_output=True,
+            prefer_ocr_task_panel=True,
+        ).decide(
+            snapshot=current,
+            frames=(_large_frame(100),),
+            goal="持续推进主线任务",
+        )
+
+        # MuMu 的关闭确认框是模态拦截：规则层直接点取消（绝不点确定），
+        # 不消耗一次 VLM 推理。
+        self.assertEqual(outcome.kind, DecisionKind.ACT)
+        self.assertEqual(outcome.action.target_label, "取消")  # type: ignore[union-attr]
+        self.assertEqual(client.calls, [])
+
+    def test_xiuxian_path_quest_line_clicks_without_model(self) -> None:
+        compact_wait = json.dumps(
+            {
+                "kind": "wait",
+                "confidence": 0.95,
+                "wait_reason": "no_safe_action",
+                "action": None,
+            }
+        )
+        client = _Client([compact_wait])
+        current = replace(
+            _snapshot(),
+            visible_text=(
+                TextRegion("主线", NormalizedBox(0.055, 0.189, 0.092, 0.223), 1.00),
+                TextRegion("修仙之路", NormalizedBox(0.080, 0.242, 0.147, 0.278), 1.00),
+                TextRegion(
+                    "完成2个修仙之路目标0/2仙途轧缘仙遇",
+                    NormalizedBox(0.043, 0.363, 0.293, 0.398),
+                    0.96,
+                ),
+            ),
+        )
+
+        outcome = GroundedVlmPlanner(
+            client,
+            max_temporal_frames=1,
+            max_target_crops=0,
+            compact_output=True,
+            prefer_ocr_task_panel=True,
+        ).decide(
+            snapshot=current,
+            frames=(_large_frame(100),),
+            goal="持续推进主线任务",
+        )
+
+        # 修仙之路任务：点任务面板任务行本身会自动跳转到对应界面——规则层
+        # 直接点真实任务行，绕开模型反复点"主线"栏目标题的死循环。
+        self.assertEqual(outcome.kind, DecisionKind.ACT)
+        assert outcome.action is not None
+        self.assertIn("修仙之路目标", outcome.action.target_label)
+        self.assertEqual(client.calls, [])
+
+    def test_irrelevant_page_exit_is_cooldown_bounded_and_hands_off_to_model(self) -> None:
+        compact_wait = json.dumps(
+            {
+                "kind": "wait",
+                "confidence": 0.95,
+                "wait_reason": "no_safe_action",
+                "action": None,
+            }
+        )
+        client = _Client([compact_wait])
+        current = replace(
+            _snapshot(),
+            visible_text=(
+                TextRegion("悬赏任务", NormalizedBox(0.235, 0.294, 0.306, 0.767), 0.99),
+                TextRegion(
+                    "悬赏任务需要3~5人组队完成",
+                    NormalizedBox(0.393, 0.294, 0.623, 0.330),
+                    1.00,
+                ),
+                TextRegion("便捷组队", NormalizedBox(0.427, 0.719, 0.520, 0.766), 1.00),
+                TextRegion("创建队伍", NormalizedBox(0.596, 0.719, 0.688, 0.766), 1.00),
+            ),
+        )
+        planner = GroundedVlmPlanner(
+            client,
+            max_temporal_frames=1,
+            max_target_crops=0,
+            compact_output=True,
+            prefer_ocr_task_panel=True,
+            back_hotspot=(0.06, 0.08),
+        )
+
+        first = planner.decide(
+            snapshot=current,
+            frames=(_large_frame(100),),
+            goal="持续推进主线任务",
+            quest_text="完成3次30级装备秘境",
+        )
+
+        # 过期任务关键词（装备）不在本页：第一次先走校准返回热点退出。
+        self.assertEqual(first.kind, DecisionKind.ACT)
+        assert first.action is not None
+        self.assertEqual(first.action.target_label, "ui_back")
+
+        second = planner.decide(
+            snapshot=current,
+            frames=(_large_frame(100),),
+            goal="持续推进主线任务",
+            quest_text="完成3次30级装备秘境",
+        )
+
+        # 冷却期内不再机械退出：控制权交还模型（VLM 被调用一次）。
+        self.assertEqual(len(client.calls), 1)
+        self.assertEqual(second.kind, DecisionKind.WAIT)
+        self.assertIsNone(second.action)
+
+    def test_xiuxian_objective_goto_clicks_without_model(self) -> None:
+        compact_wait = json.dumps(
+            {
+                "kind": "wait",
+                "confidence": 0.95,
+                "wait_reason": "no_safe_action",
+                "action": None,
+            }
+        )
+        client = _Client([compact_wait])
+        current = replace(
+            _snapshot(),
+            visible_text=(
+                TextRegion("修仙之路", NormalizedBox(0.357, 0.146, 0.617, 0.282), 1.00),
+                TextRegion(
+                    "完成3次30级装备秘境",
+                    NormalizedBox(0.423, 0.311, 0.558, 0.344),
+                    1.00,
+                ),
+                TextRegion("前往", NormalizedBox(0.767, 0.328, 0.807, 0.367), 1.00),
+            ),
+        )
+
+        outcome = GroundedVlmPlanner(
+            client,
+            max_temporal_frames=1,
+            max_target_crops=0,
+            compact_output=True,
+            prefer_ocr_task_panel=True,
+        ).decide(
+            snapshot=current,
+            frames=(_large_frame(100),),
+            goal="持续推进主线任务",
+        )
+
+        # 修仙之路界面：目标文字不可点，规则层直接点目标行的前往按钮。
+        self.assertEqual(outcome.kind, DecisionKind.ACT)
+        assert outcome.action is not None
+        self.assertEqual(outcome.action.target_label, "前往")
+        self.assertEqual(client.calls, [])
+
+    def test_left_side_function_tabs_are_not_treated_as_task_panel(self) -> None:
+        compact_reply = json.dumps(
+            {
+                "kind": "wait",
+                "confidence": 0.95,
+                "wait_reason": "no_safe_action",
+                "action": None,
+            }
+        )
+        client = _Client([compact_reply])
+        current = replace(
+            _snapshot(),
+            visible_text=(
+                TextRegion("灵宠", NormalizedBox(0.02, 0.05, 0.10, 0.10), 0.99),
+                TextRegion("攻击", NormalizedBox(0.13, 0.28, 0.18, 0.34), 0.99),
+                TextRegion("回退", NormalizedBox(0.11, 0.86, 0.18, 0.92), 0.99),
+            ),
+        )
+
+        outcome = GroundedVlmPlanner(
+            client,
+            max_temporal_frames=1,
+            max_target_crops=0,
+            compact_output=True,
+            prefer_ocr_task_panel=True,
+        ).decide(
+            snapshot=current,
+            frames=(_large_frame(100),),
+            goal="完成主线任务",
+        )
+
+        self.assertEqual(outcome.kind, DecisionKind.WAIT)
+        self.assertEqual(len(client.calls), 1)
+
+    def test_pet_attribute_text_is_not_treated_as_dialogue(self) -> None:
+        compact_wait = json.dumps(
+            {
+                "kind": "wait",
+                "confidence": 0.95,
+                "wait_reason": "no_safe_action",
+                "action": None,
+            }
+        )
+        client = _Client([compact_wait])
+        current = replace(
+            _snapshot(),
+            visible_text=(
+                TextRegion("修为1154", NormalizedBox(0.28, 0.90, 0.42, 0.95), 0.99),
+                TextRegion("龙吟云溪1级", NormalizedBox(0.72, 0.82, 0.88, 0.87), 0.99),
+                TextRegion("伤害", NormalizedBox(0.75, 0.88, 0.82, 0.93), 0.99),
+                TextRegion("暴击抵抗0", NormalizedBox(0.70, 0.66, 0.82, 0.71), 0.99),
+            ),
+        )
+
+        outcome = GroundedVlmPlanner(
+            client,
+            max_temporal_frames=1,
+            max_target_crops=0,
+            compact_output=True,
+            prefer_ocr_task_panel=True,
+        ).decide(
+            snapshot=current,
+            frames=(_large_frame(100),),
+            goal="完成主线任务",
+        )
+
+        self.assertEqual(outcome.kind, DecisionKind.WAIT)
+        self.assertEqual(len(client.calls), 1)
+
+    def test_quest_level_target_met_exits_without_model(self) -> None:
+        # 任务目标 10 级已达成：页面显示等级 10/40 → 规则层直接 ui_back 退出，
+        # 不再让模型继续点击升级浪费材料，也不调用 VLM。
+        client = _Client([_reply("wait")])
+        title_box = NormalizedBox(0.08, 0.05, 0.15, 0.11)
+        current = replace(
+            _snapshot(),
+            visible_text=(
+                TextRegion("灵宠", title_box, 0.99),
+                TextRegion("等级 10/40", NormalizedBox(0.64, 0.24, 0.73, 0.29), 0.99),
+                TextRegion("升级", NormalizedBox(0.70, 0.60, 0.80, 0.68), 0.99),
+            ),
+        )
+
+        outcome = GroundedVlmPlanner(
+            client,
+            max_temporal_frames=1,
+            max_target_crops=0,
+            compact_output=True,
+            prefer_ocr_task_panel=True,
+            back_hotspot=(0.06, 0.08),
+        ).decide(
+            snapshot=current,
+            frames=(_large_frame(100),),
+            goal="完成主线任务",
+            quest_target_level=10,
+        )
+
+        self.assertEqual(outcome.kind, DecisionKind.ACT)
+        self.assertEqual(outcome.action.target_label, "ui_back")  # type: ignore[union-attr]
+        self.assertEqual(outcome.explanation.split()[0], "ocr_quest_satisfied_back_fast")
+        self.assertEqual(client.calls, [])
+
+    def test_quest_irrelevant_page_exits_without_model(self) -> None:
+        # 任务目标是灵宠，但当前功法升级页 OCR 中完全没有灵宠：规则层直接
+        # ui_back 退出，不让模型在无关页面上继续消耗升级材料。
+        client = _Client([_reply("wait")])
+        current = replace(
+            _snapshot(),
+            visible_text=(
+                TextRegion("功法升级", NormalizedBox(0.42, 0.12, 0.58, 0.18), 0.99),
+                TextRegion("长生诀", NormalizedBox(0.10, 0.18, 0.22, 0.24), 0.99),
+                TextRegion("功法修为：597", NormalizedBox(0.10, 0.22, 0.28, 0.28), 0.99),
+                TextRegion("升级消耗 660", NormalizedBox(0.60, 0.70, 0.82, 0.76), 0.99),
+                TextRegion("升级", NormalizedBox(0.68, 0.82, 0.80, 0.90), 0.99),
+            ),
+        )
+
+        outcome = GroundedVlmPlanner(
+            client,
+            max_temporal_frames=1,
+            max_target_crops=0,
+            compact_output=True,
+            prefer_ocr_task_panel=True,
+            back_hotspot=(0.06, 0.08),
+        ).decide(
+            snapshot=current,
+            frames=(_large_frame(100),),
+            goal="完成主线任务",
+            quest_text="拥有1只灵宠达到10级0/1",
+        )
+
+        self.assertEqual(outcome.kind, DecisionKind.ACT)
+        self.assertEqual(outcome.action.target_label, "ui_back")  # type: ignore[union-attr]
+        self.assertEqual(client.calls, [])
+
+    def test_quest_relevant_page_keeps_model_in_charge(self) -> None:
+        # 页面本身包含任务关键词（灵宠）：相关性守卫不得触发。
+        client = _Client([_reply("wait")])
+        title_box = NormalizedBox(0.08, 0.05, 0.15, 0.11)
+        current = replace(
+            _snapshot(),
+            visible_text=(
+                TextRegion("灵宠", title_box, 0.99),
+                TextRegion("等级 3/40", NormalizedBox(0.64, 0.24, 0.73, 0.29), 0.99),
+                TextRegion("升级消耗 660", NormalizedBox(0.60, 0.70, 0.82, 0.76), 0.99),
+                TextRegion("升级", NormalizedBox(0.68, 0.82, 0.80, 0.90), 0.99),
+            ),
+        )
+
+        outcome = GroundedVlmPlanner(
+            client,
+            max_temporal_frames=1,
+            max_target_crops=0,
+            compact_output=True,
+            prefer_ocr_task_panel=True,
+            back_hotspot=(0.06, 0.08),
+        ).decide(
+            snapshot=current,
+            frames=(_large_frame(100),),
+            goal="完成主线任务",
+            quest_text="拥有1只灵宠达到10级0/1",
+        )
+
+        self.assertEqual(outcome.kind, DecisionKind.WAIT)
+        self.assertEqual(len(client.calls), 1)
+
+    def test_monetization_popup_is_closed_not_clicked(self) -> None:
+        # 充值弹窗：禁止点击其中文字，规则层直接点 OCR 可见的 × 字形。
+        client = _Client([_reply("wait")])
+        current = replace(
+            _snapshot(),
+            visible_text=(
+                TextRegion("限时特惠", NormalizedBox(0.35, 0.15, 0.65, 0.25), 0.99),
+                TextRegion("充值", NormalizedBox(0.40, 0.40, 0.60, 0.50), 0.99),
+                TextRegion("关闭×", NormalizedBox(0.86, 0.18, 0.92, 0.24), 0.95),
+            ),
+        )
+
+        outcome = GroundedVlmPlanner(
+            client,
+            max_temporal_frames=1,
+            max_target_crops=0,
+            compact_output=True,
+            prefer_ocr_task_panel=True,
+            back_hotspot=(0.06, 0.08),
+            close_hotspot=(0.945, 0.075),
+        ).decide(
+            snapshot=current,
+            frames=(_large_frame(100),),
+            goal="完成主线任务",
+        )
+
+        self.assertEqual(outcome.kind, DecisionKind.ACT)
+        assert outcome.action is not None
+        self.assertEqual(outcome.action.target_label, "ui_close")
+        self.assertEqual(outcome.action.target_box, NormalizedBox(0.86, 0.18, 0.92, 0.24))  # type: ignore[union-attr]
+        self.assertEqual(client.calls, [])
+
+    def test_monetization_popup_without_glyph_falls_to_model(self) -> None:
+        # 无 × 字形时不强行退出：提示词已禁止点击促销文字，模型应输出 wait。
+        client = _Client([_reply("wait")])
+        current = replace(
+            _snapshot(),
+            visible_text=(
+                TextRegion("首充大礼", NormalizedBox(0.35, 0.15, 0.65, 0.25), 0.99),
+                TextRegion("充值6元", NormalizedBox(0.40, 0.40, 0.60, 0.50), 0.99),
+            ),
+        )
+
+        outcome = GroundedVlmPlanner(
+            client,
+            max_temporal_frames=1,
+            max_target_crops=0,
+            compact_output=True,
+            prefer_ocr_task_panel=True,
+            back_hotspot=(0.06, 0.08),
+            close_hotspot=(0.945, 0.075),
+        ).decide(
+            snapshot=current,
+            frames=(_large_frame(100),),
+            goal="完成主线任务",
+        )
+
+        self.assertEqual(outcome.kind, DecisionKind.WAIT)
+        self.assertEqual(len(client.calls), 1)
+
+    def test_realm_promotion_medallion_clicked_when_objectives_complete(self) -> None:
+        # 境界页目标全部已完成：晋升奖章是图形控件 OCR 读不出，规则层直接
+        # 点击校准热点，而不是让模型无限 wait。
+        client = _Client([_reply("wait")])
+        current = replace(
+            _snapshot(),
+            visible_text=(
+                TextRegion("境界", NormalizedBox(0.08, 0.08, 0.16, 0.13), 1.00),
+                TextRegion("境界目标", NormalizedBox(0.70, 0.16, 0.85, 0.21), 0.99),
+                TextRegion("上阵两只灵宠", NormalizedBox(0.60, 0.25, 0.75, 0.30), 0.99),
+                TextRegion("已完成", NormalizedBox(0.82, 0.30, 0.90, 0.35), 0.99),
+                TextRegion("已完成", NormalizedBox(0.82, 0.44, 0.90, 0.49), 0.99),
+                TextRegion("已完成", NormalizedBox(0.82, 0.58, 0.90, 0.63), 0.99),
+                TextRegion("晋升奖励：攻击+50", NormalizedBox(0.28, 0.82, 0.50, 0.88), 0.99),
+            ),
+        )
+
+        outcome = GroundedVlmPlanner(
+            client,
+            max_temporal_frames=1,
+            max_target_crops=0,
+            compact_output=True,
+            prefer_ocr_task_panel=True,
+            back_hotspot=(0.06, 0.08),
+            promote_hotspot=(0.32, 0.60),
+        ).decide(
+            snapshot=current,
+            frames=(_large_frame(100),),
+            goal="完成主线任务",
+        )
+
+        self.assertEqual(outcome.kind, DecisionKind.ACT)
+        assert outcome.action is not None
+        self.assertEqual(outcome.action.target_label, "ui_promote")
+        center = outcome.action.target_box.center  # type: ignore[union-attr]
+        self.assertAlmostEqual(center.x, 0.32, places=6)
+        self.assertAlmostEqual(center.y, 0.60, places=6)
+        self.assertEqual(client.calls, [])
+
+    def test_realm_page_without_completed_objectives_waits(self) -> None:
+        # 目标未全部完成时不得乱点晋升。
+        client = _Client([_reply("wait")])
+        current = replace(
+            _snapshot(),
+            visible_text=(
+                TextRegion("境界", NormalizedBox(0.08, 0.08, 0.16, 0.13), 1.00),
+                TextRegion("境界目标", NormalizedBox(0.70, 0.16, 0.85, 0.21), 0.99),
+                TextRegion("上阵两只灵宠", NormalizedBox(0.60, 0.25, 0.75, 0.30), 0.99),
+                TextRegion("1/2", NormalizedBox(0.60, 0.30, 0.68, 0.35), 0.99),
+            ),
+        )
+
+        outcome = GroundedVlmPlanner(
+            client,
+            max_temporal_frames=1,
+            max_target_crops=0,
+            compact_output=True,
+            prefer_ocr_task_panel=True,
+            back_hotspot=(0.06, 0.08),
+            promote_hotspot=(0.32, 0.60),
+        ).decide(
+            snapshot=current,
+            frames=(_large_frame(100),),
+            goal="完成主线任务",
+        )
+
+        self.assertEqual(outcome.kind, DecisionKind.WAIT)
+        self.assertEqual(len(client.calls), 1)
+
+    def test_task_panel_click_cooldown_hands_control_back_to_model(self) -> None:
+        # 追踪器点击生效后进入冷却：下一次决策交给模型（游戏高亮引导的
+        # 市场按钮才是真正的下一步），不再无限重复点击追踪器。
+        client = _Client([_reply("wait")])
+        tracker_regions = (
+            TextRegion("主线", NormalizedBox(0.02, 0.10, 0.12, 0.16), 0.99),
+            TextRegion("出售一件商品", NormalizedBox(0.03, 0.24, 0.20, 0.30), 0.99),
+            TextRegion("市场", NormalizedBox(0.66, 0.07, 0.73, 0.13), 0.99),
+        )
+        current = replace(_snapshot(), visible_text=tracker_regions)
+
+        planner = GroundedVlmPlanner(
+            client,
+            max_temporal_frames=1,
+            max_target_crops=0,
+            compact_output=True,
+            prefer_ocr_task_panel=True,
+        )
+
+        first = planner.decide(
+            snapshot=current,
+            frames=(_large_frame(100),),
+            goal="出售一件商品",
+        )
+        self.assertEqual(first.action.target_label, "出售一件商品")  # type: ignore[union-attr]
+        self.assertEqual(client.calls, [])
+
+        second = planner.decide(
+            snapshot=current,
+            frames=(_large_frame(100),),
+            goal="出售一件商品",
+        )
+        # The second decision falls through to the model.
+        self.assertEqual(second.kind, DecisionKind.WAIT)
+        self.assertEqual(len(client.calls), 1)
+
+    def test_task_panel_cooldown_resets_on_new_quest_text(self) -> None:
+        client = _Client([_reply("wait")])
+        planner = GroundedVlmPlanner(
+            client,
+            max_temporal_frames=1,
+            max_target_crops=0,
+            compact_output=True,
+            prefer_ocr_task_panel=True,
+        )
+
+        first_regions = (
+            TextRegion("主线", NormalizedBox(0.02, 0.10, 0.12, 0.16), 0.99),
+            TextRegion("出售一件商品", NormalizedBox(0.03, 0.24, 0.20, 0.30), 0.99),
+        )
+        first = planner.decide(
+            snapshot=replace(_snapshot(), visible_text=first_regions),
+            frames=(_large_frame(100),),
+            goal="出售一件商品",
+        )
+        self.assertEqual(first.action.target_label, "出售一件商品")  # type: ignore[union-attr]
+
+        # A different quest text navigates immediately (no cooldown).
+        second_regions = (
+            TextRegion("主线", NormalizedBox(0.02, 0.10, 0.12, 0.16), 0.99),
+            TextRegion("装备精炼", NormalizedBox(0.03, 0.24, 0.20, 0.30), 0.99),
+        )
+        second = planner.decide(
+            snapshot=replace(_snapshot(), visible_text=second_regions),
+            frames=(_large_frame(100),),
+            goal="出售一件商品",
+        )
+        self.assertEqual(second.action.target_label, "装备精炼")  # type: ignore[union-attr]
+        self.assertEqual(client.calls, [])
+
+    def test_market_task_clicks_market_entry_not_quest_panel(self) -> None:
+        # 出售类任务：游戏高亮的市场入口才是正确目标，任务面板文字不是。
+        client = _Client([_reply("wait")])
+        current = replace(
+            _snapshot(),
+            visible_text=(
+                TextRegion("主线", NormalizedBox(0.02, 0.10, 0.12, 0.16), 0.99),
+                TextRegion("出售一件商品", NormalizedBox(0.03, 0.24, 0.20, 0.30), 0.99),
+                TextRegion("市场", NormalizedBox(0.66, 0.07, 0.73, 0.13), 0.99),
+            ),
+        )
+
+        outcome = GroundedVlmPlanner(
+            client,
+            max_temporal_frames=1,
+            max_target_crops=0,
+            compact_output=True,
+            prefer_ocr_task_panel=True,
+            back_hotspot=(0.06, 0.08),
+        ).decide(
+            snapshot=current,
+            frames=(_large_frame(100),),
+            goal="出售一件商品",
+            quest_text="摆摊出售 出售一件商品",
+        )
+
+        self.assertEqual(outcome.kind, DecisionKind.ACT)
+        assert outcome.action is not None
+        self.assertEqual(outcome.action.target_label, "市场")
+        self.assertEqual(client.calls, [])
+
+    def test_active_level_up_quest_page_is_not_declared_complete(self) -> None:
+        # 等级 3/40 during an active 达到10级 quest means the page must be
+        # worked, not left: the fast path must not fire a ui_back here.
+        client = _Client([_reply("wait")])
+        title_box = NormalizedBox(0.08, 0.05, 0.15, 0.11)
+        current = replace(
+            _snapshot(),
+            visible_text=(
+                TextRegion("灵宠", title_box, 0.99),
+                TextRegion("等级 3/40", NormalizedBox(0.64, 0.24, 0.73, 0.29), 0.99),
+                TextRegion("回退", NormalizedBox(0.11, 0.86, 0.18, 0.92), 0.99),
+                TextRegion("暴击抵抗 0", NormalizedBox(0.70, 0.66, 0.82, 0.71), 0.99),
+            ),
+        )
+
+        outcome = GroundedVlmPlanner(
+            client,
+            max_temporal_frames=1,
+            max_target_crops=0,
+            compact_output=True,
+            prefer_ocr_task_panel=True,
+            back_hotspot=(0.06, 0.08),
+        ).decide(
+            snapshot=current,
+            frames=(_large_frame(100),),
+            goal="完成主线任务",
+        )
+
+        self.assertEqual(outcome.kind, DecisionKind.WAIT)
+        self.assertIsNone(outcome.action)
+        self.assertEqual(len(client.calls), 1)
+
+    def test_completed_pet_panel_without_back_hotspot_falls_back_to_model(self) -> None:
+        client = _Client([_reply("wait")])
+        title_box = NormalizedBox(0.08, 0.05, 0.15, 0.11)
+        current = replace(
+            _snapshot(),
+            visible_text=(
+                TextRegion("灵宠", title_box, 0.99),
+                TextRegion("等级 3/40", NormalizedBox(0.64, 0.24, 0.73, 0.29), 0.99),
+                TextRegion("回退", NormalizedBox(0.11, 0.86, 0.18, 0.92), 0.99),
+                TextRegion("暴击抵抗 0", NormalizedBox(0.70, 0.66, 0.82, 0.71), 0.99),
+            ),
+        )
+
+        outcome = GroundedVlmPlanner(
+            client,
+            max_temporal_frames=1,
+            max_target_crops=0,
+            compact_output=True,
+            prefer_ocr_task_panel=True,
+        ).decide(
+            snapshot=current,
+            frames=(_large_frame(100),),
+            goal="完成主线任务",
+        )
+
+        self.assertEqual(outcome.kind, DecisionKind.WAIT)
+        self.assertIsNone(outcome.action)
+        self.assertEqual(len(client.calls), 1)
+
+    def test_pet_evolution_limit_panel_exits_without_model(self) -> None:
+        client = _Client([_reply("wait")])
+        title_box = NormalizedBox(0.08, 0.05, 0.15, 0.11)
+        current = replace(
+            _snapshot(),
+            visible_text=(
+                TextRegion("灵宠", title_box, 0.99),
+                TextRegion("4星", NormalizedBox(0.73, 0.14, 0.79, 0.20), 0.99),
+                TextRegion(
+                    "该灵宠已培养至进化上限",
+                    NormalizedBox(0.68, 0.72, 0.90, 0.78),
+                    0.99,
+                ),
+                TextRegion("图鉴", NormalizedBox(0.52, 0.89, 0.58, 0.95), 0.99),
+            ),
+        )
+
+        outcome = GroundedVlmPlanner(
+            client,
+            max_temporal_frames=1,
+            max_target_crops=0,
+            compact_output=True,
+            prefer_ocr_task_panel=True,
+            back_hotspot=(0.06, 0.08),
+        ).decide(
+            snapshot=current,
+            frames=(_large_frame(100),),
+            goal="完成主线任务",
+        )
+
+        self.assertEqual(outcome.action.target_label, "ui_back")  # type: ignore[union-attr]
+        self.assertEqual(outcome.action.pointer_offset_x, 0.0)  # type: ignore[union-attr]
+        self.assertEqual(client.calls, [])
+
+    def test_completed_pet_formation_panel_exits_without_model(self) -> None:
+        client = _Client([_reply("wait")])
+        title_box = NormalizedBox(0.03, 0.03, 0.11, 0.09)
+        current = replace(
+            _snapshot(),
+            visible_text=(
+                TextRegion("灵宠", title_box, 0.99),
+                TextRegion("主战位", NormalizedBox(0.26, 0.16, 0.37, 0.22), 0.99),
+                TextRegion("辅助位", NormalizedBox(0.26, 0.69, 0.37, 0.75), 0.99),
+                TextRegion("修为：1814", NormalizedBox(0.09, 0.60, 0.20, 0.66), 0.99),
+                TextRegion("下阵", NormalizedBox(0.70, 0.87, 0.82, 0.94), 0.99),
+            ),
+        )
+
+        outcome = GroundedVlmPlanner(
+            client,
+            max_temporal_frames=1,
+            max_target_crops=0,
+            compact_output=True,
+            prefer_ocr_task_panel=True,
+            back_hotspot=(0.06, 0.08),
+        ).decide(
+            snapshot=current,
+            frames=(_large_frame(100),),
+            goal="持续推进主线",
+        )
+
+        self.assertEqual(outcome.action.target_label, "ui_back")  # type: ignore[union-attr]
+        self.assertEqual(outcome.action.pointer_offset_x, 0.0)  # type: ignore[union-attr]
+        self.assertEqual(client.calls, [])
+
+    def test_dialogue_layout_without_review_cue_falls_back_to_model(self) -> None:
+        compact_wait = json.dumps(
+            {
+                "kind": "wait",
+                "confidence": 0.95,
+                "wait_reason": "no_safe_action",
+                "action": None,
+            }
+        )
+        client = _Client([compact_wait])
+        dialogue_box = NormalizedBox(0.11, 0.86, 0.33, 0.91)
+        current = replace(
+            _snapshot(),
+            visible_text=(
+                TextRegion("师姐", NormalizedBox(0.11, 0.80, 0.16, 0.84), 0.99),
+                TextRegion("刚才那魔人有没有伤着你", dialogue_box, 0.96),
+            ),
+        )
+
+        outcome = GroundedVlmPlanner(
+            client,
+            max_temporal_frames=1,
+            max_target_crops=0,
+            compact_output=True,
+            prefer_ocr_task_panel=True,
+        ).decide(
+            snapshot=current,
+            frames=(_large_frame(100),),
+            goal="持续推进剧情",
+        )
+
+        self.assertEqual(outcome.kind, DecisionKind.WAIT)
+        self.assertIsNone(outcome.action)
+        self.assertEqual(len(client.calls), 1)
+
+    def test_submit_button_wins_over_passive_reward_text(self) -> None:
+        client = _Client([_reply("wait")])
+        submit_box = NormalizedBox(0.81, 0.28, 0.91, 0.35)
+        current = replace(
+            _snapshot(),
+            visible_text=(
+                TextRegion("境界目标", NormalizedBox(0.69, 0.15, 0.81, 0.21), 0.99),
+                TextRegion("提交", submit_box, 0.99),
+                TextRegion("今日境界奖励", NormalizedBox(0.61, 0.79, 0.75, 0.84), 0.99),
+                TextRegion(
+                    "突破瓶颈奖励：气血+2500",
+                    NormalizedBox(0.17, 0.91, 0.46, 0.97),
+                    0.99,
+                ),
+            ),
+        )
+
+        outcome = GroundedVlmPlanner(
+            client,
+            max_temporal_frames=1,
+            max_target_crops=0,
+            compact_output=True,
+            prefer_ocr_task_panel=True,
+        ).decide(
+            snapshot=current,
+            frames=(_large_frame(100),),
+            goal="持续推进任务",
+        )
+
+        self.assertEqual(outcome.action.target_label, "提交")  # type: ignore[union-attr]
+        self.assertEqual(outcome.action.target_box, submit_box)  # type: ignore[union-attr]
+        self.assertEqual(client.calls, [])
+
+    def test_pet_panel_numbers_are_not_misclassified_as_dialogue_choices(self) -> None:
+        current = replace(
+            _snapshot(),
+            visible_text=(
+                TextRegion("灵宠", NormalizedBox(0.03, 0.03, 0.11, 0.09), 0.99),
+                TextRegion("主战位", NormalizedBox(0.25, 0.17, 0.36, 0.22), 0.99),
+                TextRegion("辅助位", NormalizedBox(0.26, 0.70, 0.36, 0.75), 0.99),
+                TextRegion("等级达28级", NormalizedBox(0.08, 0.79, 0.16, 0.87), 0.98),
+                TextRegion("770", NormalizedBox(0.82, 0.50, 0.87, 0.55), 0.99),
+                TextRegion(
+                    "辅助位灵宠等级将临时提升至主战灵宠中的最低等级",
+                    NormalizedBox(0.13, 0.90, 0.61, 0.95),
+                    0.98,
+                ),
+            ),
+        )
+
+        self.assertIsNone(GroundedVlmPlanner._progress_control_candidate(current))
+
+    def test_long_reward_broadcast_is_not_a_progress_control(self) -> None:
+        current = replace(
+            _snapshot(),
+            visible_text=(
+                TextRegion(
+                    "恭喜玩家领取首充礼包，获得玄光剑和丰厚奖励",
+                    NormalizedBox(0.20, 0.03, 0.78, 0.08),
+                    0.99,
+                ),
+            ),
+        )
+
+        self.assertIsNone(GroundedVlmPlanner._progress_control_candidate(current))
+
+    def test_not_deployed_label_is_not_treated_as_deploy_button(self) -> None:
+        current = replace(
+            _snapshot(),
+            visible_text=(
+                TextRegion("未上阵", NormalizedBox(0.08, 0.40, 0.19, 0.48), 0.99),
+            ),
+        )
+
+        self.assertIsNone(GroundedVlmPlanner._progress_control_candidate(current))
+
+    def test_model_target_is_snapped_to_matching_latest_ocr_box(self) -> None:
+        loose_box = [0.84, 0.81, 0.98, 0.88]
+        ocr_box = NormalizedBox(0.70, 0.87, 0.83, 0.95)
+        reply = json.dumps(
+            {
+                "kind": "act",
+                "confidence": 0.95,
+                "action": {
+                    "kind": "click",
+                    "target_label": "获取灵宠",
+                    "target_bbox": loose_box,
+                    "confidence": 0.95,
+                    "key": None,
+                },
+                "wait_reason": None,
+            }
+        )
+        client = _Client([reply])
+        current = replace(
+            _snapshot(),
+            visible_text=(TextRegion("获取灵宠", ocr_box, 0.99),),
+        )
+
+        outcome = GroundedVlmPlanner(
+            client,
+            max_temporal_frames=1,
+            max_target_crops=0,
+            compact_output=True,
+            prefer_ocr_task_panel=True,
+        ).decide(
+            snapshot=current,
+            frames=(_large_frame(100),),
+            goal="持续推进游戏",
+        )
+
+        self.assertEqual(outcome.action.target_box, ocr_box)  # type: ignore[union-attr]
+        self.assertIn("snapped", outcome.explanation)
+        self.assertEqual(len(client.calls), 1)
+
+    def test_auto_continue_countdown_advances_with_space_without_model(self) -> None:
+        client = _Client([_reply("wait")])
+        current = replace(
+            _snapshot(),
+            visible_text=(
+                TextRegion(
+                    "9秒后自动继续",
+                    NormalizedBox(0.72, 0.68, 0.89, 0.74),
+                    0.99,
+                ),
+            ),
+        )
+
+        outcome = GroundedVlmPlanner(
+            client,
+            max_temporal_frames=1,
+            max_target_crops=0,
+            compact_output=True,
+            prefer_ocr_task_panel=True,
+        ).decide(
+            snapshot=current,
+            frames=(_large_frame(100),),
+            goal="持续推进剧情",
+        )
+
+        self.assertEqual(outcome.kind, DecisionKind.ACT)
+        self.assertEqual(outcome.action.kind, GuiActionKind.CLICK)  # type: ignore[union-attr]
+        assert outcome.action.target_box is not None  # type: ignore[union-attr]
+        center = outcome.action.target_box.center
+        self.assertAlmostEqual(center.x, 0.805, places=3)
+        self.assertAlmostEqual(center.y, 0.71, places=3)
+        self.assertEqual(client.calls, [])
+
+    def test_review_story_cue_alone_falls_back_to_model(self) -> None:
+        # 回顾剧情 sidebar alone identifies the dialogue screen but has no
+        # advance zone: without the countdown the model decides.
+        client = _Client([_reply("wait")])
+        current = replace(
+            _snapshot(),
+            visible_text=(
+                TextRegion("回顾剧情", NormalizedBox(0.02, 0.43, 0.05, 0.60), 0.99),
+                TextRegion("师姐", NormalizedBox(0.11, 0.80, 0.16, 0.84), 0.99),
+                TextRegion(
+                    "刚才那魔人有没有伤着你",
+                    NormalizedBox(0.11, 0.86, 0.33, 0.91),
+                    0.96,
+                ),
+            ),
+        )
+
+        outcome = GroundedVlmPlanner(
+            client,
+            max_temporal_frames=1,
+            max_target_crops=0,
+            compact_output=True,
+            prefer_ocr_task_panel=True,
+        ).decide(
+            snapshot=current,
+            frames=(_large_frame(100),),
+            goal="持续推进剧情",
+        )
+
+        self.assertEqual(outcome.kind, DecisionKind.WAIT)
+        self.assertEqual(len(client.calls), 1)
+
+    def test_dialogue_choice_without_review_story_label_falls_back_to_model(self) -> None:
+        client = _Client([_reply("wait")])
+        choice_box = NormalizedBox(0.69, 0.69, 0.78, 0.74)
+        current = replace(
+            _snapshot(),
+            visible_text=(
+                TextRegion("拯救小龙", choice_box, 0.99),
+                TextRegion("伊娇娅", NormalizedBox(0.09, 0.80, 0.18, 0.85), 0.99),
+                TextRegion(
+                    "这小龙受伤太重了，我得救他",
+                    NormalizedBox(0.11, 0.86, 0.62, 0.91),
+                    0.98,
+                ),
+            ),
+        )
+
+        outcome = GroundedVlmPlanner(
+            client,
+            max_temporal_frames=1,
+            max_target_crops=0,
+            compact_output=True,
+            prefer_ocr_task_panel=True,
+        ).decide(
+            snapshot=current,
+            frames=(_large_frame(100),),
+            goal="持续推进剧情",
+        )
+
+        self.assertEqual(outcome.kind, DecisionKind.WAIT)
+        self.assertIsNone(outcome.action)
+        self.assertEqual(len(client.calls), 1)
+
+    def test_hold_prompt_uses_long_click(self) -> None:
+        client = _Client([_reply("wait")])
+        current = replace(
+            _snapshot(),
+            visible_text=(
+                TextRegion(
+                    "传功疗伤",
+                    NormalizedBox(0.76, 0.68, 0.86, 0.74),
+                    0.99,
+                ),
+                TextRegion("伊娇娅", NormalizedBox(0.09, 0.80, 0.18, 0.85), 0.99),
+                TextRegion(
+                    "小龙伤得太重了",
+                    NormalizedBox(0.11, 0.86, 0.40, 0.91),
+                    0.98,
+                ),
+            ),
+        )
+
+        outcome = GroundedVlmPlanner(
+            client,
+            max_temporal_frames=1,
+            max_target_crops=0,
+            compact_output=True,
+            prefer_ocr_task_panel=True,
+        ).decide(
+            snapshot=current,
+            frames=(_large_frame(100),),
+            goal="持续推进剧情",
+        )
+
+        self.assertEqual(outcome.action.kind, GuiActionKind.LONG_CLICK)  # type: ignore[union-attr]
+        self.assertEqual(client.calls, [])
+
+    def test_compact_mode_parses_minimal_single_action_reply(self) -> None:
+        compact_reply = json.dumps(
+            {
+                "kind": "act",
+                "confidence": 0.96,
+                "wait_reason": None,
+                "action": {
+                    "kind": "click",
+                    "target_label": "主线任务",
+                    "target_bbox": [0.1, 0.2, 0.3, 0.4],
+                    "confidence": 0.96,
+                    "key": None,
+                },
+            }
+        )
+        client = _Client([compact_reply])
+
+        outcome = GroundedVlmPlanner(
+            client,
+            max_temporal_frames=1,
+            max_target_crops=0,
+            compact_output=True,
+        ).decide(
+            snapshot=_snapshot(),
+            frames=(_large_frame(100),),
+            goal="点击主线任务",
+        )
+
+        self.assertEqual(outcome.kind, DecisionKind.ACT)
+        self.assertEqual(outcome.action.target_label, "主线任务")  # type: ignore[union-attr]
+        self.assertEqual(outcome.action.risk.value, "low")  # type: ignore[union-attr]
+        self.assertEqual(
+            client.calls[0]["response_format"], COMPACT_GROUNDING_RESPONSE_FORMAT
+        )
+        self.assertEqual(len(client.calls[0]["images"]), 1)  # type: ignore[arg-type]
+
+    def test_compact_mode_normalizes_glm_1000_space_bbox(self) -> None:
+        client = _Client(
+            [
+                json.dumps(
+                    {
+                        "kind": "act",
+                        "confidence": 0.96,
+                        "wait_reason": None,
+                        "action": {
+                            "kind": "click",
+                            "target_label": "返回",
+                            "target_bbox": [522, 925, 557, 975],
+                            "confidence": 0.96,
+                            "key": None,
+                        },
+                    }
+                )
+            ]
+        )
+
+        outcome = GroundedVlmPlanner(
+            client,
+            max_temporal_frames=1,
+            max_target_crops=0,
+            compact_output=True,
+        ).decide(
+            snapshot=_snapshot(),
+            frames=(_large_frame(100),),
+            goal="返回上一页",
+        )
+
+        self.assertEqual(
+            outcome.action.target_box,  # type: ignore[union-attr]
+            NormalizedBox(0.522, 0.925, 0.557, 0.975),
+        )
+
+    def test_compact_mode_unwraps_json_answer_string(self) -> None:
+        inner = {
+            "kind": "wait",
+            "confidence": 0.9,
+            "action": None,
+            "wait_reason": "animation",
+        }
+        client = _Client([json.dumps({"answer": json.dumps(inner)})])
+
+        outcome = GroundedVlmPlanner(
+            client,
+            max_temporal_frames=1,
+            max_target_crops=0,
+            compact_output=True,
+        ).decide(
+            snapshot=_snapshot(),
+            frames=(_large_frame(100),),
+            goal="等待动画",
+        )
+
+        self.assertEqual(outcome.kind, DecisionKind.WAIT)
+        self.assertEqual(outcome.wait_reason, WaitReason.ANIMATION)
+
     def test_schema_constrains_every_bbox_coordinate_to_normalized_range(self) -> None:
         encoded = json.dumps(GROUNDING_RESPONSE_FORMAT)
         self.assertIn('"minimum": 0', encoded)
@@ -108,9 +1226,8 @@ class GroundedVlmTests(unittest.TestCase):
         schema = GROUNDING_RESPONSE_FORMAT["json_schema"]["schema"]
         self.assertIn("not DONE", schema["properties"]["kind"]["description"])
         instruction = str(client.calls[0]["instruction"])
-        self.assertIn("不代表该外部目标成功", instruction)
-        self.assertIn("wait_reason=no_safe_action", instruction)
-        self.assertIn("绝对禁止 DONE", instruction)
+        self.assertIn("目标尚未完成时绝对禁止 DONE", instruction)
+        self.assertIn("继续输出 act 推进目标", instruction)
 
     def test_schema_and_prompt_require_null_key_for_back_button_click(self) -> None:
         client = _Client([_reply()])
@@ -211,6 +1328,70 @@ class GroundedVlmTests(unittest.TestCase):
 
         self.assertEqual(len(client.calls[0]["images"]), 4)  # type: ignore[arg-type]
         self.assertIn("3 张按时间先后", str(client.calls[0]["instruction"]))
+
+    def test_temporal_overviews_can_be_limited_for_local_inference(self) -> None:
+        client = _Client([_reply()])
+
+        GroundedVlmPlanner(client, max_temporal_frames=1).decide(
+            snapshot=_snapshot(),
+            frames=tuple(_large_frame(value) for value in (1, 2, 100)),
+            goal="打开设置",
+        )
+
+        self.assertEqual(len(client.calls[0]["images"]), 2)  # type: ignore[arg-type]
+        self.assertIn("1 张按时间先后", str(client.calls[0]["instruction"]))
+
+    def test_lightweight_mode_sends_exactly_one_current_image(self) -> None:
+        client = _Client([_reply()])
+
+        GroundedVlmPlanner(
+            client,
+            max_image_width=640,
+            max_temporal_frames=1,
+            max_target_crops=0,
+        ).decide(
+            snapshot=_snapshot(),
+            frames=tuple(_large_frame(value) for value in (1, 2, 100)),
+            goal="打开设置",
+        )
+
+        self.assertEqual(len(client.calls[0]["images"]), 1)  # type: ignore[arg-type]
+        instruction = str(client.calls[0]["instruction"])
+        self.assertIn("1 张按时间先后", instruction)
+        self.assertIn("随后给出 0 张", instruction)
+
+    def test_high_resolution_retry_still_honors_explicit_image_cap(self) -> None:
+        client = _Client([_reply()])
+        planner = GroundedVlmPlanner(
+            client,
+            max_image_width=640,
+            max_temporal_frames=1,
+        )
+        from dataclasses import replace
+
+        source = frame(100)
+        large = replace(
+            source,
+            width=1000,
+            height=100,
+            stride_bytes=4000,
+            buffer_handle=BufferHandle(
+                source.buffer_handle.handle_id,
+                source.buffer_handle.kind,
+                1000 * 100 * 4,
+                bytes([100]) * (1000 * 100 * 4),
+            ),
+        )
+
+        planner.decide(
+            snapshot=_snapshot(),
+            frames=(large,),
+            goal="打开设置",
+            high_resolution_retry=True,
+        )
+
+        overview = client.calls[0]["images"][0]  # type: ignore[index]
+        self.assertEqual(int.from_bytes(overview[16:20], "big"), 640)
 
     def test_invalid_reply_gets_one_repair_then_abstains(self) -> None:
         client = _Client(["not json", "still not json"])
