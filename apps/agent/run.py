@@ -29,6 +29,7 @@ from uga.agent.closed_loop import ClosedLoopSupervisor, TerminalStatus
 from uga.agent.mode_router import ModeRouter, RuleModeClassifier
 from uga.agent.recovery_budget import RecoveryBudget
 from uga.agent.session_state import GameSessionState
+from uga.agent.strategies import registry_for
 from uga.agent.task_graph import RetryPolicy, TaskGraph, TaskNode, TaskStatus
 from uga.capture.dxgi import DXGIDuplicationBackend
 from uga.capture.fallback import GDIFallbackCaptureBackend
@@ -374,6 +375,7 @@ async def _run(args: argparse.Namespace) -> int:
             assert vision_client is not None
             grounded_planner = GroundedVlmPlanner(
                 vision_client,
+                strategy_registry=registry_for(profile.game_id),
                 structured_output=True,
                 max_image_width=vlm_image_width,
                 max_temporal_frames=vlm_temporal_frames,

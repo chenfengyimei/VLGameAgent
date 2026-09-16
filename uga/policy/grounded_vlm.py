@@ -24,6 +24,7 @@ from uga.agent.session_state import (
     stall_sell_item_cell,
     xiuxian_path_objective_goto,
 )
+from uga.agent.strategies import StrategyRegistry
 from uga.capture.frame import BufferHandle, BufferKind, Frame
 from uga.core.errors import BackendUnavailableError, ContractViolation
 from uga.gui.schema import GuiActionKind
@@ -309,6 +310,7 @@ class GroundedVlmPlanner:
         back_hotspot: tuple[float, float] | None = None,
         close_hotspot: tuple[float, float] | None = None,
         promote_hotspot: tuple[float, float] | None = None,
+        strategy_registry: StrategyRegistry | None = None,
     ) -> None:
         if max_image_width < 320:
             raise ContractViolation("grounded planner image width must be at least 320")
@@ -365,10 +367,28 @@ class GroundedVlmPlanner:
         self._last_image_count = 0
         self._last_decision_source = "model"
         self.last_high_resolution_upgraded: bool | None = None
+        # D12: the game-strategy registry scopes which decision fast paths
+        # this planner may consult.  None is a documented legacy compat
+        # default (unit tests) meaning "every known source"; production
+        # always passes the profile's own registry — a generic profile
+        # resolves to an EMPTY registry and none of the game rules fire.
+        self._strategy_registry = strategy_registry
 
     @property
     def policy_version(self) -> str:
         return "grounded-vlm-1.0.0"
+
+    @property
+    def strategy_allows_fast_paths(self) -> bool:
+        """D12: game fast paths fire only for a registered game strategy.
+
+        ``None`` (legacy default) allows every known source; a registry —
+        including an empty one for a generic profile — scopes the planner to
+        its own inventory.
+        """
+        return self._strategy_registry is None or (
+            self._strategy_registry.allows_fast_paths()
+        )
 
     @property
     def last_decision_source(self) -> str:
@@ -600,11 +620,17 @@ class GroundedVlmPlanner:
             )
         if not self._prefer_ocr_task_panel:
             return None
+        if not self.strategy_allows_fast_paths:
+            # D12: a generic profile carries no game rule inventory — every
+            # game-specific fast path below is disabled and the decision
+            # falls through to the vision model.
+            return None
         dialog_cancel = mumu_close_dialog_cancel(snapshot.visible_text)
         if dialog_cancel is not None:
             # MuMu 自己的"确定要关闭"确认框挡住整个窗口：唯一安全处置是
             # 取消（确定会关掉模拟器、杀掉整个 run）。规则层直接接管，
             # 不消耗 VLM 推理，也绝不允许模型碰这个弹窗的确定按钮。
+            self._last_decision_source = "ocr_mumu_dialog_cancel_fast"
             return self._ocr_action(
                 snapshot,
                 dialog_cancel,
@@ -1006,6 +1032,10 @@ class GroundedVlmPlanner:
     ) -> PlannerOutcome:
         self._last_decision_source = "model"
         if not self._prefer_ocr_task_panel or outcome.kind == DecisionKind.DONE:
+            return outcome
+        if not self.strategy_allows_fast_paths:
+            # D12: a generic profile carries no game rule inventory — the
+            # model's own reply stands without rule-level substitution.
             return outcome
         if quest_is_market_task(quest_text):
             # 市场类任务：任务面板文字不是可操作按钮，fallback 不得把它
