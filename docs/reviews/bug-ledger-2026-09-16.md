@@ -12,7 +12,7 @@
 
 | 编号 | 优先级 | 证据 | 状态 | 问题 | 主符号/文件 | 修复任务 |
 |---|---|---|---|---|---|---|
-| F01 | P0 | S | open | 真实入口急停未锁存输入失权 | `apps/agent/run.py::request_stop`；`uga/core/agent_loop.py::step`；`uga/safety/shutdown.py::SafetyShutdown`、`uga/safety/watchdog.py::RuntimeWatchdog` 未接入 | D02、D03、D16 |
+| F01 | P0 | S | tests_passed(local) | 真实入口急停未锁存输入失权 | `apps/agent/run.py::request_stop`；`uga/core/agent_loop.py::step`；`uga/safety/shutdown.py::SafetyShutdown`、`uga/safety/watchdog.py::RuntimeWatchdog` 已接入 | D02、D03、D16 |
 | F02 | P0 | S | open | ui_back/ui_close/ui_promote 标签被当信任依据 | `uga/agent/closed_loop.py::ClosedLoopSupervisor.assess`（提前 EXECUTE）；`uga/core/agent_loop.py::validate_execution_frame`（跳过）；`uga/policy/grounded_vlm.py`；`uga/perception/schema.py::target_label` | D03、D12 |
 | F03 | P1 | S+I | open | 禁点校验点(框中心)≠最终点击点(含偏移) | `uga/agent/closed_loop.py::ActionValidator`（校验 center）；`ClosedLoopSupervisor.to_gui_action`（后叠加 pointer_offset） | D03 |
 | F04 | P1 | S+I | open | 效果验证分支提前 return，pending 可能永不超时 | `uga/agent/closed_loop.py::ClosedLoopSupervisor.observe`（像素稳定候选/锚点分支在总超时判断前返回） | D05 |
@@ -38,11 +38,12 @@
 
 ## 条目明细
 
-### F01 真实运行入口未接入锁存急停和独立看门狗（P0 · S）
+### F01 真实运行入口未接入锁存急停和独立看门狗（P0 · S · tests_passed(local)）
 - **触发条件：** 推理/验证进行中按急停或到时长；停止循环与未结束 step 交错。
-- **复现入口：** T01/T02/T03（待实现）；源码级控制流 S02/S03。
+- **复现入口：** T01/T02/T03 已实现为回归测试（tests/integration/test_latched_shutdown.py）。
 - **预期行为：** 急停回调先 `SafetyShutdown.trip()`（禁用→撤销租约→清队列→释放输入，锁存幂等），再通知 asyncio stop；锁存确认后新 submit=0；迟到推理结果因 run_generation/锁存失权。
-- **修复提交：** 待 D02。 **关闭证据：** 待 D02 回归测试 + 受监督 Fixture 实测（P99 目标 ≤100ms 失权 / ≤200ms 释放，为待测目标）。
+- **修复提交：** `871cfc4`（2026-09-16，未推送）。落地内容：(1) run.py 组合根构建 SafetyShutdown+RunContext+RuntimeWatchdog，急停/信号/超时/崩溃全部先 trip 后通知，打印排在失权之后；AgentEnableState 初始 False，急停热键与看门狗 monitor 就绪后才显式 arm；(2) 新增 uga/core/run_context.py（run_id、单调 generation、cancel 锁存，stop/generation 推进均使在途 stamp 失效，禁止改写 generation 续命）；(3) agent_loop 在每次 to_thread 推理/评估返回后、EXECUTE/RECOVER 授权前复核 stamp，迟到结果只记 discarded_stale 事件+计数，不授权不入队；(4) 看门狗心跳挂在 scheduler 真实 tick 上（控制面活性，非盲定时器），monitor 线程独立巡检；(5) continuous 重建不得清除安全锁存（should_stop 时停止而非重建），且重建推进 run generation 使旧结果失效；(6) --watchdog-timeout-seconds CLI（默认 60s，>0 校验）。
+- **关闭证据：** 11 项新测试全绿（停机中推理迟到不提交、assess→入队间隙停止、fast policy 迟到丢弃、锁存后新 execute 被 AGENT_DISABLED 拒绝且不产生新提交、continuous 不清锁存、心跳随真实 tick、RunContext 代数/取消/锁存语义、看门狗活体）；全套件 525 passed + 1 opt-in skip + 103 subtests；ruff/mypy(177) 绿。**受监督 Fixture 实测热键→失权 P99≤100ms/释放≤200ms 尚未实测（NOT_RUN，需授权后按 D17 流程测）。**
 
 ### F02 ui_back/ui_close/ui_promote 字符串被当成信任依据（P0 · S）
 - **触发条件：** 模型返回保留标签但任意坐标；或推理后窗口/几何已改变。
@@ -65,10 +66,11 @@
 - **预期行为：** run 级预算由组合根持有，所有恢复（含 BACK、高分辨率重试）共用；0=禁用全部恢复。
 - **修复提交：** 待 D06。 **关闭证据：** 待 T15 回归。
 
-### F06 continuous 对终止状态统一重建监督器（P1 · S）
+### F06 continuous 对终止状态统一重建监督器（P1 · S · open；安全锁存部分已由 D02 关闭）
 - **触发条件：** 反复 BLOCKED/FAILED；启动脚本非零退出无限重启。
 - **预期行为：** 按终止原因分类（SUCCESS/USER_STOP/SAFETY_TRIP/MANUAL_REQUIRED/AUTH_FAILURE/TRANSIENT_FAILURE/RECOVERY_EXHAUSTED）；安全停止与预算耗尽不得自动复位。
-- **修复提交：** 待 D02/D06。 **关闭证据：** 待 T16 回归。
+- **修复提交：** D02 部分 `871cfc4`：安全 trip（含看门狗/急停）在 observe 循环触发 should_stop → 停止而非重建（回归测试 test_continuous_cannot_clear_safety_trip）；重建本身现在推进 run generation。**剩余归 D06：** 终止原因枚举与白名单重试、run 级恢复预算跨重建、启动脚本（run_mumu_autoplay.ps1）的退出码分类与有界退避重启。
+- **关闭证据：** 待 D06 全量落地后回填。
 
 ### F07 region_digest 对部分颜色变化失明（P1 · S+I · EX01）
 - **触发条件：** 变化主要落在未采样颜色通道/漏采像素。
