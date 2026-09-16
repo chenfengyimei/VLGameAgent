@@ -362,11 +362,14 @@ async def _run(args: argparse.Namespace) -> int:
             # The tracked quest survives agent restarts: the loop is often
             # relaunched while the game sits on a feature page whose OCR never
             # shows the main-quest tracker.
+            # F15: the persistence namespace is bound to the game profile so
+            # two profiles never cross-wire their quest memory.
             game_session.set_persistence(
                 Path(__file__).resolve().parents[2]
                 / "runs"
                 / "live-agent"
-                / "session_state.json"
+                / "session_state.json",
+                profile_id=profile.game_id,
             )
             assert vision_client is not None
             grounded_planner = GroundedVlmPlanner(

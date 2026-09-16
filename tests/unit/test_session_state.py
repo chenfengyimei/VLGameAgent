@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import unittest
 
-from tests.helpers import identity
+from tests.helpers import frame, identity
+from tests.unit.test_closed_loop_supervisor import outcome as supervisor_outcome
 from uga.agent.session_state import (
     ActionTrace,
     GameSessionState,
@@ -310,6 +311,219 @@ class QuestTargetTests(unittest.TestCase):
             assert summary is not None
             self.assertIn("拥有1只灵宠达到10级0/1", summary)
             self.assertIn("等级达到10级", summary)
+
+
+class TaskGenerationTests(unittest.TestCase):
+    """F08: quest identity changes must advance the single task generation."""
+
+    def setUp(self) -> None:
+        self.state = GameSessionState()
+
+    def test_progress_change_keeps_the_task_generation(self) -> None:
+        self.state.observe_snapshot(
+            quest_frame(1, 0, "通关兰若妖寺0/1"), 0
+        )
+        # The first adoption is itself an identity change (no task → task A).
+        self.assertEqual(self.state.task_generation, 2)
+        self.state.observe_snapshot(
+            quest_frame(2, 500_000_000, "通关兰若妖寺1/1"), 500_000_000
+        )
+        # 0/1 → 1/1 is progress on the same task: the generation holds.
+        self.assertEqual(self.state.task_generation, 2)
+
+    def test_level_target_change_advances_the_task_generation(self) -> None:
+        self.state.observe_snapshot(
+            quest_frame(1, 0, "拥有1只灵宠达到10级"), 0
+        )
+        first_generation = self.state.task_generation
+
+        # The same fuzzy-similar quest text with a DIFFERENT level target is
+        # a new task identity: two consecutive frames advance the generation.
+        self.state.observe_snapshot(
+            quest_frame(2, 500_000_000, "拥有1只灵宠达到20级"), 500_000_000
+        )
+        self.assertEqual(self.state.task_generation, first_generation)
+        self.state.observe_snapshot(
+            quest_frame(3, 1_000_000_000, "拥有1只灵宠达到20级"), 1_000_000_000
+        )
+        self.assertEqual(self.state.task_generation, first_generation + 1)
+
+    def test_object_change_advances_the_task_generation(self) -> None:
+        self.state.observe_snapshot(quest_frame(1, 0, "击杀罢工的幻狐"), 0)
+        first_generation = self.state.task_generation
+
+        self.state.observe_snapshot(quest_frame(2, 500_000_000, "击杀罢工的牛魔"), 500_000_000)
+        self.state.observe_snapshot(quest_frame(3, 1_000_000_000, "击杀罢工的牛魔"), 1_000_000_000)
+
+        self.assertEqual(self.state.task_generation, first_generation + 1)
+
+    def test_ocr_jitter_does_not_advance_the_task_generation(self) -> None:
+        self.state.observe_snapshot(quest_frame(1, 0, "终于来到桃夭"), 0)
+        first_generation = self.state.task_generation
+        self.state.observe_snapshot(quest_frame(2, 500_000_000, "终于来到桃天"), 500_000_000)
+
+        self.assertEqual(self.state.task_generation, first_generation)
+
+
+class SessionPersistenceTests(unittest.TestCase):
+    """F15: scoped, atomic, honest session-state persistence."""
+
+    def _persisted_state(self, tmp: str, *, profile_id: str | None = None):
+        from pathlib import Path
+
+        state = GameSessionState()
+        state.set_persistence(Path(tmp) / "session_state.json", profile_id=profile_id)
+        return state
+
+    def test_quest_memory_survives_a_restart_via_persistence(self) -> None:
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            first = self._persisted_state(tmp)
+            first.observe_snapshot(quest_frame(1, 0, "拥有1只灵宠达到10级0/1"), 0)
+
+            restored = self._persisted_state(tmp)
+            task = restored.latest_main_task
+            self.assertIsNotNone(task)
+            assert task is not None
+            self.assertEqual(task.raw_text, "拥有1只灵宠达到10级0/1")
+            self.assertTrue(task.restored)
+            self.assertTrue(restored.restored_from_disk)
+            self.assertTrue(restored.restored_task_unverified)
+            summary = restored.context_summary()
+            assert summary is not None
+            self.assertIn("未在本次运行中证实", summary)
+
+    def test_restored_task_verifies_after_two_fresh_frames(self) -> None:
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            first = self._persisted_state(tmp)
+            first.observe_snapshot(quest_frame(1, 0, "通关兰若妖寺0/1"), 0)
+
+            restored = self._persisted_state(tmp)
+            self.assertTrue(restored.restored_task_unverified)
+            restored.observe_snapshot(quest_frame(2, 100, "通关兰若妖寺0/1"), 100)
+            self.assertTrue(restored.restored_task_unverified)
+            restored.observe_snapshot(quest_frame(3, 200, "通关兰若妖寺0/1"), 200)
+            self.assertFalse(restored.restored_task_unverified)
+
+    def test_profile_namespace_isolation(self) -> None:
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            mumu = self._persisted_state(tmp, profile_id="mumu-xianyu")
+            mumu.observe_snapshot(quest_frame(1, 0, "击杀罢工的幻狐"), 0)
+
+            other = self._persisted_state(tmp, profile_id="other-game")
+            self.assertIsNone(other.latest_main_task)
+            self.assertIn("belongs to profile", other.last_persistence_error or "")
+
+            same_profile = self._persisted_state(tmp, profile_id="mumu-xianyu")
+            self.assertIsNotNone(same_profile.latest_main_task)
+
+    def test_corrupt_state_is_quarantined_and_session_starts_empty(self) -> None:
+        import json
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "session_state.json"
+            path.write_text("{not json at all", encoding="utf-8")
+
+            state = self._persisted_state(tmp)
+            self.assertIsNone(state.latest_main_task)
+            self.assertIsNotNone(state.last_persistence_error)
+            self.assertIn("corrupt state file", state.last_persistence_error or "")
+            quarantined = list(Path(tmp).glob("session_state.json.corrupt-*"))
+            self.assertEqual(len(quarantined), 1)
+            # The quarantined payload is preserved as diagnostic evidence.
+            self.assertEqual(quarantined[0].read_text(encoding="utf-8"), "{not json at all")
+            self.assertFalse(path.exists())
+            del json
+
+    def test_oversized_state_is_quarantined(self) -> None:
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "session_state.json"
+            path.write_text("x" * (64 * 1024 + 1), encoding="utf-8")
+
+            state = self._persisted_state(tmp)
+            self.assertIsNone(state.latest_main_task)
+            self.assertIn("size cap", state.last_persistence_error or "")
+            self.assertEqual(len(list(Path(tmp).glob("*.corrupt-*"))), 1)
+
+    def test_atomic_write_leaves_no_torn_state(self) -> None:
+        import json
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as tmp:
+            state = self._persisted_state(tmp)
+            state.observe_snapshot(quest_frame(1, 0, "击杀罢工的幻狐"), 0)
+
+            path = Path(tmp) / "session_state.json"
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(payload["schema"], "uga.session-state/1")
+            self.assertEqual(payload["profile_id"], None)
+            # The atomic replace consumed the temp file: no torn copies.
+            self.assertEqual(list(Path(tmp).glob("*.tmp-*")), [])
+
+    def test_failed_save_is_observable_not_silent(self) -> None:
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as tmp:
+            state = self._persisted_state(tmp)
+            # A FILE where the state directory should be: the mkdir fails.
+            blocked = Path(tmp) / "blocked"
+            blocked.write_text("", encoding="utf-8")
+            state.persistence_path = blocked / "state.json"
+            state.observe_snapshot(quest_frame(1, 0, "击杀罢工的幻狐"), 0)
+
+            self.assertIsNotNone(state.last_persistence_error)
+            self.assertIn("save failed", state.last_persistence_error or "")
+
+    def test_stale_outcome_after_task_bump_is_discarded(self) -> None:
+        # F08 end-to-end at the supervisor boundary: an outcome stamped with
+        # the pre-bump task generation is discarded by the consistency check
+        # once the quest identity change advanced the generation.
+        from dataclasses import replace as dc_replace
+
+        from uga.agent.closed_loop import ActionValidator
+        from uga.environment.profile import PerceptionProfile
+        from uga.time.clock import ManualClock
+
+        clock = ManualClock(0)
+        state = GameSessionState()
+        # Adopt quest A (two frames) → the first adoption bumps to 2.
+        state.observe_snapshot(quest_frame(1, 0, "击杀罢工的幻狐"), 0)
+        state.observe_snapshot(quest_frame(2, 100, "击杀罢工的幻狐"), 100)
+        generation_after_a = state.task_generation
+        # Quest identity change: quest B confirmed on two fresh frames.
+        state.observe_snapshot(quest_frame(3, 200, "击杀罢工的牛魔"), 200)
+        state.observe_snapshot(quest_frame(4, 300, "击杀罢工的牛魔"), 300)
+        self.assertEqual(state.task_generation, generation_after_a + 1)
+
+        decided = dc_replace(snapshot(5, 400), task_generation=generation_after_a)
+        fresh = dc_replace(snapshot(6, 500), task_generation=state.task_generation)
+        stale_outcome = dc_replace(
+            supervisor_outcome(1),
+            request_frame_id="frame-5",
+            request_frame_sequence=5,
+            task_generation=generation_after_a,
+        )
+        validator = ActionValidator(
+            PerceptionProfile(action_effect_timeout_ms=1000)
+        )
+        valid, reason = validator.validate(
+            stale_outcome, decided, fresh, frame(5, 400), frame(6, 500), "open settings"
+        )
+        del clock
+        self.assertFalse(valid)
+        self.assertIn("stale", reason)
 
 
 class TraceAndAnchorTests(unittest.TestCase):

@@ -294,6 +294,14 @@ class RealtimeAgentLoop:
         )
         history = tuple(value.frame for value in history_items)
         lease = self._leases.current()
+        if self._closed_loop is not None and self._closed_loop.session is not None:
+            # F08: the session's task generation is the single source of
+            # truth — a quest identity change advances it and every request
+            # or outcome stamped with the old generation is stale on arrival.
+            self._task_generation = max(
+                self._task_generation,
+                self._closed_loop.session.task_generation,
+            )
         perception: PerceptionSnapshot | None = None
         effect_pending = False
         if self._perception_builder is not None:
@@ -388,6 +396,9 @@ class RealtimeAgentLoop:
             stamp = self._run_context.stamp() if self._run_context is not None else None
             try:
                 session = closed_loop.session
+                restored_unverified = (
+                    session is not None and session.restored_task_unverified
+                )
                 outcome = await asyncio.to_thread(
                     grounded_planner.decide,
                     snapshot=perception,
@@ -400,12 +411,16 @@ class RealtimeAgentLoop:
                     ),
                     quest_target_level=(
                         None
-                        if session is None or session.latest_main_task is None
+                        if session is None
+                        or session.latest_main_task is None
+                        or restored_unverified
                         else quest_level_target(session.latest_main_task.raw_text)
                     ),
                     quest_text=(
                         None
-                        if session is None or session.latest_main_task is None
+                        if session is None
+                        or session.latest_main_task is None
+                        or restored_unverified
                         else session.latest_main_task.raw_text
                     ),
                 )

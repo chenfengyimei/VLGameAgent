@@ -666,6 +666,11 @@ class ClosedLoopSupervisor:
             "back_hotspot": self._back_hotspot,
             "stuck_wait_repeats": self._wait_state_repeats,
             "session": None if self._session is None else self._session.to_envelope(),
+            "persistence_error": (
+                None
+                if self._session is None
+                else self._session.last_persistence_error
+            ),
             "last_effect_observed": self.last_effect_observed,
             "logical_actions_issued": self._logical_actions_issued,
             "verified_effect_actions": self._verified_effect_actions,

@@ -10,7 +10,9 @@ decisions serve the long-lived quest instead of the latest local widget.
 
 from __future__ import annotations
 
+import os
 import re
+import time
 from collections import deque
 from collections.abc import Iterable
 from dataclasses import dataclass, field, replace
@@ -22,6 +24,10 @@ from uga.perception.builder import normalize_visible_text
 from uga.perception.schema import NormalizedBox, PerceptionSnapshot, TextRegion
 
 _QUEST_SIMILARITY_THRESHOLD = 0.72
+# F15: persisted session state is a small JSON document; anything larger is
+# quarantined instead of trusted.
+_STATE_SCHEMA = "uga.session-state/1"
+_MAX_STATE_BYTES = 64 * 1024
 _HEADER_MAX_CENTER_X = 0.28
 _HEADER_MIN_CENTER_Y = 0.10
 _HEADER_MAX_CENTER_Y = 0.32
@@ -499,6 +505,11 @@ class MainQuestSnapshot:
     last_seen_frame_id: str
     observed_at_ns: int
     generation: int
+    # F15: a quest restored from disk is UNTRUSTED_RESTORED — it may be shown
+    # and used for retrieval, but fast-path actions wait until two fresh
+    # frames re-confirm the same text on the live tracker.
+    restored: bool = False
+    verified_frames: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -537,21 +548,61 @@ class GameSessionState:
     persistence_path: Path | None = None
     _candidate_raw: str | None = None
     _candidate_frame_id: str | None = None
+    # F08: the single task-generation source.  Quest identity changes bump it
+    # and every request/snapshot stamped with the old generation is stale.
+    task_generation: int = 1
+    # F15: persistence namespace and health.
+    profile_id: str | None = None
+    last_persistence_error: str | None = None
+    restored_from_disk: bool = False
 
-    def set_persistence(self, path: Path) -> None:
+    @property
+    def restored_task_unverified(self) -> bool:
+        """True while a restored quest has not been re-confirmed on screen."""
+        quest = self.latest_main_task
+        return bool(
+            quest is not None and quest.restored and quest.verified_frames < 2
+        )
+
+    def set_persistence(
+        self, path: Path, *, profile_id: str | None = None
+    ) -> None:
         """Keep the tracked quest across agent restarts: load now, save on change."""
         self.persistence_path = path
+        self.profile_id = profile_id
         self._load_quest_memory(path)
 
     def _load_quest_memory(self, path: Path) -> None:
-        try:
-            import json
+        import json
 
-            payload = json.loads(path.read_text(encoding="utf-8"))
+        try:
+            raw_text = path.read_text(encoding="utf-8")
+        except OSError:
+            return
+        if len(raw_text.encode("utf-8")) > _MAX_STATE_BYTES:
+            self._isolate_corrupt_state(path, "state file exceeds the size cap")
+            return
+        try:
+            payload = json.loads(raw_text)
+            if str(payload.get("schema", "")) != _STATE_SCHEMA:
+                raise ValueError("unsupported session-state schema")
+            stored_profile = payload.get("profile_id")
+            if (
+                self.profile_id is not None
+                and stored_profile is not None
+                and stored_profile != self.profile_id
+            ):
+                # F15 namespace isolation: the file belongs to another
+                # profile — ignore it instead of cross-wiring tasks.
+                self.last_persistence_error = (
+                    f"state file belongs to profile {stored_profile!r}; ignored"
+                )
+                return
             raw = str(payload["raw_text"])
             canonical = str(payload.get("canonical_text") or raw)
             generation = int(payload.get("generation", 0))
-        except (OSError, ValueError, KeyError, TypeError):
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            self._isolate_corrupt_state(path, f"corrupt state file: {exc}")
             return
         self.latest_main_task = MainQuestSnapshot(
             raw_text=raw,
@@ -562,7 +613,19 @@ class GameSessionState:
             last_seen_frame_id="restored",
             observed_at_ns=0,
             generation=generation,
+            restored=True,
+            verified_frames=0,
         )
+        self.restored_from_disk = True
+
+    def _isolate_corrupt_state(self, path: Path, why: str) -> None:
+        """F15: quarantine a broken state file and start from empty memory."""
+        try:
+            diagnostic = path.with_name(f"{path.name}.corrupt-{time.time_ns()}")
+            path.replace(diagnostic)
+            self.last_persistence_error = f"{why}; isolated to {diagnostic.name}"
+        except OSError as exc:
+            self.last_persistence_error = f"{why}; quarantine failed: {exc}"
 
     def _save_quest_memory(self) -> None:
         quest = self.latest_main_task
@@ -571,20 +634,31 @@ class GameSessionState:
         try:
             import json
 
-            self.persistence_path.parent.mkdir(parents=True, exist_ok=True)
-            self.persistence_path.write_text(
-                json.dumps(
-                    {
-                        "raw_text": quest.raw_text,
-                        "canonical_text": quest.canonical_text,
-                        "generation": quest.generation,
-                    },
-                    ensure_ascii=False,
-                ),
-                encoding="utf-8",
+            body = json.dumps(
+                {
+                    "schema": _STATE_SCHEMA,
+                    "profile_id": self.profile_id,
+                    "raw_text": quest.raw_text,
+                    "canonical_text": quest.canonical_text,
+                    "generation": quest.generation,
+                    "saved_at_ns": time.time_ns(),
+                },
+                ensure_ascii=False,
             )
-        except OSError:
-            return
+            self.persistence_path.parent.mkdir(parents=True, exist_ok=True)
+            temp = self.persistence_path.with_name(
+                f"{self.persistence_path.name}.tmp-{os.getpid()}"
+            )
+            with open(temp, "w", encoding="utf-8") as handle:
+                handle.write(body)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temp, self.persistence_path)
+            self.last_persistence_error = None
+        except OSError as exc:
+            # F15: a failed save is observable, never silent — the next run
+            # must know the memory may be stale.
+            self.last_persistence_error = f"save failed: {exc}"
 
     def observe_snapshot(self, snapshot: PerceptionSnapshot, captured_at_ns: int) -> None:
         self._update_quest_memory(snapshot, captured_at_ns)
@@ -638,7 +712,21 @@ class GameSessionState:
             return
         region, frame_id = candidate
         current = self.latest_main_task
-        if current is not None and _same_quest(current.canonical_text, region.text):
+        # F08: fuzzy similarity only absorbs OCR jitter and progress-count
+        # drift — when the fuzzy-same text carries a DIFFERENT level target
+        # (达到10级 → 达到20级), the quest identity itself changed and must
+        # advance both the quest generation and the task generation.
+        identity_changed = (
+            current is not None
+            and _same_quest(current.canonical_text, region.text)
+            and quest_level_target(current.raw_text)
+            != quest_level_target(region.text)
+        )
+        if (
+            current is not None
+            and not identity_changed
+            and _same_quest(current.canonical_text, region.text)
+        ):
             self.latest_main_task = replace(
                 current,
                 raw_text=region.text,
@@ -646,6 +734,7 @@ class GameSessionState:
                 confidence=region.confidence,
                 last_seen_frame_id=frame_id,
                 observed_at_ns=captured_at_ns,
+                verified_frames=min(2, current.verified_frames + 1),
             )
             self._save_quest_memory()
             self._candidate_raw = None
@@ -664,6 +753,9 @@ class GameSessionState:
                 captured_at_ns,
                 0 if current is None else current.generation + 1,
             )
+            # F08: a new task identity invalidates every request stamped with
+            # the previous task generation.
+            self.task_generation += 1
             self._save_quest_memory()
             self._candidate_raw = None
             self._candidate_frame_id = None
@@ -682,6 +774,7 @@ class GameSessionState:
                 captured_at_ns,
                 0,
             )
+            self.task_generation += 1
             self._save_quest_memory()
             self._candidate_raw = None
             self._candidate_frame_id = None
@@ -721,9 +814,13 @@ class GameSessionState:
         quest = self.latest_main_task
         target_level = quest_level_target(None if quest is None else quest.raw_text)
         if quest is not None:
-            lines.append(
-                f"当前主线任务：{quest.raw_text}（第{quest.generation}次确认的同一任务）"
+            marker = (
+                "；恢复自上次运行、未在本次运行中证实——仅参考，"
+                "执行任何与任务相关的操作前先在任务追踪上重新确认"
+                if self.restored_task_unverified
+                else f"（第{quest.generation}次确认的同一任务）"
             )
+            lines.append(f"当前主线任务：{quest.raw_text}{marker}")
         if target_level is not None:
             lines.append(
                 f"任务目标：等级达到{target_level}级。若当前页面显示的等级已达到"
