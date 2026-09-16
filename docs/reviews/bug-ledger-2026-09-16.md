@@ -13,8 +13,8 @@
 | 编号 | 优先级 | 证据 | 状态 | 问题 | 主符号/文件 | 修复任务 |
 |---|---|---|---|---|---|---|
 | F01 | P0 | S | tests_passed(local) | 真实入口急停未锁存输入失权 | `apps/agent/run.py::request_stop`；`uga/core/agent_loop.py::step`；`uga/safety/shutdown.py::SafetyShutdown`、`uga/safety/watchdog.py::RuntimeWatchdog` 已接入 | D02、D03、D16 |
-| F02 | P0 | S | open | ui_back/ui_close/ui_promote 标签被当信任依据 | `uga/agent/closed_loop.py::ClosedLoopSupervisor.assess`（提前 EXECUTE）；`uga/core/agent_loop.py::validate_execution_frame`（跳过）；`uga/policy/grounded_vlm.py`；`uga/perception/schema.py::target_label` | D03、D12 |
-| F03 | P1 | S+I | open | 禁点校验点(框中心)≠最终点击点(含偏移) | `uga/agent/closed_loop.py::ActionValidator`（校验 center）；`ClosedLoopSupervisor.to_gui_action`（后叠加 pointer_offset） | D03 |
+| F02 | P0 | S | tests_passed(local) | ui_back/ui_close/ui_promote 标签被当信任依据 | `uga/agent/closed_loop.py::assess`（保留标签分支要求可信来源）；`uga/core/agent_loop.py`（跳过分支已删除）；`uga/policy/grounded_vlm.py::last_decision_source`（运行时赋值公开属性）；`uga/safety/action_gate.py` | D03、D12 |
+| F03 | P1 | S+I | tests_passed(local) | 禁点校验点(框中心)≠最终点击点(含偏移) | `uga/safety/action_gate.py::resolved_click_point`；`uga/agent/closed_loop.py::ActionValidator`（center+最终落点双查） | D03 |
 | F04 | P1 | S+I | open | 效果验证分支提前 return，pending 可能永不超时 | `uga/agent/closed_loop.py::ClosedLoopSupervisor.observe`（像素稳定候选/锚点分支在总超时判断前返回） | D05 |
 | F05 | P1 | S+I | open | 恢复预算不覆盖 BACK；max_recoveries=0 仍可 BACK | `uga/agent/closed_loop.py::ClosedLoopSupervisor._request_recovery` | D06 |
 | F06 | P1 | S | open | continuous 对终止状态统一重建监督器，计数清零 | `uga/core/agent_loop.py`（continuous factory 重建）；`scripts/run_mumu_autoplay.ps1`（非零退出重启） | D02、D06、D13 |
@@ -45,16 +45,18 @@
 - **修复提交：** `871cfc4`（2026-09-16，未推送）。落地内容：(1) run.py 组合根构建 SafetyShutdown+RunContext+RuntimeWatchdog，急停/信号/超时/崩溃全部先 trip 后通知，打印排在失权之后；AgentEnableState 初始 False，急停热键与看门狗 monitor 就绪后才显式 arm；(2) 新增 uga/core/run_context.py（run_id、单调 generation、cancel 锁存，stop/generation 推进均使在途 stamp 失效，禁止改写 generation 续命）；(3) agent_loop 在每次 to_thread 推理/评估返回后、EXECUTE/RECOVER 授权前复核 stamp，迟到结果只记 discarded_stale 事件+计数，不授权不入队；(4) 看门狗心跳挂在 scheduler 真实 tick 上（控制面活性，非盲定时器），monitor 线程独立巡检；(5) continuous 重建不得清除安全锁存（should_stop 时停止而非重建），且重建推进 run generation 使旧结果失效；(6) --watchdog-timeout-seconds CLI（默认 60s，>0 校验）。
 - **关闭证据：** 11 项新测试全绿（停机中推理迟到不提交、assess→入队间隙停止、fast policy 迟到丢弃、锁存后新 execute 被 AGENT_DISABLED 拒绝且不产生新提交、continuous 不清锁存、心跳随真实 tick、RunContext 代数/取消/锁存语义、看门狗活体）；全套件 525 passed + 1 opt-in skip + 103 subtests；ruff/mypy(177) 绿。**受监督 Fixture 实测热键→失权 P99≤100ms/释放≤200ms 尚未实测（NOT_RUN，需授权后按 D17 流程测）。**
 
-### F02 ui_back/ui_close/ui_promote 字符串被当成信任依据（P0 · S）
-- **触发条件：** 模型返回保留标签但任意坐标；或推理后窗口/几何已改变。
-- **复现入口：** T04/T05/T06/T07（待实现）。
+### F02 ui_back/ui_close/ui_promote 字符串被当成信任依据（P0 · S · tests_passed(local)）
+- **触发条件：** 模型返回保留标签但任意坐标，或推理后窗口/几何已改变。
+- **复现入口：** T04/T05/T06/T07 已实现为回归测试（test_closed_loop_supervisor.py 新增 4 项 + test_agent_loop.py 既有路由测试保持绿）。
 - **预期行为：** 删除按标签放行与 validate_execution_frame 跳过；可信 DecisionSource 由运行时代码赋值；所有来源过统一安全门（校准热点可豁免 OCR 文字 grounding，不豁免运行状态/窗口身份/任务代数/几何/最终落点/禁点/期限）。
-- **修复提交：** 待 D03。 **关闭证据：** 待 D03 安全负例（模型自报标签无特权等）。
+- **修复提交：** `01e9fe9`（2026-09-16，未推送）。落地内容：(1) 新增 `uga/safety/action_gate.py` 统一门原语：`is_trusted_deterministic_source`（仅 ocr_* 规则来源可信，模型 JSON 自报无权限）、`resolved_click_point`（最终落点）、`point_is_clickable`（禁点+诱饵）、`generations_consistent`（请求/窗口/几何/任务代数一致性，单一实现供所有来源复用）。(2) assess() 保留标签分支现在要求可信来源 + 生成守卫 + 最终落点门，任一失败 REOBSERVE/BLOCK；模型自报 ui_back/ui_close 落入 back-intent 路由→校准热点（模型自己的 box 永不执行）；ui_promote 无可信来源即走正常验证。(3) 主循环删除 validate_execution_frame 跳过分支：location_calibrated 出口改为共享 `validate_execution_context`（窗口身份/几何仍强制，仅豁免像素动画）；RECOVER 恢复点击同样过执行上下文守卫，窗口重建后不执行。(4) to_recovery_gui_action 校准热点过禁点门，不通过则回退键绑定，无键则 fail-closed。(5) GroundedVlmPlanner 暴露 `last_decision_source` 属性（此前 agent_loop getattr 读的是不存在的公开名，永远 None——顺手修复），agent_loop 将其传入 assess。(6) _is_back_intent 增加 ui_back/ui_close 标签集合（无特权来源时路由）。
+- **关闭证据：** 4 项新安全负例全绿：模型自报 ui_back 的原始 box 被丢弃且点击重锚到校准热点、可信来源出口落点进禁区被拒（REOBSERVE）、可信出口在窗口重建（generation 变化）后 REOBSERVE、框中心安全但偏移后落点进禁区被拒（EX06 回归）；全套件 529 passed + 1 opt-in skip + 103 subtests；ruff/mypy(178) 绿。注意：schema 校验 pointer_offset ∈ [-0.25,0.25]，EX06 的"任意偏移进禁区"被限制在合法偏移范围内复现。
 
-### F03 禁点校验点与最终点击点不同（P1 · S+I · EX06）
+### F03 禁点校验点与最终点击点不同（P1 · S+I · EX06 · tests_passed(local)）
 - **触发条件：** 目标框配置非零 pointer_offset（协议勾选、物品格规则已使用）。
 - **预期行为：** 先应用偏移求最终落点，再做 no_click/禁点/风险检查。
-- **修复提交：** 待 D03。 **关闭证据：** 待 T05 回归。
+- **修复提交：** `01e9fe9`（2026-09-16，未推送）。ActionValidator 现对框中心与 `resolved_click_point`（偏移+clamp 后）双查禁点，诱饵检查也改用最终落点；EX06 转为正式回归测试（中心 (0.3,0.3) 安全、偏移 (0.25,0.25) 后落点 (0.55,0.55) 进禁区 → 拒绝；同一动作无偏移时通过）。
+- **关闭证据：** test_pointer_offset_moves_final_point_into_no_click_region（修复前中心检查放行、现按最终落点拒绝）；全套件绿。
 
 ### F04 效果验证提前返回使 pending 永不超时（P1 · S+I · EX08）
 - **触发条件：** 目标持续闪烁/OCR 不再锚定且无语义变化。
@@ -139,10 +141,11 @@
 - **预期行为：** 远端默认仅 HTTPS+allowlist；回环 HTTP 单独例外；拒绝 userinfo/敏感 query/跨 origin 重定向；Key 仅入请求头；结构化脱敏日志；错误正文限额。
 - **修复提交：** 待 D08/D13。 **关闭证据：** 本地假服务+脱敏测试（未复现前保持 R）。
 
-### R20 低风险快规则缺少页面上下文授权（P1 · R）
+### R20 低风险快规则缺少页面上下文授权（P1 · R · open；统一安全门已由 D03 落地）
 - **触发条件：** 同名确认按钮出现在交易/协议/删除/登录等语境；协议勾选提案期置位。
 - **预期行为：** 规则先判页面语境再交统一安全门；账户/协议/支付/删除/发送要求当前授权；勾选状态从执行/效果回执更新。补反例测试（支付/协议/删除/登录页）。
-- **修复提交：** 待 D03/D12。 **关闭证据：** 待 T26 回归。
+- **修复提交：** D03 部分 `01e9fe9`：所有规则/热点/恢复来源现在必须通过统一动作安全门（可信来源、生成守卫、最终落点、禁点+诱饵），不再有按标签/坐标免检的路径。**剩余归 D12：** 快规则的页面前置条件、风险类别、"确定"在支付/协议页的语境拒绝反例、协议勾选状态从回执更新。
+- **关闭证据：** 待 D12 全量落地后回填。
 
 ### R21 原生调用存在缺少外层期限的阻塞边界（P1 · R）
 - **触发条件：** 驱动/API 卡死、初始化不返回、采集与关闭竞争。
