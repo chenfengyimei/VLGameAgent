@@ -28,8 +28,8 @@
 | F14 | P2 | S+I | open | 高分辨率恢复未真正提高有效分辨率（仅改裁剪 padding） | `uga/policy/grounded_vlm.py::_images`（high_resolution_retry） | D05、D09 |
 | F15 | P1 | S/R | open | 会话持久化无作用域/原子替换/恢复后证据门槛 | `uga/agent/session_state.py`（持久化）；`apps/agent/run.py`（共享 session_state.json） | D07 |
 | F16 | P2 | S/R | open | CaptureHub 间隔统计无限增长全量排序；发布锁内同步录制 | `uga/capture/hub.py`（_gaps_ns、stats、_publish）；`uga/recording/episode_writer.py`（有界，勿误伤） | D11 |
-| F17 | P1 | C | open | CI DLL 路径短名/长名字符串比较误报（RUNNER~1 vs runneradmin） | `tests/windows/test_release_bundle.py::test_clean_bundle_launches_agent_with_pinned_native_library` | D01 |
-| G18 | P1 | C/S | open | Python 作业缺 DLL，5 项 Native 测试静默 skip | `.github/workflows/ci.yml`（Rust/Python 独立作业，产物未传递） | D01、D16 |
+| F17 | P1 | C | tests_passed(local) | CI DLL 路径短名/长名字符串比较误报（RUNNER~1 vs runneradmin） | `tests/windows/test_release_bundle.py::test_clean_bundle_launches_agent_with_pinned_native_library` | D01 |
+| G18 | P1 | C/S | tests_passed(local) | Python 作业缺 DLL，5 项 Native 测试静默 skip | `.github/workflows/ci.yml`（新增 native-python-integration 作业） | D01、D16 |
 | R19 | P1 | R | open | 模型网络出口/秘密/隐私边界不显式 | `uga/policy/vlm_planner.py`（urllib 默认行为、错误正文入异常）；截图/OCR/日志 | D08、D09、D10、D13 |
 | R20 | P1 | R | open | “确定/提交”类 OCR 快规则缺页面语境授权；协议勾选提案期置位 | `uga/policy/grounded_vlm.py`（快规则）；`uga/agent/session_state.py` | D03、D12 |
 | R21 | P1 | R | open | FFI init/响应/关闭缺外层 deadline（通道等待/线程 join） | `native/crates/uga-capture/src/ffi.rs`；`uga/capture/native_adapter.py` | D16 |
@@ -120,15 +120,17 @@
 - **预期行为：** 有界统计窗口（滚动 P95，全程值用固定内存估计并标注）；发布与录制解耦（不在发布锁内做编码/磁盘 I/O）；队列条目+字节双上限与背压 deadline；训练录制禁止静默丢记录。
 - **修复提交：** 待 D11。 **关闭证据：** 待 T24/T25 回归。
 
-### F17 当前 CI 的 Windows 路径字符串断言误报（P1 · C）
+### F17 当前 CI 的 Windows 路径字符串断言误报（P1 · C · tests_passed(local)）
 - **触发条件：** 临时路径含 RUNNER~1，PowerShell 解析为 runneradmin。
 - **预期行为：** DLL 路径按文件身份比较（samefile，两者存在时）+ 独立 SHA256 校验；保留负例（篡改 DLL、错误 anchor）。
-- **修复提交：** 待 D01。 **关闭证据：** CI 重跑转绿（需推送后验证；本地先以短/长路径用例覆盖）。
+- **修复提交：** `9da4eb6`（2026-09-16，未推送）。测试改为解析 .launched.env 的 DLL=/SHA= 字段：文件身份比较（samefile）+ 独立 SHA256 校验（pinned SHA 必须匹配 env 所指文件的实际字节）；新增短/长路径（GetShortPathNameW）、大小写、带空格目录、错误身份/缺失文件负例共 2 个新用例。未删除断言、未改 skip、未用 lower() 糊弄。
+- **关闭证据：** 本地 `pytest tests/windows/test_release_bundle.py` 12 passed + 2 subtests；全套件 514 passed + 1 opt-in skip + 103 subtests；ruff/mypy 绿。根因核实：`scripts/run_bundle.ps1` 用 `Resolve-Path`（长名）设置 env，测试侧 `tempfile.mkdtemp()` 持短名形式——同一文件两种拼写。**CI 转绿需推送后 Actions 实跑确认（当前 NOT_RUN，按纪律不预标 PASS）。**
 
-### G18 原生构建成功不等于 Python-Native 接口测试执行（P1 · C/S）
+### G18 原生构建成功不等于 Python-Native 接口测试执行（P1 · C/S · tests_passed(local)）
 - **触发条件：** 默认 CI 运行（Rust/Python 独立作业，无 DLL 传递）。
 - **预期行为：** native-python-integration 作业显式构建 DLL 并校验 SHA 后执行 Native 相关 Python 测试；缺失=FAIL 而非 SKIP；硬件类 skip 与普通通过分开展示。
-- **修复提交：** 待 D01。 **关闭证据：** CI 作业真实执行（需推送后验证）。
+- **修复提交：** `8650d61`（2026-09-16，未推送）。新增 `native-python-integration` 作业：同作业内 `cargo build -p uga-capture --release --locked`（避免引入未验证的新第三方 action），DLL 存在性为硬前置（Test-Path 失败即 exit 1），导出 UGA_NATIVE_CAPTURE_DLL/SHA256 后运行 `pytest tests/windows/test_native_capture.py -q -ra`（-ra 显式列出 skip 原因）。全部 uses 沿用既有 40 位 SHA pin，persist-credentials:false，供应链策略测试 17 项全过。
+- **关闭证据：** 本地模拟该作业全链路：DLL 校验→env 导出→5/5 原生测试通过（零 skip，1.32s）。**CI 实跑需推送后确认（NOT_RUN）。** 桌面能力类自 skip（WGC/DXGI unavailable on this desktop）仍属环境前提，以 -ra 原因展示。
 
 ### R19 模型网络出口、秘密与隐私边界不够显式（P1 · R）
 - **触发条件：** 错误端点/重定向/上游回显/敏感截图入日志。
