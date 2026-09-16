@@ -45,6 +45,10 @@ class ArtifactResourceLimits:
     max_video_dimension: int = 8_192
     max_video_pixels: int = 33_554_432
     max_video_frames: int = 1_000_000
+    # D11: recorder channel dual caps — entries AND pending bytes are bounded
+    # so a slow consumer surfaces backpressure instead of unbounded growth.
+    max_recorder_queue_entries: int = 1024
+    max_recorder_queue_bytes: int = 64 * 1024 * 1024
 
     def __post_init__(self) -> None:
         if any(getattr(self, field.name) < 1 for field in fields(self)):

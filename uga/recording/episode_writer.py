@@ -563,30 +563,87 @@ class EpisodeWriter:
 
 
 class RecorderChannel:
-    """Dedicated bounded channel that blocks producers instead of dropping records."""
+    """Dedicated bounded channel that blocks producers instead of dropping records.
 
-    def __init__(self, capacity: int = 1024) -> None:
+    D11: declared pending bytes are bounded — a slow consumer surfaces
+    backpressure (TimeoutError) instead of unbounded memory growth.  Records
+    are never dropped silently; training recordings either complete or fail
+    observably.  The producer NEVER holds the state lock across the blocking
+    put: the worker must always be able to record completions, or the pair
+    deadlocks.
+    """
+
+    def __init__(
+        self,
+        capacity: int = 1024,
+        *,
+        max_pending_bytes: int = DEFAULT_ARTIFACT_LIMITS.max_recorder_queue_bytes,
+    ) -> None:
         if capacity < 1:
             raise ContractViolation("recorder channel capacity must be positive")
-        self._queue: queue.Queue[Callable[[], None] | None] = queue.Queue(capacity)
+        if max_pending_bytes < 0:
+            raise ContractViolation("recorder channel byte cap cannot be negative")
+        self._queue: queue.Queue[tuple[int, Callable[[], None]] | None] = queue.Queue(
+            capacity
+        )
+        self._max_pending_bytes = max_pending_bytes
+        self._pending_bytes = 0
+        self._pending_entries = 0
+        self._completed = 0
+        self._rejected = 0
         self._failure: BaseException | None = None
         self._closed = False
         self._state_lock = Lock()
         self._thread = Thread(target=self._run, name="uga-recorder", daemon=True)
         self._thread.start()
 
-    def submit(self, operation: Callable[[], None], timeout_s: float | None = None) -> None:
+    def submit(
+        self,
+        operation: Callable[[], None],
+        timeout_s: float | None = None,
+        *,
+        weight_bytes: int = 0,
+    ) -> None:
+        if weight_bytes < 0:
+            raise ContractViolation("recorder record weight cannot be negative")
         with self._state_lock:
             if self._closed:
                 raise ContractViolation("recorder channel is closed")
             if self._failure is not None:
                 raise RuntimeError("recorder worker failed") from self._failure
-            try:
-                self._queue.put(operation, block=True, timeout=timeout_s)
-            except queue.Full as exc:
+            if self._pending_bytes + weight_bytes > self._max_pending_bytes:
+                # Declared-byte budget: uncommitted weight cannot be drained
+                # by the worker, so an over-budget record is refused up front.
+                self._rejected += 1
                 raise TimeoutError(
-                    "recorder channel backpressure timeout; record was not dropped"
-                ) from exc
+                    "recorder channel pending-byte limit reached; record was "
+                    "not dropped silently — the producer must retry or fail"
+                )
+        # The blocking put runs WITHOUT the state lock: the worker records
+        # completions under that same lock, so holding it here would deadlock
+        # the pair the moment the queue fills.
+        try:
+            self._queue.put((weight_bytes, operation), block=True, timeout=timeout_s)
+        except queue.Full as exc:
+            with self._state_lock:
+                self._rejected += 1
+            raise TimeoutError(
+                "recorder channel backpressure timeout; record was not dropped"
+            ) from exc
+        with self._state_lock:
+            self._pending_entries += 1
+            self._pending_bytes += weight_bytes
+
+    def stats(self) -> dict[str, int]:
+        """D11 telemetry: pending entries/bytes plus lifetime counters."""
+        with self._state_lock:
+            return {
+                "pending_entries": self._pending_entries,
+                "pending_bytes": self._pending_bytes,
+                "completed": self._completed,
+                "rejected": self._rejected,
+                "max_pending_bytes": self._max_pending_bytes,
+            }
 
     def close(self) -> None:
         with self._state_lock:
@@ -595,17 +652,23 @@ class RecorderChannel:
             self._closed = True
         self._queue.put(None)
         self._thread.join()
-        if self._failure is not None:
-            raise RuntimeError("recorder worker failed") from self._failure
+        with self._state_lock:
+            if self._failure is not None:
+                raise RuntimeError("recorder worker failed") from self._failure
 
     def _run(self) -> None:
         while True:
-            operation = self._queue.get()
+            entry = self._queue.get()
             try:
-                if operation is None:
+                if entry is None:
                     return
+                weight_bytes, operation = entry
                 if self._failure is None:
                     operation()
+                    with self._state_lock:
+                        self._completed += 1
+                        self._pending_entries = max(0, self._pending_entries - 1)
+                        self._pending_bytes = max(0, self._pending_bytes - weight_bytes)
             except BaseException as exc:
                 if self._failure is None:
                     self._failure = exc

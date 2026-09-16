@@ -275,6 +275,32 @@ class EpisodeReplayTests(unittest.TestCase):
         channel.close()
         self.assertEqual(observed, list(range(10)))
 
+    def test_recorder_channel_declares_pending_bytes_cap(self) -> None:
+        # D11: entries AND declared pending bytes are both bounded — the
+        # producer gets observable backpressure, never a silent drop.
+        channel = RecorderChannel(capacity=8, max_pending_bytes=100)
+        channel.submit(lambda: None, weight_bytes=60)
+        with self.assertRaises(TimeoutError):
+            channel.submit(lambda: None, weight_bytes=60)
+        stats = channel.stats()
+        self.assertEqual(stats["rejected"], 1)
+        self.assertEqual(stats["max_pending_bytes"], 100)
+        channel.close()
+
+    def test_recorder_channel_telemetry_tracks_lifecycle(self) -> None:
+        channel = RecorderChannel(capacity=4)
+        before = channel.stats()
+        self.assertEqual(before["pending_entries"], 0)
+        channel.submit(lambda: None)
+        stats = channel.stats()
+        self.assertEqual(stats["pending_entries"], 1)
+        self.assertEqual(
+            stats["max_pending_bytes"],
+            DEFAULT_ARTIFACT_LIMITS.max_recorder_queue_bytes,
+        )
+        channel.close()
+        self.assertGreaterEqual(channel.stats()["completed"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()
