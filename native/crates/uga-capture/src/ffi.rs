@@ -2,9 +2,10 @@ use std::cell::RefCell;
 use std::ffi::{c_char, c_void};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::ptr;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{RecvTimeoutError, SyncSender, sync_channel};
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use windows::Win32::Foundation::HWND;
 
@@ -24,6 +25,10 @@ const BACKEND_DXGI: u32 = 2;
 // stuck; the session is abandoned instead of hanging the caller forever.
 const RESPONSE_GRACE_MS: u64 = 2_000;
 const INIT_DEADLINE_MS: u64 = 10_000;
+const CLOSE_DEADLINE_MS: u64 = 500;
+const MAX_CAPTURE_TIMEOUT_MS: u32 = 10_000;
+static ABANDONED_WORKERS: AtomicUsize = AtomicUsize::new(0);
+const MAX_ABANDONED_WORKERS: usize = 2;
 
 thread_local! {
     static LAST_ERROR: RefCell<String> = const { RefCell::new(String::new()) };
@@ -143,6 +148,12 @@ fn clear_last_error() {
 }
 
 fn create_handle(backend: u32, hwnd: isize) -> Result<NativeCaptureHandle, NativeError> {
+    if ABANDONED_WORKERS.load(Ordering::Relaxed) >= MAX_ABANDONED_WORKERS {
+        return Err(NativeError {
+            status: STATUS_UNAVAILABLE,
+            message: "native abandonment budget exhausted; restart the process".to_string(),
+        });
+    }
     if hwnd == 0 {
         return Err(NativeError {
             status: STATUS_INVALID_ARGUMENT,
@@ -191,13 +202,14 @@ fn create_handle(backend: u32, hwnd: isize) -> Result<NativeCaptureHandle, Nativ
             poisoned: false,
         }),
         Ok(Err(error)) => {
-            let _ = worker.join();
+            let _ = finish_worker(worker, CLOSE_DEADLINE_MS);
             Err(error)
         }
         Err(RecvTimeoutError::Timeout) => {
             // R21: bounded initialization. The worker may be stuck inside a
             // driver call; detach it (a late completion exits on its own via
             // the dropped channel) instead of hanging the caller forever.
+            ABANDONED_WORKERS.fetch_add(1, Ordering::Relaxed);
             drop(worker);
             Err(NativeError {
                 status: STATUS_INTERNAL,
@@ -205,7 +217,7 @@ fn create_handle(backend: u32, hwnd: isize) -> Result<NativeCaptureHandle, Nativ
             })
         }
         Err(RecvTimeoutError::Disconnected) => {
-            let _ = worker.join();
+            let _ = finish_worker(worker, CLOSE_DEADLINE_MS);
             Err(NativeError {
                 status: STATUS_INTERNAL,
                 message: "capture worker initialization channel failed".to_string(),
@@ -218,16 +230,31 @@ fn capture_frame(
     handle: &mut NativeCaptureHandle,
     timeout_ms: u32,
 ) -> Result<CapturedBgraFrame, NativeError> {
+    if handle.poisoned {
+        return Err(NativeError {
+            status: STATUS_INTERNAL,
+            message: "native capture session is poisoned".to_string(),
+        });
+    }
+    if timeout_ms > MAX_CAPTURE_TIMEOUT_MS {
+        return Err(NativeError {
+            status: STATUS_INVALID_ARGUMENT,
+            message: "capture timeout exceeds the operation budget".to_string(),
+        });
+    }
     let (response, receiver) = sync_channel(1);
     handle
         .commands
-        .send(CaptureCommand::Capture {
+        .try_send(CaptureCommand::Capture {
             timeout_ms,
             response,
         })
-        .map_err(|error| NativeError {
-            status: STATUS_INTERNAL,
-            message: format!("capture worker is unavailable: {error}"),
+        .map_err(|error| {
+            handle.poisoned = true;
+            NativeError {
+                status: STATUS_INTERNAL,
+                message: format!("capture worker is unavailable: {error}"),
+            }
         })?;
     // R21: bound the response wait. The worker's own capture carries
     // timeout_ms; a driver that exceeds it by the grace margin is stuck, and
@@ -320,6 +347,8 @@ pub unsafe extern "C" fn uga_capture_create(
 /// # Safety
 ///
 /// `handle` must be a live handle from `uga_capture_create`; `out_frame` must be writable.
+/// Calls for one handle must be serialized, including destruction. No call
+/// may overlap destruction or access an already destroyed handle.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn uga_capture_next(
     handle: *mut NativeCaptureHandle,
@@ -381,18 +410,30 @@ pub unsafe extern "C" fn uga_capture_destroy(handle: *mut NativeCaptureHandle) {
     }
     // SAFETY: ownership of this allocation returns from the caller.
     let mut handle = unsafe { Box::from_raw(handle) };
-    if handle.poisoned {
-        // R21: bounded shutdown. The worker was already abandoned after a
-        // bounded capture wait (it may be stuck inside a driver call);
-        // deliberately leak the stuck OS thread instead of hanging the
-        // caller. If it ever unblocks, the disconnected command channel
-        // makes the worker exit on its own.
-        return;
-    }
-    let _ = handle.commands.send(CaptureCommand::Stop);
+    // No blocking send to a full command queue or unbounded driver join.
+    let _ = handle.commands.try_send(CaptureCommand::Stop);
     if let Some(worker) = handle.worker.take() {
-        let _ = worker.join();
+        let budget = if handle.poisoned { 0 } else { CLOSE_DEADLINE_MS };
+        if !finish_worker(worker, budget) {
+            set_last_error("native capture worker exceeded shutdown deadline; detached");
+            return;
+        }
     }
+    clear_last_error();
+}
+
+fn finish_worker(worker: JoinHandle<()>, timeout_ms: u64) -> bool {
+    let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+    while !worker.is_finished() {
+        if Instant::now() >= deadline {
+            ABANDONED_WORKERS.fetch_add(1, Ordering::Relaxed);
+            // Detach, never unsafe thread termination. Late return cleans up;
+            // a permanently stuck driver requires process restart.
+            return false;
+        }
+        thread::sleep(Duration::from_millis(2));
+    }
+    worker.join().is_ok()
 }
 
 /// Copy the current thread's last native capture error as UTF-8.
@@ -473,11 +514,9 @@ mod tests {
         let started = std::time::Instant::now();
         let error = capture_frame(&mut handle, 50).unwrap_err();
 
-        // The command channel has no live receiver, so the bounded response
-        // wait expires: the failure is a timeout, and it is bounded by
-        // timeout_ms + RESPONSE_GRACE_MS instead of hanging forever.
-        assert_eq!(error.status, STATUS_TIMEOUT);
-        assert!(started.elapsed() < Duration::from_secs(5));
+        // A poisoned handle must fail immediately, even if its peer is live.
+        assert_eq!(error.status, STATUS_INTERNAL);
+        assert!(started.elapsed() < Duration::from_millis(100));
     }
 
     // R21: destroy must have a bounded duration even for a poisoned session
@@ -507,4 +546,29 @@ mod tests {
 
         assert!(started.elapsed() < std::time::Duration::from_secs(1));
     }
+    #[test]
+    fn full_command_queue_fails_without_waiting() {
+        let (commands, receiver) = sync_channel::<CaptureCommand>(1);
+        let _live_receiver = receiver;
+        commands.send(CaptureCommand::Stop).unwrap();
+        let mut handle = NativeCaptureHandle {
+            commands,
+            worker: None,
+            poisoned: false,
+        };
+        let started = Instant::now();
+        assert!(capture_frame(&mut handle, 50).is_err());
+        assert!(started.elapsed() < Duration::from_millis(100));
+    }
+
+    #[test]
+    fn normal_worker_destructor_is_also_bounded() {
+        let (release, wait) = sync_channel::<()>(1);
+        let worker = thread::spawn(move || { let _ = wait.recv(); });
+        let started = Instant::now();
+        assert!(!finish_worker(worker, 20));
+        assert!(started.elapsed() < Duration::from_secs(1));
+        let _ = release.send(());
+    }
+
 }

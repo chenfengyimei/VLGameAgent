@@ -12,6 +12,7 @@ from typing import Protocol
 
 from uga.capture.frame import Frame
 from uga.capture.ring_buffer import FrameRingBuffer, SequencedFrame
+from uga.core.deadline import BoundedWorker, Deadline, DeadlineExceeded
 from uga.core.errors import BackendUnavailableError, CaptureTimeoutError, ContractViolation
 from uga.recording.frame_queue import FrameQueueStats, FrameRecorderQueue
 
@@ -62,6 +63,7 @@ class CaptureHub:
         fallback_hz: float = 4.0,
         primary_hz: float | None = None,
         consumer_timeout_s: float = 10.0,
+        capture_operation_timeout_s: float = 5.0,
         source_error_backoff_s: float = 0.05,
         recording_max_frames: int = 64,
         recording_max_bytes: int = 256 * 1024 * 1024,
@@ -83,6 +85,10 @@ class CaptureHub:
             or source_error_backoff_s > 1.0
         ):
             raise ContractViolation("capture source error backoff must be in (0, 1]")
+        Deadline.after(capture_operation_timeout_s)
+        self._capture_operation_timeout_s = capture_operation_timeout_s
+        self._primary_worker = BoundedWorker()
+        self._fallback_worker = BoundedWorker()
         self._primary = primary
         self._fallback = fallback
         self._frames = frames
@@ -151,13 +157,16 @@ class CaptureHub:
 
     async def capture_once(self) -> SequencedFrame:
         await self._started.wait()
-        item = await asyncio.to_thread(
-            self._frames.wait_for_newer,
-            self._last_consumer_sequence,
-            self._consumer_timeout_s,
-        )
-        if item is None:
-            raise CaptureTimeoutError("capture hub produced no frame within its consumer budget")
+        deadline = time.monotonic() + self._consumer_timeout_s
+        while True:
+            item = self._frames.latest()
+            if item is not None and item.sequence > self._last_consumer_sequence:
+                break
+            if time.monotonic() >= deadline:
+                raise CaptureTimeoutError(
+                    "capture hub produced no frame within its consumer budget"
+                )
+            await asyncio.sleep(.005)
         with self._stats_lock:
             skipped = max(0, item.sequence - self._last_consumer_sequence - 1)
             self._consumer_skipped += skipped
@@ -188,7 +197,12 @@ class CaptureHub:
         while not stop.is_set():
             attempt_started = time.monotonic()
             try:
-                frame = await asyncio.to_thread(self._primary.capture)
+                frame = await self._primary_worker.run(
+                    Deadline.after(self._capture_operation_timeout_s, stop.is_set),
+                    self._primary.capture,
+                )
+            except DeadlineExceeded:
+                raise  # abandoned driver workers must never be retried
             except CaptureTimeoutError:
                 await asyncio.sleep(0)
                 continue
@@ -203,12 +217,9 @@ class CaptureHub:
                         stop.wait(), timeout=self._source_error_backoff_s
                     )
                 continue
-            await asyncio.to_thread(
-                self._publish,
-                frame,
-                "primary",
-                time.monotonic(),
-            )
+            if stop.is_set():
+                break
+            self._publish(frame, "primary", time.monotonic())
             if self._primary_period_s is not None:
                 delay = attempt_started + self._primary_period_s - time.monotonic()
                 if delay > 0:
@@ -241,7 +252,12 @@ class CaptureHub:
                 continue
             attempt_started = time.monotonic()
             try:
-                frame = await asyncio.to_thread(self._fallback.capture)
+                frame = await self._fallback_worker.run(
+                    Deadline.after(self._capture_operation_timeout_s, stop.is_set),
+                    self._fallback.capture,
+                )
+            except DeadlineExceeded:
+                raise
             except (CaptureTimeoutError, BackendUnavailableError, ContractViolation):
                 # A failed heartbeat did not publish a frame and therefore does
                 # not consume the 4 Hz output budget.  ContractViolation covers
@@ -252,12 +268,9 @@ class CaptureHub:
                 await asyncio.sleep(min(0.05, self._fallback_period_s / 10.0))
                 continue
             last_attempt = attempt_started
-            await asyncio.to_thread(
-                self._publish,
-                frame,
-                "fallback",
-                attempt_started,
-            )
+            if stop.is_set():
+                break
+            self._publish(frame, "fallback", attempt_started)
 
     def _publish(self, frame: Frame, source: str, sampled_monotonic: float) -> None:
         with self._publish_lock:
