@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import math
+import struct
 import time
 import uuid
 from collections.abc import Sequence
@@ -42,6 +43,7 @@ from uga.perception.schema import (
 )
 from uga.policy.call_budget import checkpoint, decision_budget
 from uga.policy.decision_journal import DecisionJournal, DecisionRecord, NullJournal
+from uga.policy.gui_prompt import PROMPT_VERSION, gui_instruction
 from uga.policy.gui_protocol import (
     COORDINATE_SPACES,
     box_coordinates,
@@ -256,8 +258,8 @@ def crop_frame(frame: Frame, box: NormalizedBox, *, padding: float = 0.02) -> Fr
         raise ContractViolation("frame crop padding must be in [0, 0.25]")
     if frame.buffer_handle.kind != BufferKind.CPU_BYTES:
         raise ContractViolation("frame crop requires a CPU-addressable frame")
-    left = max(0, int((box.left - padding) * frame.width))
-    top = max(0, int((box.top - padding) * frame.height))
+    left = max(0, math.floor((box.left - padding) * frame.width + 1e-8))
+    top = max(0, math.floor((box.top - padding) * frame.height + 1e-8))
     right = min(frame.width, max(left + 1, int((box.right + padding) * frame.width)))
     bottom = min(frame.height, max(top + 1, int((box.bottom + padding) * frame.height)))
     bytes_per_pixel = 4
@@ -331,8 +333,8 @@ class GroundedVlmPlanner:
         if coordinate_space not in COORDINATE_SPACES:
             raise ContractViolation("unsupported GUI coordinate space")
         self._coordinate_space = coordinate_space
-        if max_image_width < 320:
-            raise ContractViolation("grounded planner image width must be at least 320")
+        if not 320 <= max_image_width <= 1280:
+            raise ContractViolation("grounded planner image width must be within [320, 1280]")
         if not 1 <= max_temporal_frames <= 3:
             raise ContractViolation("grounded planner temporal frames must be within [1, 3]")
         if not 0 <= max_target_crops <= 2:
@@ -383,6 +385,7 @@ class GroundedVlmPlanner:
         self.last_schema_valid = False
         self.last_decision_was_dialogue = False
         self._last_image_count = 0
+        self.last_input_manifest: list[dict[str, Any]] = []
         self._last_decision_source = "model"
         self.last_high_resolution_upgraded: bool | None = None
         # D12: the game-strategy registry scopes which decision fast paths
@@ -394,7 +397,7 @@ class GroundedVlmPlanner:
 
     @property
     def policy_version(self) -> str:
-        return "grounded-vlm-1.0.0"
+        return PROMPT_VERSION
 
     @property
     def strategy_allows_fast_paths(self) -> bool:
@@ -481,27 +484,8 @@ class GroundedVlmPlanner:
         consumed_target = (
             self._preferred_action_target if not preferred_action_available else None
         )
-        instruction = (
-            self._compact_instruction(
-                snapshot,
-                goal,
-                preferred_action_target=preferred_target,
-                consumed_action_target=consumed_target,
-                session_context=session_context,
-            )
-            if self._compact_output
-            else self._instruction(
-                snapshot,
-                goal,
-                repair_reply=None,
-                repair_error=None,
-                temporal_count=temporal_count,
-                crop_count=crop_count,
-                required_goal_evidence=self._required_goal_evidence,
-                preferred_action_target=preferred_target,
-                consumed_action_target=consumed_target,
-                session_context=session_context,
-            )
+        instruction = self._decision_instruction(
+            snapshot, goal, preferred_target, consumed_target, session_context
         )
         response_format = (
             (
@@ -547,28 +531,9 @@ class GroundedVlmPlanner:
             checkpoint()
             repair = self._client.decide(
                 images=images,
-                instruction=(
-                    self._compact_instruction(
-                        snapshot,
-                        goal,
-                        preferred_action_target=preferred_target,
-                        consumed_action_target=consumed_target,
-                        repair_error=str(exc),
-                        session_context=session_context,
-                    )
-                    if self._compact_output
-                    else self._instruction(
-                        snapshot,
-                        goal,
-                        repair_reply=reply,
-                        repair_error=str(exc),
-                        temporal_count=temporal_count,
-                        crop_count=crop_count,
-                        required_goal_evidence=self._required_goal_evidence,
-                        preferred_action_target=preferred_target,
-                        consumed_action_target=consumed_target,
-                        session_context=session_context,
-                    )
+                instruction=self._decision_instruction(
+                    snapshot, goal, preferred_target, consumed_target, session_context,
+                    repair_error=str(exc),
                 ),
                 response_format=(
                     (
@@ -1294,194 +1259,97 @@ class GroundedVlmPlanner:
         goal: str,
         high_resolution_retry: bool,
     ) -> tuple[list[bytes], int, int]:
+        if not frames:
+            raise ContractViolation("GUI input requires a latest frame")
         latest = frames[-1]
-        temporal = frames[-self._max_temporal_frames :]
-        # F14: a high-resolution recovery must actually raise the effective
-        # pixel budget of the decision frame — widening crop padding alone
-        # changed nothing when no crops were configured.  The overview
-        # doubles up to the 1280 hard cap; at the cap the retry is recorded
-        # as a non-upgrade instead of silently re-sending identical pixels.
-        overview_width = self._max_image_width
-        if high_resolution_retry:
-            overview_width = min(overview_width * 2, 1280)
-        self.last_high_resolution_upgraded = (
-            high_resolution_retry and overview_width > self._max_image_width
-        )
-        images = [
-            encode_frame_png(
-                frame,
-                max_width=(
-                    overview_width
-                    if frame is latest
-                    else min(self._max_image_width, 768)
-                ),
+        # History is never allowed to establish the current target. Exclude
+        # old/recreated windows and resized/shifted client geometries.
+        compatible: dict[str, Frame] = {}
+        for candidate in frames[-120:]:
+            age = latest.capture_timestamp.value_ns - candidate.capture_timestamp.value_ns
+            if (0 <= age <= 10_000_000_000
+                    and candidate.window_identity == latest.window_identity
+                    and (candidate.width, candidate.height, candidate.client_rect,
+                         candidate.physical_rect) == (latest.width, latest.height,
+                                                     latest.client_rect, latest.physical_rect)):
+                compatible[candidate.frame_id] = candidate
+        ordered = sorted(compatible.values(), key=lambda item: item.capture_timestamp.value_ns)
+        older = [item for item in ordered if item.frame_id != latest.frame_id]
+        selected: list[Frame] = []
+        # Prefer useful temporal separation rather than adjacent 60Hz copies.
+        for candidate in reversed(older):
+            anchor = selected[-1] if selected else latest
+            if (anchor.capture_timestamp.value_ns
+                    - candidate.capture_timestamp.value_ns >= 250_000_000):
+                selected.append(candidate)
+                if len(selected) == self._max_temporal_frames - 1:
+                    break
+        if self._max_temporal_frames == 1:
+            selected = []
+        elif not selected:
+            selected = older[-(self._max_temporal_frames - 1):]
+        temporal = sorted(selected, key=lambda item: item.capture_timestamp.value_ns) + [latest]
+        overview_width = min(self._max_image_width * (2 if high_resolution_retry else 1), 1280)
+
+        def encode(source: Frame, width: int) -> bytes:
+            if source.width * source.height > 16_777_216:
+                raise ContractViolation("GUI source exceeds the pixel budget")
+            bounded = min(width, max(1, 1920 * source.width // source.height))
+            if bounded < 32 and source.height > 1920:
+                raise ContractViolation("GUI source aspect ratio exceeds the image budget")
+            return encode_frame_png(source, max_width=max(32, bounded))
+
+        images: list[bytes] = []
+        self.last_input_manifest = []
+        for source in temporal:
+            png = encode(
+                source, overview_width if source is latest else min(self._max_image_width, 768)
             )
-            for frame in temporal
-        ]
+            width, height = struct.unpack("!II", png[16:24])
+            images.append(png)
+            self.last_input_manifest.append({
+                "index": len(images),
+                "role": "current_overview" if source is latest else "context_overview",
+                "frame_id": source.frame_id[:160],
+                "age_ms": round((latest.capture_timestamp.value_ns
+                                 - source.capture_timestamp.value_ns) / 1_000_000, 2),
+                "encoded_width": width, "encoded_height": height,
+            })
+        normal_width = min(latest.width, self._max_image_width,
+                           max(32, 1920 * latest.width // latest.height))
+        self.last_high_resolution_upgraded = (
+            high_resolution_retry and self.last_input_manifest[-1]["encoded_width"] > normal_width
+        )
         temporal_count = len(images)
         crop_count = 0
-        for box in select_target_regions(
-            snapshot, goal, limit=self._max_target_crops
-        ):
+        for box in select_target_regions(snapshot, goal, limit=self._max_target_crops):
             crop = crop_frame(latest, box, padding=0.04 if high_resolution_retry else 0.02)
-            images.append(encode_frame_png(crop, max_width=max(crop.width, 32)))
+            images.append(encode(crop, min(max(crop.width, 32), 1280)))
+            left, top, right, bottom = (int(value) for value in crop.frame_id.rsplit(":", 4)[1:])
+            width, height = struct.unpack("!II", images[-1][16:24])
+            self.last_input_manifest.append({
+                "index": len(images), "role": "detail_read_only",
+                "source_image_index": temporal_count,
+                "source_box_unit": [left / latest.width, top / latest.height,
+                                    right / latest.width, bottom / latest.height],
+                "encoded_width": width, "encoded_height": height,
+            })
             crop_count += 1
         return images, temporal_count, crop_count
 
-    @staticmethod
-    def _compact_instruction(
-        snapshot: PerceptionSnapshot,
-        goal: str,
-        *,
-        preferred_action_target: str | None = None,
-        consumed_action_target: str | None = None,
-        repair_error: str | None = None,
-        session_context: str | None = None,
+    def _decision_instruction(
+        self, snapshot: PerceptionSnapshot, goal: str,
+        preferred_target: str | None, consumed_target: str | None,
+        session_context: str | None, *, repair_error: str | None = None,
     ) -> str:
-        ocr = "\n".join(
-            f"- {region.text!r} [{region.box.left:.3f},{region.box.top:.3f},"
-            f"{region.box.right:.3f},{region.box.bottom:.3f}]"
-            for region in snapshot.visible_text[:24]
-        ) or "- 无"
-        preference = (
-            f"\n优先动作文字：{preferred_action_target}"
-            if preferred_action_target is not None
-            else ""
-        )
-        consumed = (
-            f"\n禁止重复点击已完成目标：{consumed_action_target}"
-            if consumed_action_target is not None
-            else ""
-        )
-        repair = f"\n上次格式错误：{repair_error}" if repair_error else ""
-        session = f"\n跨帧记忆：\n{session_context}" if session_context else ""
-        return (
-            "你是游戏 GUI 操作器。看这张截图，输出一个 JSON 动作来推进目标。\n"
-            f"总目标：{goal}\n"
-            f"OCR（文字和归一化框）：\n{ocr}"
-            f"{preference}{consumed}{repair}{session}\n"
-            "做法：找到画面里最能推进目标的按钮或文字，直接输出对它的点击，"
-            "没有文字的图形按钮也照样点（target_label 用简短描述）。"
-            "游戏常用高亮/发光边框标记下一步要点的按钮——优先点击被高亮标记的元素，"
-            "而不是反复点击左上角的任务面板文字（那只是任务说明，不是按钮）。"
-            "上架/出售类操作成功后（物品已出现在出售列表中），立即点击返回或×退出界面，"
-            "不要重复上架同一物品；出售需要其他玩家购买，退出后点击任务追踪查看进度即可。\n"
-            "仅有的禁止项：不要点击 充值/首充/礼包/支付 类内容；"
-            "不要点击滚动公告；同一按钮点击后画面没变化就不要再点它；"
-            "截图最顶部的 MuMu 模拟器标题栏（窗口按钮/标签页/×）不是游戏内容，绝不点击。\n"
-            "ACT：kind=act, action={kind:click, target_label, target_bbox, "
-            "confidence, key:null}。"
-            "示例：{\"kind\":\"act\",\"confidence\":0.9,\"action\":{\"kind\":\"click\","
-            "\"target_label\":\"挑战\",\"target_bbox\":[0.4,0.5,0.6,0.6],"
-            "\"confidence\":0.9,\"key\":null},\"wait_reason\":null}"
-        )
-
-    @staticmethod
-    def _instruction(
-        snapshot: PerceptionSnapshot,
-        goal: str,
-        repair_reply: str | None,
-        repair_error: str | None,
-        temporal_count: int,
-        crop_count: int,
-        required_goal_evidence: Sequence[str] = (),
-        preferred_action_target: str | None = None,
-        consumed_action_target: str | None = None,
-        session_context: str | None = None,
-    ) -> str:
-        ocr = "\n".join(
-            f"- {region.text!r} bbox="
-            f"[{region.box.left:.4f},{region.box.top:.4f},"
-            f"{region.box.right:.4f},{region.box.bottom:.4f}]"
-            f" confidence={region.confidence:.3f}"
-            for region in snapshot.visible_text
-        ) or "- OCR 未识别到可靠文本"
-        repair = (
-            "\n上一次回复未通过 Schema。只输出一个修正后的 JSON 对象，不得解释。"
-            f"\n校验错误：{repair_error}"
-            f"\n错误回复：{repair_reply[:1000]}"
-            if repair_reply is not None
-            else ""
-        )
-        normalized_ocr = tuple(
-            normalize_visible_text(region.text) for region in snapshot.visible_text
-        )
-        missing_evidence = tuple(
-            value
-            for value in required_goal_evidence
-            if not any(normalize_visible_text(value) in item for item in normalized_ocr)
-        )
-        required = ""
-        if required_goal_evidence:
-            required = (
-                "\n显式完成证据（指最新 OCR 中的字面文字，不接受语义近似或推断）：\n"
-                + "\n".join(f"- {value}" for value in required_goal_evidence)
-                + "\n当前缺失证据："
-                + (", ".join(missing_evidence) if missing_evidence else "无")
-                + (
-                    "。因此当前帧绝对禁止 DONE。"
-                    if missing_evidence
-                    else "。全部显式证据已出现；当前帧必须输出 DONE，绝对禁止 ACT。"
-                )
-            )
-        target_visible = bool(
-            preferred_action_target
-            and any(
-                normalize_visible_text(preferred_action_target) in item
-                for item in normalized_ocr
-            )
-        )
-        action_target = ""
-        if preferred_action_target is not None:
-            action_target = (
-                f"\n本任务的单步导航目标是：{preferred_action_target}。"
-                "若输出 ACT，target_label 必须是该目标，不得点击目标页内的其他选项。"
-                + (
-                    "该目标文字已在最新 OCR 中出现且完成证据仍缺失；当前帧必须输出 "
-                    "ACT，target_label 使用该文字，bbox 对准它所在的整行可点击区域。"
-                    if target_visible and missing_evidence
-                    else "仅在它真实可见且完成证据缺失时点击。"
-                )
-            )
-        if consumed_action_target is not None:
-            action_target = (
-                f"\n单步导航目标 {consumed_action_target} 已执行且已观测到界面效果。"
-                "禁止再次点击该目标或目标页标题；若完成证据仍缺失，输出 WAIT(no_safe_action) "
-                "或 ABSTAIN，不得用重复点击代替缺失证据。"
-            )
-        session = f"\n跨帧会话记忆：\n{session_context}" if session_context else ""
-        policy = (
-            "\n页面策略：充值/首充/礼包/特惠类促销弹窗绝对不要点击其中任何文字或按钮；"
-            "功能页中任务目标已达成或没有下一步时，输出 ACT 点击返回/关闭控件退出页面；"
-            "点击过但画面无变化的按钮禁止再次点击。"
-        )
-        return (
-            "你是像素 GUI 闭环规划器。目标：" + goal + "\n"
-            f"输入先给出 {temporal_count} 张按时间先后排列的干净全景图（最后一张最新），"
-            f"随后给出 {crop_count} 张来自最新帧的 OCR/目标原分辨率裁剪。"
-            "只能返回一个符合 JSON Schema 的决策。每次最多一个动作。"
-            "必须先对照目标检查最新帧的完成证据；若可观察完成条件已经满足，必须输出"
-            "kind=done、goal_status=succeeded、action=null，即使目标按钮因上一步成功而消失。"
-            "DONE 只表示目标要求的正向外部状态已在画面中可见实现；"
-            "目标尚未完成时绝对禁止 DONE，继续输出 act 推进目标。"
-            "目标中的每一项完成条件都必须满足；仅看到通往目标页的导航行不代表已打开目标页。"
-            "visible_text 只能抄录最新图像或 OCR 中真实存在的文字，禁止写入期望但未出现的文字。"
-            "若目标要求 Open/打开某项，且同名或明确同义的可点击行在最新帧可见，"
-            "应对该行输出 act。"
-            "不要返回自由点击坐标；点击必须给出所见控件的 normalized target_bbox。"
-            "同时检查文字和常见视觉图标；即使 OCR 没有标签，清晰可辨且与目标直接对应的"
-            "图标（例如齿轮代表设置）也可以作为低风险目标，并为图标本体给出 bbox。"
-            "action 仅允许 click/key/hotkey；拖拽和多步序列由其他控制路径处理。"
-            "kind=act 时 wait_reason 必须为 null 且 action 必须非 null；"
-            "其他非 act 决策的 action 和 wait_reason 都必须为 null。"
-            "click 的 target_bbox 必须是四个归一化数且 key 必须为 null；"
-            "所有 click 都必须把 key 写成 JSON 字面量 null，包括点击画面中的返回按钮或返回箭头；"
-            "绝不能为 click 填 return_button、back 等符号值。若目标要求返回上一页且画面中有"
-            "可见的返回按钮或箭头，同时其他候选控件不可用，应 ACT 点击该返回控件。"
-            "key/hotkey 的 target_bbox 必须为 null 且 key 必须是已知语义键名。"
-            "expected_effect 必须描述下一帧可验证的界面或文本变化。"
-            "登录、删除、支付、发送、安装标记为 critical。\n"
-            "当前 OCR：\n" + ocr + required + action_target + session + policy + repair
+        return gui_instruction(
+            snapshot, goal, compact=self._compact_output,
+            coordinate_space=self._coordinate_space,
+            image_manifest=self.last_input_manifest,
+            required_goal_evidence=self._required_goal_evidence,
+            preferred_action_target=preferred_target,
+            consumed_action_target=consumed_target,
+            session_context=session_context, repair_error=repair_error,
         )
 
     @staticmethod
