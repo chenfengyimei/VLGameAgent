@@ -1,0 +1,33 @@
+name: Export PR3 conflict source
+on:
+  push:
+    branches: [automation/pr3-conflict-resolution-20260917]
+    paths: [.github/workflows/pr3-conflict-source.yml]
+permissions:
+  contents: read
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Export exact histories without running repository code
+        shell: bash
+        run: |
+          set -eu
+          test "$(git rev-parse origin/main)" = 17856c7210d493ef6e7b670397596dcc70cca65d
+          test "$(git rev-parse origin/fix/runtime-completion-20260917)" = a51ff89cda0e31f19ba972ed0f78e9a58dd803fb
+          git branch source-main 17856c7210d493ef6e7b670397596dcc70cca65d
+          git branch source-pr a51ff89cda0e31f19ba972ed0f78e9a58dd803fb
+          git bundle create "$RUNNER_TEMP/pr3-conflict-source.bundle" source-main source-pr
+          git bundle verify "$RUNNER_TEMP/pr3-conflict-source.bundle"
+          sha256sum "$RUNNER_TEMP/pr3-conflict-source.bundle"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: pr3-conflict-source
+          path: ${{ runner.temp }}/pr3-conflict-source.bundle
+          retention-days: 1
+          if-no-files-found: error
