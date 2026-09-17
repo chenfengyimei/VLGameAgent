@@ -21,6 +21,7 @@ import signal
 import time
 import uuid
 from collections.abc import Callable
+from functools import partial
 from pathlib import Path
 from types import FrameType
 
@@ -198,8 +199,10 @@ async def _run(args: argparse.Namespace) -> int:
         or args.watchdog_timeout_seconds <= 0
     ):
         raise SystemExit("--watchdog-timeout-seconds must be positive")
-    if not math.isfinite(args.decision_timeout_seconds) or args.decision_timeout_seconds <= 0:
-        raise SystemExit("--decision-timeout-seconds must be finite and positive")
+    for name in ("decision_timeout_seconds", "perception_timeout_seconds"):
+        timeout_s = getattr(args, name)
+        if not math.isfinite(timeout_s) or timeout_s <= 0:
+            raise SystemExit(f"--{name.replace('_', '-')} must be finite and positive")
     if not math.isfinite(args.tap_delay) or args.tap_delay < 0:
         raise SystemExit("--tap-delay must be >= 0")
     if not math.isfinite(args.tap_interval_seconds) or args.tap_interval_seconds < 0:
@@ -462,7 +465,7 @@ async def _run(args: argparse.Namespace) -> int:
             recorder.attach_video(PyAvVideoRecorder(recorder.video_path, fps=15))
             if journal is not None:
                 journal.set_sink(
-                    lambda record: _persist_planner_decision(recorder, clock, record)
+                    partial(_persist_planner_decision, recorder, clock)
                 )
         except BaseException:
             _best_effort_cleanup(
@@ -606,6 +609,7 @@ async def _run(args: argparse.Namespace) -> int:
         control_heartbeat=watchdog.heartbeat,
         recovery_budget=recovery_budget,
         decision_timeout_s=args.decision_timeout_seconds,
+        perception_timeout_s=args.perception_timeout_seconds,
     )
 
     if journal is not None and args.dashboard_port > 0:
@@ -864,6 +868,8 @@ async def _run(args: argparse.Namespace) -> int:
                     run_error = FatalRuntimeError("cleanup failed; manual intervention required")
                     run_error.__cause__ = exc
 
+        if journal is not None:
+            await cleanup(journal.close)
         await cleanup(watchdog_monitor.close)
         await cleanup(scheduler.neutralize)
         await cleanup(loop.drain_execution_receipts)
@@ -994,6 +1000,7 @@ def build_parser(*, add_help: bool = True) -> argparse.ArgumentParser:
         description="Run the UGA agent against a live window", add_help=add_help
     )
     parser.add_argument("--profile", type=Path, required=True)
+    parser.add_argument("--perception-timeout-seconds", type=float, default=10.0)
     parser.add_argument("--goal", default="Interact with the target")
     parser.add_argument(
         "--goal-evidence",

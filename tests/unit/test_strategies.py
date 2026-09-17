@@ -79,6 +79,7 @@ class StrategyRegistryTests(unittest.TestCase):
         # game's inventory, otherwise the planner would propose actions no
         # registered rule explains.
         known_sources = {rule.source for rule in MUMU_REGISTRY.rules}
+        self.assertNotIn("ocr_login_agreement_fast", known_sources)
         for source in (
             "ocr_mumu_dialog_cancel_fast",
             "ocr_dialogue_click_fast",

@@ -19,6 +19,7 @@ from uga.capture.frame import BufferKind, Frame, PixelFormat
 from uga.capture.registry import CaptureBackendRegistry
 from uga.capture.windows_graphics_capture import WindowsGraphicsCaptureBackend
 from uga.control.arbiter import ActionArbiter
+from uga.control.canonical import CanonicalAction
 from uga.control.executor import InputExecutor
 from uga.control.lease import ControlLease, ControlMode, ControlOwner
 from uga.control.lease_manager import ControlLeaseManager
@@ -39,9 +40,8 @@ from uga.core.errors import BackendUnavailableError, CaptureTimeoutError, Contra
 from uga.dataset.validator import DatasetValidator
 from uga.environment.fixture_world import FixtureScenario, FixtureWorld, fixture_policy_features
 from uga.recording.episode_writer import EpisodeWriter
-from uga.recording.fixture_evidence import FixtureEvidenceRecorder
 from uga.recording.replay import ReplayEngine
-from uga.recording.schema import EpisodeMetadata, EpisodeResult
+from uga.recording.schema import ActionProvenance, EpisodeMetadata, EpisodeResult
 from uga.recording.video import PyAvVideoRecorder
 from uga.release.fixture_process import launch_owned_python_gui
 from uga.release.revision import validate_source_revision
@@ -266,6 +266,110 @@ def _build_fixture_cycle(
     return tuple(actions), base_ns + 4_200_000_000
 
 
+@dataclass(frozen=True, slots=True)
+class FixtureActionGroup:
+    actions: tuple[PhysicalAction, ...]
+    cycle: int
+    movement: bool = False
+    intent: str | None = None
+
+    @property
+    def effective_ns(self) -> int:
+        return min(action.lifetime.effective_from.value_ns for action in self.actions)
+
+
+def _fixture_action_groups(
+    actions: tuple[PhysicalAction, ...], cycle: int
+) -> tuple[FixtureActionGroup, ...]:
+    """Keep reset/menu/click diagnostics separate from movement/look/interact.
+
+    Each group is admitted only when its first primitive is due, using a real
+    captured pre-action observation. Held movement and releases share one label.
+    """
+    groups: dict[str, list[PhysicalAction]] = {}
+    for action in actions:
+        suffix = action.action_id.removeprefix(f"fixture-{cycle:04d}-")
+        name = suffix.split("-", 1)[0]
+        group = "movement" if name in {"w", "a", "s", "d"} else name
+        groups.setdefault(group, []).append(action)
+    return tuple(sorted(
+        (FixtureActionGroup(
+            tuple(values), cycle, name == "movement",
+            name if name in {"movement", "look", "interact"} else None,
+        ) for name, values in groups.items()),
+        key=lambda group: group.effective_ns,
+    ))
+
+
+def _submit_fixture_group(
+    group: FixtureActionGroup,
+    frame: Frame,
+    lease: ControlLease,
+    scenario: FixtureScenario,
+    writer: EpisodeWriter,
+    scheduler: ActionScheduler,
+    arbiter: ActionArbiter,
+    now: UGATime,
+) -> tuple[int, bool]:
+    if not 0 <= now.value_ns - frame.capture_timestamp.value_ns <= 500_000_000:
+        raise ContractViolation("fixture group requires a fresh pre-action capture")
+    actions = group.actions
+    pre_id = f"fixture-pre-{group.cycle:04d}-{actions[0].action_id}"
+    visual = analyze_fixture_frame(frame)
+    writer.record_observation(pre_id, frame.capture_timestamp, {
+        "source": "captured-pre-action-screen",
+        "frame_id": frame.frame_id,
+        "capture_timestamp_ns": frame.capture_timestamp.value_ns,
+        "features": _visual_features(visual, frame.width, frame.height, scenario),
+        "visual": asdict(visual),
+    })
+    lifetime = ActionLifetime(
+        min(a.lifetime.created_at for a in actions), UGATime(group.effective_ns),
+        max(a.lifetime.expires_at for a in actions),
+    )
+    proposal = ActionProposal(
+        uuid.uuid4().hex, "fixture-qualification", lease.owner, lease.mode,
+        lease.lease_id, lease.generation, lifetime, actions, pre_id, 1.0,
+    )
+    decision = arbiter.decide(proposal)
+    if not decision.accepted:
+        raise ContractViolation("fixture group proposal was not accepted")
+    parent_id = None
+    intent = "movement" if group.movement else group.intent
+    if intent is not None:
+        canonical_id = f"fixture-{group.cycle:04d}-{intent}-canonical"
+        if intent == "movement":
+            move_x, move_y = FixtureWorld(scenario=scenario).canonical_movement
+            canonical = CanonicalAction(canonical_id, lifetime, move_x=move_x, move_y=move_y)
+        elif intent == "look":
+            relative = [a for a in actions if isinstance(a, RelativeMouseAction)]
+            if len(relative) != len(actions) or len(relative) != 1:
+                raise ContractViolation("fixture look needs exactly one relative primitive")
+            canonical = CanonicalAction(
+                canonical_id, lifetime, look_x=relative[0].dx / 100, look_y=relative[0].dy / 100
+            )
+        elif intent == "interact":
+            canonical = CanonicalAction(canonical_id, lifetime, interact=True)
+        else:
+            raise ContractViolation("unknown fixture logical intent")
+        parent_id = canonical.action_id
+        writer.record_canonical_action(
+            canonical,
+            _canonical_provenance(canonical, lease.lease_id, pre_id, proposal.proposal_id)
+        )
+    for action in actions:
+        writer.record_action(
+            action, _provenance(action, lease.lease_id, pre_id, proposal.proposal_id, parent_id)
+        )
+    added = scheduler.schedule(
+        decision, frame.window_identity, lease,
+        pre_action_observation_id=pre_id, pre_action_capture_ns=frame.capture_timestamp.value_ns,
+    )
+    if added != len(actions):
+        raise ContractViolation("fixture group was not fully scheduled")
+    return added, parent_id is not None
+
+
 def _capture_registry(preference: str, windows: Win32WindowBackend) -> CaptureBackendRegistry:
     order = (
         (preference,)
@@ -344,6 +448,54 @@ def _owned_focus_sink(windows: Win32WindowBackend) -> Iterator[WindowSnapshot]:
             except subprocess.TimeoutExpired:
                 process.kill()
                 process.wait(timeout=5.0)
+
+
+def _provenance(
+    action: PhysicalAction,
+    lease_id: str,
+    observation_id: str,
+    proposal_id: str,
+    parent_action_id: str | None,
+) -> ActionProvenance:
+    return ActionProvenance(
+        action.action_id,
+        "fixture-qualification",
+        "fixture-script-v1",
+        None,
+        observation_id,
+        "fixture-navigation",
+        "fixture-complete-task",
+        ControlMode.PLAY_3D.value,
+        lease_id,
+        1.0,
+        False,
+        action.lifetime,
+        proposal_id,
+        parent_action_id,
+    )
+
+
+def _canonical_provenance(
+    action: CanonicalAction,
+    lease_id: str,
+    observation_id: str,
+    proposal_id: str,
+) -> ActionProvenance:
+    return ActionProvenance(
+        action.action_id,
+        "fixture-qualification",
+        "fixture-script-v1",
+        None,
+        observation_id,
+        "fixture-navigation",
+        "fixture-complete-task",
+        ControlMode.PLAY_3D.value,
+        lease_id,
+        1.0,
+        False,
+        action.lifetime,
+        proposal_id,
+    )
 
 
 def _exercise_focus_loss(
@@ -707,9 +859,7 @@ def run_fixture_qualification(
     final_frame: Frame | None = None
     success_seen = False
     pending_checks: list[int] = []
-    evidence_recorder = FixtureEvidenceRecorder(writer)
-    pre_observation_id = "fixture-initial"
-    pre_capture_at = UGATime(metadata.start_monotonic_ns)
+    pending_groups: list[tuple[FixtureActionGroup, ControlLease]] = []
     episode_path: Path | None = None
     capture_started = clock.now()
     capture_ended = capture_started
@@ -717,6 +867,7 @@ def run_fixture_qualification(
     cycle_count = max(1, math.floor((duration_seconds - 4.45) / 5.0) + 1)
     next_cycle = 0
     scheduled = 0
+    canonical_recorded = 0
     accepted_proposals = 0
     observed_flushes = 0
     cycle_rebases = 0
@@ -736,14 +887,6 @@ def run_fixture_qualification(
             (capture_after.value_ns - capture_before.value_ns) / 1_000_000,
         )
         writer.record_frame(first_frame)
-        initial_visual = analyze_fixture_frame(first_frame)
-        pre_capture_at = first_frame.capture_timestamp
-        writer.record_observation(pre_observation_id, pre_capture_at, {
-            "source": "captured-pre-action-screen", "frame_id": first_frame.frame_id,
-            "features": _visual_features(initial_visual, first_frame.width,
-                                         first_frame.height, scenario),
-            "visual": asdict(initial_visual),
-        })
         frame_count = 1
         initial_frame = first_frame
         final_frame = first_frame
@@ -794,42 +937,26 @@ def run_fixture_qualification(
                     confidence=1.0,
                     reason=f"developer-owned fixture cycle {next_cycle}",
                 )
-                observation_id = pre_observation_id
-                proposal = ActionProposal(
-                    uuid.uuid4().hex,
-                    "fixture-qualification",
-                    lease.owner,
-                    lease.mode,
-                    lease.lease_id,
-                    lease.generation,
-                    ActionLifetime(
-                        created,
-                        actions[0].lifetime.effective_from,
-                        UGATime(last_expiry),
-                    ),
-                    actions,
-                    observation_id,
-                    1.0,
+                pending_groups.extend(
+                    (group, lease) for group in _fixture_action_groups(actions, next_cycle)
                 )
-                decision = arbiter.decide(proposal)
-                added = scheduler.schedule(decision, target.identity, lease)
-                if not decision.accepted or added != len(actions):
-                    raise ContractViolation("fixture cycle proposal was not fully scheduled")
-                evidence_recorder.register_cycle(
-                    actions, next_cycle, fixture_world, lease_id=lease.lease_id,
-                    proposal_id=proposal.proposal_id, observation_id=observation_id,
-                )
-                accepted_proposals += 1
-                scheduled += added
+                pending_groups.sort(key=lambda item: item[0].effective_ns)
                 pending_checks.append(success_check)
                 next_cycle += 1
+            while pending_groups and pending_groups[0][0].effective_ns <= clock.now().value_ns:
+                group, group_lease = pending_groups.pop(0)
+                assert final_frame is not None
+                added, canonical_added = _submit_fixture_group(
+                    group, final_frame, group_lease, scenario, writer, scheduler, arbiter,
+                    clock.now()
+                )
+                scheduled += added
+                canonical_recorded += int(canonical_added)
+                accepted_proposals += 1
             if loop_before.value_ns >= next_scheduler_ns:
                 before_stats = scheduler.stats()
                 after_stats = scheduler.tick()
-                evidence_recorder.record(
-                    scheduler.drain_receipts(), observation_id=pre_observation_id,
-                    captured_at=pre_capture_at,
-                )
+                writer.record_execution_receipts(scheduler.drain_receipts())
                 if after_stats.flushed > before_stats.flushed:
                     observed_flushes += after_stats.flushed - before_stats.flushed
                     writer.record_event(
@@ -853,10 +980,8 @@ def run_fixture_qualification(
                 frame_count += 1
                 final_frame = frame
                 visual = analyze_fixture_frame(frame)
-                pre_observation_id = f"fixture-execution-frame-{frame_count:08d}"
-                pre_capture_at = frame.capture_timestamp
                 writer.record_observation(
-                    pre_observation_id,
+                    f"fixture-execution-frame-{frame_count:08d}",
                     frame.capture_timestamp,
                     {
                         "task": metadata.task,
@@ -973,7 +1098,9 @@ def run_fixture_qualification(
         execution_ratio = stats.executed / scheduled if scheduled else 0.0
         control_passed = (
             next_cycle == cycle_count
-            and evidence_recorder.completed_groups == evidence_recorder.expected_groups
+            and canonical_recorded == 3 * cycle_count
+            and not pending_groups
+            and stats.executed == scheduled
             and stats.expired == 0
             and stats.rejected == 0
             and execution_ratio >= 0.95
@@ -1007,18 +1134,12 @@ def run_fixture_qualification(
             EpisodeResult.SUCCESS if success_seen and control_passed else EpisodeResult.FAILURE
         )
         shutdown.trip(ShutdownCause.NORMAL_STOP)
-        evidence_recorder.record(
-            scheduler.drain_receipts(), observation_id=pre_observation_id,
-            captured_at=pre_capture_at,
-        )
+        writer.record_execution_receipts(scheduler.drain_receipts())
         episode_path = writer.finalize(episode_result, clock.now())
     except BaseException:
+        shutdown.trip(ShutdownCause.RUNTIME_FAILURE)
         with contextlib.suppress(Exception):
-            shutdown.trip(ShutdownCause.RUNTIME_FAILURE)
-            evidence_recorder.record(
-                scheduler.drain_receipts(), observation_id=pre_observation_id,
-                captured_at=pre_capture_at,
-            )
+            writer.record_execution_receipts(scheduler.drain_receipts())
             writer.finalize(EpisodeResult.ABORTED, clock.now())
         raise
     finally:
@@ -1035,7 +1156,6 @@ def run_fixture_qualification(
     initial_visual = analyze_fixture_frame(initial_frame)
     final_visual = analyze_fixture_frame(final_frame)
     success_seen = success_seen or final_visual.success_visible
-    canonical_recorded = evidence_recorder.completed_groups
     replay = ReplayEngine(episode_path).validation()
     quality = DatasetValidator().validate(episode_path)
     stats = scheduler.stats()

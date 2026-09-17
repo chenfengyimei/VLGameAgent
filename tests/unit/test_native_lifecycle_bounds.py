@@ -17,7 +17,7 @@ from uga.capture.native_ctypes import (
     NativeCaptureLibrary,
 )
 from uga.capture.ring_buffer import FrameRingBuffer
-from uga.core.errors import BackendUnavailableError
+from uga.core.errors import BackendStateError, BackendUnavailableError
 from uga.windows.backend import WindowBackend
 
 
@@ -37,7 +37,15 @@ class DriverLifetimeTests(unittest.TestCase):
             NativeBackendId.WGC, cast(NativeCaptureLibrary, library), cast(WindowBackend, windows)
         )
         driver.start(windows.identity)
-        capture = threading.Thread(target=driver.capture)
+        errors: list[BaseException] = []
+
+        def capture_once() -> None:
+            try:
+                driver.capture()
+            except BackendStateError as exc:
+                errors.append(exc)
+
+        capture = threading.Thread(target=capture_once)
         stop = threading.Thread(target=lambda: (driver.stop(), stopped.set()))
         try:
             capture.start()
@@ -50,6 +58,7 @@ class DriverLifetimeTests(unittest.TestCase):
             capture.join(1)
             stop.join(1)
         self.assertTrue(stopped.is_set())
+        self.assertEqual(len(errors), 1)
         driver.stop()
         self.assertEqual(library.destroy_calls, 1)
 

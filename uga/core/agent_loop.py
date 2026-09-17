@@ -6,7 +6,8 @@ import math
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, replace
-from typing import ParamSpec, Protocol, TypeVar, runtime_checkable
+from functools import partial
+from typing import Protocol, TypeVar, runtime_checkable
 
 from uga.agent.closed_loop import (
     ActionValidator,
@@ -26,28 +27,28 @@ from uga.control.lease import ControlMode, ControlOwner
 from uga.control.lease_manager import ControlLeaseManager
 from uga.control.physical import AbsolutePointerAction, PhysicalAction
 from uga.control.scheduler import ActionScheduler, SchedulerStats
-from uga.core.deadline import BoundedWorker, Deadline, DeadlineExceeded
 from uga.core.errors import BackendUnavailableError, ContractViolation
 from uga.core.events import Event, EventBus, EventType
 from uga.core.run_context import RunContext, RunStamp
 from uga.environment.adapter import EnvironmentAdapter
 from uga.gui.controller import GuiActionController, GuiActionSubmission
-from uga.gui.schema import GuiActionKind
 from uga.observation.buffer import TemporalObservationBuffer
 from uga.observation.builder import ObservationBuilder
 from uga.observation.schema import Observation
 from uga.perception.builder import PerceptionBuilder
-from uga.perception.schema import DecisionKind, PerceptionSnapshot, PlannerOutcome
+from uga.perception.schema import DecisionKind, NormalizedBox, PerceptionSnapshot, PlannerOutcome
+from uga.policy.call_budget import CallBudget, DeadlineWorker
 from uga.policy.chunk_controller import ActionChunkController, ActionChunkSubmission
 from uga.policy.fast_policy import FastPolicy, FastPolicyOutput, PolicyContext
 from uga.policy.vision_transport import ProviderError, ProviderErrorKind
 from uga.recording.episode_writer import EpisodeWriter
-from uga.safety.semantic_gate import sensitive_page_reason
+from uga.safety.action_gate import generations_consistent, point_is_clickable, resolved_click_point
+from uga.safety.sensitive_page import inspect_sensitive_page
 from uga.time.clock import ClockBackend
 from uga.windows.coordinates import CoordinateTransform, Rect
 
-_P = ParamSpec("_P")
 _T = TypeVar("_T")
+
 
 class CaptureSource(Protocol):
     async def capture_once(self) -> SequencedFrame: ...
@@ -134,8 +135,9 @@ class RealtimeAgentLoop:
         control_heartbeat: Callable[[], object] | None = None,
         recovery_budget: RecoveryBudget | None = None,
         max_continuous_rebuilds: int = 100,
-        decision_timeout_s: float = 90.0,
         max_planner_failures: int = 5,
+        decision_timeout_s: float = 60.0,
+        perception_timeout_s: float = 10.0,
     ) -> None:
         grounded_parts = (
             grounded_planner,
@@ -158,9 +160,14 @@ class RealtimeAgentLoop:
             item is not None for item in grounded_parts
         ):
             raise ContractViolation("grounded loop components must be configured together")
-        Deadline.after(decision_timeout_s)
+        for timeout_s in (decision_timeout_s, perception_timeout_s):
+            if isinstance(timeout_s, bool) or not math.isfinite(timeout_s) or timeout_s <= 0:
+                raise ContractViolation("worker deadlines must be finite and positive")
         self._decision_timeout_s = decision_timeout_s
-        self._decision_worker = BoundedWorker()
+        self._perception_timeout_s = perception_timeout_s
+        self._model_worker = DeadlineWorker("uga-model")
+        self._perception_worker = DeadlineWorker("uga-perception")
+        self._supervision_worker = DeadlineWorker("uga-supervision")
         self._clock = clock
         self._capture = capture
         self._frames = frames
@@ -306,7 +313,8 @@ class RealtimeAgentLoop:
         return observed
 
     def _execution_is_current(
-        self, stamp: RunStamp | None, validated: Frame, task_generation: int
+        self, stamp: RunStamp | None, validated: Frame, task_generation: int,
+        *, visual_stability: bool = False,
     ) -> bool:
         if not self._run_live(stamp):
             return False
@@ -321,7 +329,11 @@ class RealtimeAgentLoop:
         if current is None:
             return False
         if supervisor is not None:
-            return supervisor.validate_execution_context(validated, current.frame)[0]
+            if not supervisor.validate_execution_context(validated, current.frame)[0]:
+                return False
+            return not visual_stability or not ActionValidator._target_changed(
+                NormalizedBox(0, 0, 1, 1), validated, current.frame
+            )
         age = self._clock.now().value_ns - current.frame.capture_timestamp.value_ns
         return (
             0 <= age <= 1_000_000_000
@@ -329,22 +341,21 @@ class RealtimeAgentLoop:
             and current.frame.physical_rect == validated.physical_rect
         )
 
-    async def _decision_call(
-        self, deadline: Deadline, function: Callable[_P, _T],
-        *args: _P.args, **kwargs: _P.kwargs,
+    def _run_cancelled(self) -> bool:
+        return self._run_context is not None and self._run_context.should_stop()
+
+    async def _bounded_call(
+        self, worker: DeadlineWorker, operation: Callable[[], _T], budget: CallBudget
     ) -> _T:
         try:
-            return await self._decision_worker.run(deadline, function, *args, **kwargs)
-        except (DeadlineExceeded, asyncio.CancelledError) as exc:
-            if self._run_context is not None:
-                self._run_context.cancel()
-            self._leases.revoke_all()
-            self._scheduler.neutralize()
-            if isinstance(exc, asyncio.CancelledError):
-                raise
-            raise ProviderError(
-                ProviderErrorKind.TIMEOUT, "total decision deadline exceeded", fatal=True
-            ) from exc
+            return await worker.call(operation, budget)
+        except (ProviderError, asyncio.CancelledError) as exc:
+            if isinstance(exc, asyncio.CancelledError) or exc.fatal:
+                if self._run_context is not None:
+                    self._run_context.cancel()
+                self._leases.revoke_all()
+                self._scheduler.neutralize()
+            raise
 
     async def step(self) -> AgentLoopStep:
         item = await self._capture.capture_once()
@@ -378,17 +389,15 @@ class RealtimeAgentLoop:
         effect_pending = False
         if self._perception_builder is not None:
             geometry_generation = self._update_geometry_generation(pending.frame)
-            perception = await self._decision_call(
-                Deadline.after(self._decision_timeout_s,
-                    lambda: self._run_context is not None and self._run_context.should_stop()),
+            perception = await self._bounded_call(self._perception_worker, partial(
                 self._perception_builder.build,
                 pending,
                 self._mode_router.current,
                 geometry_generation=geometry_generation,
                 task_generation=self._task_generation,
-            )
+            ), CallBudget(self._perception_timeout_s, cancelled=self._run_cancelled))
             assert self._closed_loop is not None
-            if sensitive_page_reason(perception.visible_text) is not None:
+            if inspect_sensitive_page(perception.visible_text).requires_owner:
                 self._leases.revoke_all()
                 self._scheduler.neutralize()
             effect_pending = self._closed_loop.observe(perception, pending.frame).pending
@@ -447,6 +456,21 @@ class RealtimeAgentLoop:
                 {"previous": transition.previous.value, "mode": transition.current.value},
             )
 
+        if perception is not None:
+            sensitive = inspect_sensitive_page(perception.visible_text)
+            if sensitive.requires_owner:
+                self._leases.revoke_all()
+                self._scheduler.neutralize()
+                self._last_supervision_disposition = DecisionDisposition.WAIT.value
+                self._last_supervision_reason = sensitive.reason
+                await self._events.publish(
+                    EventType.POLICY_INFERENCE_COMPLETED, "agent.loop",
+                    {"disposition": "owner_required", "reason": sensitive.reason},
+                )
+                return AgentLoopStep(
+                    observation, transition, None, None, self._scheduler.stats(), perception
+                )
+
         output: FastPolicyOutput | None = None
         submission: ActionChunkSubmission | None = None
         planner_outcome: PlannerOutcome | None = None
@@ -476,17 +500,14 @@ class RealtimeAgentLoop:
             # Stamp the request generation: a stop or supervisor rebuild that
             # lands while the model thinks must kill this result on arrival.
             stamp = self._run_context.stamp() if self._run_context is not None else None
-            deadline = Deadline.after(
-                self._decision_timeout_s,
-                lambda: self._run_context is not None and self._run_context.should_stop(),
-            )
+            budget = CallBudget(self._decision_timeout_s, cancelled=self._run_cancelled)
             try:
                 session = closed_loop.session
                 restored_unverified = (
                     session is not None and session.restored_task_unverified
                 )
-                outcome = await self._decision_call(
-                    deadline, grounded_planner.decide,
+                outcome = await self._bounded_call(self._model_worker, partial(
+                    grounded_planner.decide,
                     snapshot=perception,
                     frames=history[-3:],
                     goal=observation.user_goal,
@@ -509,7 +530,7 @@ class RealtimeAgentLoop:
                         or restored_unverified
                         else session.latest_main_task.raw_text
                     ),
-                )
+                ), budget)
             except BackendUnavailableError as exc:
                 self._planner_failure_count += 1
                 self._consecutive_planner_failures += 1
@@ -589,13 +610,13 @@ class RealtimeAgentLoop:
                 geometry_generation = self._update_geometry_generation(
                     latest_after_inference.frame
                 )
-                fresh_perception = await self._decision_call(
-                    deadline, self._perception_builder.build,
+                fresh_perception = await self._bounded_call(self._perception_worker, partial(
+                    self._perception_builder.build,
                     latest_after_inference,
                     self._mode_router.current,
                     geometry_generation=geometry_generation,
                     task_generation=self._task_generation,
-                )
+                ), budget)
             if closed_loop.session is not None:
                 # A task can change while the model thinks. Incorporate the
                 # fresh screen before comparing with the original request.
@@ -606,8 +627,8 @@ class RealtimeAgentLoop:
                 fresh_perception = replace(
                     fresh_perception, task_generation=self._task_generation
                 )
-            supervised = await self._decision_call(
-                deadline, closed_loop.assess,
+            supervised = await self._bounded_call(self._supervision_worker, partial(
+                closed_loop.assess,
                 outcome,
                 perception,
                 fresh_perception,
@@ -615,7 +636,7 @@ class RealtimeAgentLoop:
                 latest_after_inference.frame,
                 observation.user_goal,
                 decision_source=getattr(grounded_planner, "last_decision_source", None),
-            )
+            ), budget)
             if not self._run_live(stamp):
                 await self._discard_stale_result(
                     observation, policy="grounded_vlm", phase="supervision was in flight"
@@ -636,62 +657,63 @@ class RealtimeAgentLoop:
             # parked on MuMu's own title-bar close button — to SendInput.
             outcome = supervised.outcome
             execution_item = latest_after_inference
-            if supervised.disposition == DecisionDisposition.EXECUTE:
+            if supervised.disposition in {DecisionDisposition.EXECUTE, DecisionDisposition.RECOVER}:
                 current_item = self._frames.latest() or latest_after_inference
-                location_calibrated = (
-                    outcome.action is not None
-                    and outcome.action.target_label
-                    in {"ui_back", "ui_close", "ui_promote"}
+                final_perception = fresh_perception
+                if current_item.sequence != latest_after_inference.sequence:
+                    assert self._perception_builder is not None
+                    final_perception = await self._bounded_call(self._perception_worker, partial(
+                        self._perception_builder.build, current_item, self._mode_router.current,
+                        geometry_generation=self._update_geometry_generation(current_item.frame),
+                        task_generation=self._task_generation,
+                    ), budget)
+                    if closed_loop.session is not None:
+                        closed_loop.session.observe_snapshot(
+                            final_perception, final_perception.captured_at.value_ns
+                        )
+                        self._task_generation = closed_loop.session.task_generation
+                        final_perception = replace(
+                            final_perception, task_generation=self._task_generation
+                        )
+                execution_fresh, execution_reason = generations_consistent(
+                    outcome, perception, final_perception
                 )
-                if location_calibrated:
-                    # Calibrated hotspots and OCR-glyph closes carry no
-                    # groundable text and sit on animated pages, so pixel
-                    # change is expected.  The shared execution-context guard
-                    # still applies: a recreated or resized window never
-                    # receives a click decided for the previous window.
-                    execution_fresh, execution_reason = (
-                        closed_loop.validate_execution_context(
-                            latest_after_inference.frame, current_item.frame
+                sensitive = inspect_sensitive_page(final_perception.visible_text, outcome.action)
+                if sensitive.requires_owner:
+                    execution_fresh, execution_reason = False, sensitive.reason
+                if (execution_fresh and outcome.action is not None
+                        and supervised.disposition == DecisionDisposition.EXECUTE):
+                    if outcome.action.target_box is not None:
+                        verdict = point_is_clickable(
+                            resolved_click_point(outcome.action),
+                            no_click_regions=closed_loop.no_click_regions,
+                            decided_text=perception.visible_text,
+                            fresh_text=final_perception.visible_text,
                         )
-                    )
-                else:
-                    grounding_match = (
-                        outcome.action is not None
-                        and ActionValidator._ocr_target_grounding(
-                            outcome.action, fresh_perception
+                        execution_fresh, execution_reason = verdict.allowed, verdict.reason
+                    if execution_fresh:
+                        # Dynamic pixels need a match from the NEW observation,
+                        # not an OCR match obtained before the slow verifier.
+                        grounding = ActionValidator._ocr_target_grounding(
+                            outcome.action, final_perception
                         )
-                        == "match"
-                    )
-                    decided_missing = (
-                        outcome.action is not None
-                        and ActionValidator._ocr_target_grounding(
-                            outcome.action, perception
+                        execution_fresh, execution_reason = closed_loop.validate_execution_frame(
+                            outcome, latest_after_inference.frame, current_item.frame,
+                            target_was_ocr_grounded=grounding == "match",
                         )
-                        == "missing"
-                    )
-                    visual_only = (
-                        not grounding_match
-                        and decided_missing
-                        and outcome.action is not None
-                        and outcome.action.confidence >= 0.85
-                        and outcome.action.kind == GuiActionKind.CLICK
-                    )
-                    execution_fresh, execution_reason = closed_loop.validate_execution_frame(
-                        outcome,
-                        latest_after_inference.frame,
-                        current_item.frame,
-                        # Graphical animated buttons (晋升 medallion) tolerate
-                        # dynamic pixels exactly like OCR-grounded targets.
-                        target_was_ocr_grounded=grounding_match or visual_only,
+                elif execution_fresh:
+                    execution_fresh, execution_reason = closed_loop.validate_execution_context(
+                        latest_after_inference.frame, current_item.frame
                     )
                 if not execution_fresh:
                     supervised = SupervisedDecision(
-                        DecisionDisposition.REOBSERVE,
-                        execution_reason,
-                        outcome,
+                        DecisionDisposition.WAIT if sensitive.requires_owner
+                        else DecisionDisposition.REOBSERVE, execution_reason, outcome,
                     )
                 else:
                     execution_item = current_item
+                    latest_after_inference = current_item
+                    fresh_perception = final_perception
             supervision = supervised
             self._last_supervision_disposition = supervised.disposition.value
             self._last_supervision_reason = supervised.reason
@@ -786,7 +808,7 @@ class RealtimeAgentLoop:
                     pre_action_observation_id=pre_action.observation_id,
                     pre_action_capture_ns=pre_action.latest_frame.capture_timestamp.value_ns,
                     execution_guard=lambda: self._execution_is_current(
-                        stamp, execution_item.frame, outcome.task_generation
+                        stamp, execution_item.frame, outcome.task_generation, visual_stability=True
                     ),
                 )
                 if gui_submission.decision is not None:
@@ -867,7 +889,7 @@ class RealtimeAgentLoop:
                     )
                 pre_action = self._pre_action_observation(recovery_item)
                 recovery_action = closed_loop.to_recovery_gui_action(
-                    supervised.recovery, self._key_resolver
+                    supervised.recovery, self._key_resolver, snapshot=fresh_perception
                 )
                 now = self._clock.now()
                 recovery_lease = self._leases.grant(
@@ -887,7 +909,8 @@ class RealtimeAgentLoop:
                     pre_action_observation_id=pre_action.observation_id,
                     pre_action_capture_ns=pre_action.latest_frame.capture_timestamp.value_ns,
                     execution_guard=lambda: self._execution_is_current(
-                        stamp, recovery_item.frame, fresh_perception.task_generation
+                        stamp, recovery_item.frame, fresh_perception.task_generation,
+                        visual_stability=True
                     ),
                 )
                 if gui_submission.decision is not None:
@@ -941,10 +964,9 @@ class RealtimeAgentLoop:
                 observation.user_goal,
             )
             stamp = self._run_context.stamp() if self._run_context is not None else None
-            output = await self._decision_call(
-                Deadline.after(self._decision_timeout_s,
-                    lambda: self._run_context is not None and self._run_context.should_stop()),
-                self._policy.infer, context
+            output = await self._bounded_call(self._model_worker,
+                partial(self._policy.infer, context),
+                CallBudget(self._decision_timeout_s, cancelled=self._run_cancelled)
             )
             await self._events.publish(
                 EventType.POLICY_INFERENCE_COMPLETED,
@@ -1108,7 +1130,14 @@ class RealtimeAgentLoop:
                         stop, frequency_hz=scheduler_hz, heartbeat=self._control_heartbeat
                     )
                 )
-                tasks.create_task(observe())
+                observation_task = tasks.create_task(observe())
+
+                async def cancel_on_stop() -> None:
+                    await stop.wait()
+                    if not observation_task.done():
+                        observation_task.cancel()
+
+                tasks.create_task(cancel_on_stop())
         finally:
             self._leases.revoke_all(notify=False)
             try:

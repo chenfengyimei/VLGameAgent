@@ -6,15 +6,23 @@ import math
 import time
 from collections import Counter, deque
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from functools import partial
 from threading import Lock
 from typing import Protocol
 
-from uga.capture.frame import Frame
+from uga.capture.frame import BufferKind, Frame
 from uga.capture.ring_buffer import FrameRingBuffer, SequencedFrame
-from uga.core.deadline import BoundedWorker, Deadline, DeadlineExceeded
-from uga.core.errors import BackendUnavailableError, CaptureTimeoutError, ContractViolation
-from uga.recording.frame_queue import FrameQueueStats, FrameRecorderQueue
+from uga.core.errors import (
+    BackendUnavailableError,
+    CaptureTimeoutError,
+    ContractViolation,
+    FatalRuntimeError,
+)
+from uga.policy.call_budget import CallBudget, DeadlineWorker
+from uga.policy.vision_transport import ProviderError
+from uga.recording.channel import RecorderChannel
+from uga.recording.frame_queue import RecordingFailure
 
 
 class SynchronousFrameSource(Protocol):
@@ -45,9 +53,9 @@ class CaptureHub:
     The primary source is capture-driven.  The fallback is sampled only after
     the accepted timeline has been quiet for ``fallback_after_s``. Consumers
     always receive the newest item and may skip obsolete frames.  The recorder
-    callback is queued in publication order with independent frame and byte
-    budgets. Overflow stops recording instead of silently dropping evidence
-    or blocking the control plane.
+    callback runs on one bounded FIFO worker. Capture never waits for codec or
+    disk work. Saturation/failure stops the recording explicitly; it never drops
+    evidence or publishes an incomplete Episode as qualified.
     """
 
     records_frames = True
@@ -63,12 +71,26 @@ class CaptureHub:
         fallback_hz: float = 4.0,
         primary_hz: float | None = None,
         consumer_timeout_s: float = 10.0,
-        capture_operation_timeout_s: float = 5.0,
         source_error_backoff_s: float = 0.05,
-        recording_max_frames: int = 64,
-        recording_max_bytes: int = 256 * 1024 * 1024,
-        recording_close_timeout_s: float = 5.0,
+        recorder_capacity: int = 32,
+        recorder_max_bytes: int = 256 * 1024 * 1024,
+        recorder_close_timeout_s: float = 5.0,
+        capture_call_timeout_s: float = 4.0,
+        capture_operation_timeout_s: float | None = None,
+        recording_max_frames: int | None = None,
+        recording_max_bytes: int | None = None,
+        recording_close_timeout_s: float | None = None,
     ) -> None:
+        # Keep the already-published API names while accepting PR3's aliases.
+        if capture_operation_timeout_s is not None:
+            capture_call_timeout_s = capture_operation_timeout_s
+        if recording_max_frames is not None:
+            recorder_capacity = recording_max_frames
+        if recording_max_bytes is not None:
+            recorder_max_bytes = recording_max_bytes
+        if recording_close_timeout_s is not None:
+            recorder_close_timeout_s = recording_close_timeout_s
+        self._retired_sources: set[str] = set()
         if not math.isfinite(fallback_after_s) or fallback_after_s <= 0:
             raise ContractViolation("capture fallback delay must be positive")
         if not math.isfinite(fallback_hz) or fallback_hz <= 0 or fallback_hz > 4.0:
@@ -85,27 +107,31 @@ class CaptureHub:
             or source_error_backoff_s > 1.0
         ):
             raise ContractViolation("capture source error backoff must be in (0, 1]")
-        Deadline.after(capture_operation_timeout_s)
-        self._capture_operation_timeout_s = capture_operation_timeout_s
-        self._primary_worker = BoundedWorker()
-        self._fallback_worker = BoundedWorker()
+        if not math.isfinite(capture_call_timeout_s) or capture_call_timeout_s <= 0:
+            raise ContractViolation("capture call timeout must be finite and positive")
+        self._capture_call_timeout_s = capture_call_timeout_s
+        self._primary_worker = DeadlineWorker("uga-primary-capture")
+        self._fallback_worker = DeadlineWorker("uga-fallback-capture")
         self._primary = primary
         self._fallback = fallback
         self._frames = frames
-        if not math.isfinite(recording_close_timeout_s) or recording_close_timeout_s <= 0:
-            raise ContractViolation("recording close timeout must be positive")
-        self._recording_close_timeout_s = recording_close_timeout_s
-        self._recording = (
-            None if record_frame is None else FrameRecorderQueue(
-                record_frame, max_frames=recording_max_frames, max_bytes=recording_max_bytes
-            )
-        )
+        self._record_frame = record_frame
         self._fallback_after_s = fallback_after_s
         self._fallback_period_s = 1.0 / fallback_hz
         self._primary_period_s = None if primary_hz is None else 1.0 / primary_hz
         self._consumer_timeout_s = consumer_timeout_s
         self._source_error_backoff_s = source_error_backoff_s
         self._publish_lock = Lock()
+        if (type(recorder_capacity) is not int or recorder_capacity < 1
+                or type(recorder_max_bytes) is not int or recorder_max_bytes < 1):
+            raise ContractViolation("recorder queue limits must be positive")
+        if not math.isfinite(recorder_close_timeout_s) or recorder_close_timeout_s <= 0:
+            raise ContractViolation("recorder close timeout must be finite and positive")
+        self._record_channel: RecorderChannel | None = None
+        self._recorder_capacity = recorder_capacity
+        self._recorder_max_bytes = recorder_max_bytes
+        self._recorder_close_timeout_s = recorder_close_timeout_s
+        self._record_failure: BaseException | None = None
         self._stats_lock = Lock()
         self._started = asyncio.Event()
         # Scheduling follows when the accepted image was sampled, not when its
@@ -132,41 +158,75 @@ class CaptureHub:
         self._started.set()
         try:
             async with asyncio.TaskGroup() as tasks:
-                tasks.create_task(self._capture_primary(stop))
+                producers = [tasks.create_task(self._capture_primary(stop))]
                 if self._fallback is not None:
-                    tasks.create_task(self._capture_fallback(stop))
-                if self._recording is not None:
-                    tasks.create_task(self._monitor_recording(stop))
+                    producers.append(tasks.create_task(self._capture_fallback(stop)))
+
+                async def cancel_on_stop() -> None:
+                    await stop.wait()
+                    for producer in producers:
+                        producer.cancel()
+
+                tasks.create_task(cancel_on_stop())
+                tasks.create_task(self._monitor_recording(stop))
+        except BaseException as exc:
+            if self._record_failure is not None and not isinstance(exc, asyncio.CancelledError):
+                raise RecordingFailure("recording failed; manual intervention required") from exc
+            raise
         finally:
-            if self._recording is not None:
-                await asyncio.to_thread(self._recording.close, self._recording_close_timeout_s)
+            if self._record_channel is not None:
+                try:
+                    await asyncio.to_thread(
+                        self._record_channel.close, self._recorder_close_timeout_s
+                    )
+                except BaseException as exc:
+                    self._record_failure = exc
+                    if isinstance(exc, asyncio.CancelledError):
+                        raise
+                    raise RecordingFailure(
+                        "recording did not drain; inspect retained staging"
+                    ) from exc
 
     async def _monitor_recording(self, stop: asyncio.Event) -> None:
-        assert self._recording is not None
+        # Notice an asynchronous writer failure even while both sources are idle.
         while not stop.is_set():
-            self._recording.check()
+            if self._record_channel is not None:
+                try:
+                    self._record_channel.check_health()
+                except Exception as exc:
+                    self._record_failure = exc
+                    raise RecordingFailure("recording worker failed") from exc
             with contextlib.suppress(TimeoutError):
-                await asyncio.wait_for(stop.wait(), timeout=0.05)
+                await asyncio.wait_for(stop.wait(), timeout=0.01)
+
+    def _retire_source(self, source: str) -> None:
+        self._retired_sources.add(source)
+        if "primary" in self._retired_sources and (
+            self._fallback is None or "fallback" in self._retired_sources
+        ):
+            raise FatalRuntimeError("all capture sources exceeded their operation deadline")
 
     @property
     def recording_complete(self) -> bool:
-        return self._recording is None or self._recording.complete
+        return self._record_failure is None and (
+            self._record_channel is None or self._record_channel.drained
+        )
 
-    def recording_stats(self) -> FrameQueueStats | None:
-        return None if self._recording is None else self._recording.stats()
+    def recording_stats(self) -> dict[str, int]:
+        return {} if self._record_channel is None else self._record_channel.stats()
 
     async def capture_once(self) -> SequencedFrame:
-        await self._started.wait()
+        # No default-executor condition wait may trap asyncio.run shutdown.
         deadline = time.monotonic() + self._consumer_timeout_s
         while True:
-            item = self._frames.latest()
+            item = self._frames.latest() if self._started.is_set() else None
             if item is not None and item.sequence > self._last_consumer_sequence:
                 break
             if time.monotonic() >= deadline:
                 raise CaptureTimeoutError(
                     "capture hub produced no frame within its consumer budget"
                 )
-            await asyncio.sleep(.005)
+            await asyncio.sleep(0.005)
         with self._stats_lock:
             skipped = max(0, item.sequence - self._last_consumer_sequence - 1)
             self._consumer_skipped += skipped
@@ -197,12 +257,18 @@ class CaptureHub:
         while not stop.is_set():
             attempt_started = time.monotonic()
             try:
-                frame = await self._primary_worker.run(
-                    Deadline.after(self._capture_operation_timeout_s, stop.is_set),
-                    self._primary.capture,
+                frame = await self._primary_worker.call(
+                    self._primary.capture, CallBudget(self._capture_call_timeout_s)
                 )
-            except DeadlineExceeded:
-                raise  # abandoned driver workers must never be retried
+            except ProviderError as exc:
+                if not exc.fatal:
+                    raise
+                # Retire a stalled source once, never retry it as an unbounded
+                # series of detached threads. Fallback can still own capture.
+                with self._stats_lock:
+                    self._source_errors["primary"] += 1
+                self._retire_source("primary")
+                return
             except CaptureTimeoutError:
                 await asyncio.sleep(0)
                 continue
@@ -219,7 +285,10 @@ class CaptureHub:
                 continue
             if stop.is_set():
                 break
-            self._publish(frame, "primary", time.monotonic())
+            await self._primary_worker.call(
+                partial(self._publish, frame, "primary", time.monotonic()),
+                CallBudget(self._capture_call_timeout_s),
+            )
             if self._primary_period_s is not None:
                 delay = attempt_started + self._primary_period_s - time.monotonic()
                 if delay > 0:
@@ -252,12 +321,16 @@ class CaptureHub:
                 continue
             attempt_started = time.monotonic()
             try:
-                frame = await self._fallback_worker.run(
-                    Deadline.after(self._capture_operation_timeout_s, stop.is_set),
-                    self._fallback.capture,
+                frame = await self._fallback_worker.call(
+                    self._fallback.capture, CallBudget(self._capture_call_timeout_s)
                 )
-            except DeadlineExceeded:
-                raise
+            except ProviderError as exc:
+                if not exc.fatal:
+                    raise
+                with self._stats_lock:
+                    self._source_errors["fallback"] += 1
+                self._retire_source("fallback")
+                return
             except (CaptureTimeoutError, BackendUnavailableError, ContractViolation):
                 # A failed heartbeat did not publish a frame and therefore does
                 # not consume the 4 Hz output budget.  ContractViolation covers
@@ -267,10 +340,13 @@ class CaptureHub:
                     self._source_errors["fallback"] += 1
                 await asyncio.sleep(min(0.05, self._fallback_period_s / 10.0))
                 continue
-            last_attempt = attempt_started
             if stop.is_set():
                 break
-            self._publish(frame, "fallback", attempt_started)
+            last_attempt = attempt_started
+            await self._fallback_worker.call(
+                partial(self._publish, frame, "fallback", attempt_started),
+                CallBudget(self._capture_call_timeout_s),
+            )
 
     def _publish(self, frame: Frame, source: str, sampled_monotonic: float) -> None:
         with self._publish_lock:
@@ -280,8 +356,12 @@ class CaptureHub:
                 with self._stats_lock:
                     self._stale += 1
                 return
-            if self._recording is not None:
-                self._recording.submit(frame)
+            if self._record_frame is not None:
+                try:
+                    self._enqueue_recording(frame)
+                except BaseException as exc:
+                    self._record_failure = exc
+                    raise
             self._frames.publish(frame)
             with self._stats_lock:
                 if self._last_capture_timestamp_ns is not None:
@@ -294,3 +374,24 @@ class CaptureHub:
                 self._last_frame_monotonic = sampled_monotonic
                 self._accepted += 1
                 self._sources[source] += 1
+
+    def _enqueue_recording(self, frame: Frame) -> None:
+        # Called under publish_lock: FIFO order is the accepted frame order.
+        # Mutable capture buffers must be copied before the producer reuses them.
+        callback = self._record_frame
+        assert callback is not None
+        handle = frame.buffer_handle
+        if handle.kind != BufferKind.CPU_BYTES:
+            raise ContractViolation("asynchronous recording requires owned CPU frames")
+        if handle.size_bytes > self._recorder_max_bytes:
+            raise ContractViolation("frame exceeds recorder byte budget")
+        view = handle.readonly_view()  # Validate byte accounting for immutable payloads too.
+        if not isinstance(handle.payload, bytes):
+            frame = replace(frame, buffer_handle=replace(handle, payload=bytes(view)))
+        if self._record_channel is None:
+            self._record_channel = RecorderChannel(
+                self._recorder_capacity, max_pending_bytes=self._recorder_max_bytes
+            )
+        self._record_channel.submit(
+            lambda: callback(frame), timeout_s=0.0, weight_bytes=handle.size_bytes
+        )

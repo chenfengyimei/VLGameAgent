@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import ClassVar
@@ -66,9 +67,31 @@ class GuiAction(VersionedMixin):
         self.validate()
 
     def validate(self) -> None:
-        if not self.action_id.strip() or not 0.0 <= self.confidence <= 1.0:
+        if (
+            not self.action_id.strip()
+            or type(self.confidence) not in (int, float)
+            or not math.isfinite(self.confidence)
+            or not 0.0 <= self.confidence <= 1.0
+        ):
             raise ContractViolation("GUI action requires id and bounded confidence")
+        if not isinstance(self.kind, GuiActionKind):
+            raise ContractViolation("GUI action kind must be a supported enum")
+        for value in (self.x, self.y, self.end_x, self.end_y):
+            if value is not None and (type(value) not in (int, float) or not math.isfinite(value)):
+                raise ContractViolation("GUI coordinates must be finite numbers, not booleans")
+        if any(type(code) is not int or not 1 <= code <= 255 for code in self.key_codes):
+            raise ContractViolation("GUI virtual-key codes must be integers in [1, 255]")
+        if len(set(self.key_codes)) != len(self.key_codes):
+            raise ContractViolation("GUI key chords must not contain duplicate keys")
+        if type(self.scroll_delta) is not int or not -(2**31) <= self.scroll_delta < 2**31:
+            raise ContractViolation("GUI scroll delta must be a signed 32-bit integer")
         self.lifetime.validate()
+        if (
+            self.kind == GuiActionKind.LONG_CLICK
+            and self.lifetime.expires_at.value_ns - self.lifetime.effective_from.value_ns
+            <= 700_000_000
+        ):
+            raise ContractViolation("long-click lifetime must cover its 700ms hold and release")
         point_kinds = {
             GuiActionKind.CLICK,
             GuiActionKind.LONG_CLICK,

@@ -6,7 +6,10 @@ param(
     [int]$DashboardPort = 8787,
     [int]$RestartDelaySeconds = 15,
     [int]$ModelContextLength = 8192,
-    [int]$VisionTimeoutSeconds = 60
+    [int]$VisionTimeoutSeconds = 60,
+    [int]$DecisionTimeoutSeconds = 60,
+    [int]$MaxOutputTokens = 0,
+    [int]$MaxRestarts = 10
 )
 
 $ErrorActionPreference = "Stop"
@@ -22,6 +25,20 @@ if ($ModelContextLength -lt 2048) {
 }
 if ($VisionTimeoutSeconds -lt 30) {
     throw "VisionTimeoutSeconds must be at least 30"
+}
+
+if ($DecisionTimeoutSeconds -lt 1 -or $MaxRestarts -lt 0) {
+    throw "DecisionTimeoutSeconds must be positive and MaxRestarts non-negative"
+}
+$requiresThinking = $Model -match '(?i)(^|/)glm-5\.3(-flash)?$'
+if ($MaxOutputTokens -eq 0) {
+    $MaxOutputTokens = if ($requiresThinking) { 4096 } else { 256 }
+}
+if ($MaxOutputTokens -lt 64 -or $MaxOutputTokens -gt 16384) {
+    throw "MaxOutputTokens must be within [64, 16384]"
+}
+if ($requiresThinking -and $MaxOutputTokens -lt 1024) {
+    throw "GLM request policy requires an output budget of at least 1024"
 }
 
 $projectRoot = Split-Path -Parent $PSScriptRoot
@@ -157,8 +174,6 @@ else {
     }
 }
 
-$mandatoryThinking = $Model -match '(?i)(^|/)glm-5\.3(-flash)?$'
-$outputBudget = if ($mandatoryThinking) { 4096 } else { 256 }
 $agentArgs = @(
     "-m", "apps.agent", "run",
     "--profile", $profilePath,
@@ -168,8 +183,8 @@ $agentArgs = @(
     "--vlm-model", $Model,
     "--vlm-decision-interval", "3",
     "--vlm-timeout-seconds", "$VisionTimeoutSeconds",
-    "--vlm-max-output-tokens", "$outputBudget",
-    "--decision-timeout-seconds", "$([Math]::Max(90, $VisionTimeoutSeconds))",
+    "--vlm-max-output-tokens", "$MaxOutputTokens",
+    "--decision-timeout-seconds", "$DecisionTimeoutSeconds",
     "--vlm-temporal-frames", "1",
     "--vlm-image-width", "640",
     "--vlm-target-crops", "0",
@@ -184,10 +199,7 @@ $agentArgs = @(
     "--capture-hz", "2",
     "--dashboard-port", "$DashboardPort"
 )
-if ($mandatoryThinking) {
-    $agentArgs += @("--vlm-extra-body", '{"thinking":{"type":"enabled"},"reasoning_effort":"low"}')
-}
-else {
+if (-not $requiresThinking) {
     $agentArgs += "--vlm-no-thinking"
 }
 if (-not $useLocalModel) {
@@ -200,10 +212,8 @@ Write-SupervisorLog "Starting supervisor loop (crash-restart + window rediscover
 # the launcher on the first stderr line. Relax it around the agent pipe.
 $ErrorActionPreference = "Continue"
 # F06: crash restarts are bounded — exponential backoff with jitter, a hard
-# attempt cap, and the budget only resets after a long healthy run.
-$maxRestarts = 10
+# attempt cap, and a process-lifetime attempt cap.
 $restartCount = 0
-$totalRestarts = 0
 $delaySeconds = $RestartDelaySeconds
 while ($true) {
     Write-SupervisorLog "Starting one continuous UGA agent process"
@@ -224,22 +234,16 @@ while ($true) {
         exit 0
     }
     if ($ranSeconds -ge 300) {
-        # A crash after a long healthy run is a fresh failure, not part of
-        # the previous crash loop: reset the restart budget.
+        # A healthy run resets delay, never the lifetime restart budget.
         if ($restartCount -gt 0) {
-            Write-SupervisorLog "Agent ran ${ranSeconds}s before crashing; restarting the crash budget"
+            Write-SupervisorLog "Agent ran ${ranSeconds}s before crashing; resetting restart delay (total attempt budget retained)"
         }
-        $restartCount = 0
+        # Reset delay only, never the total restart budget.
         $delaySeconds = $RestartDelaySeconds
     }
     $restartCount += 1
-    $totalRestarts += 1
-    if ($totalRestarts -gt $maxRestarts) {
-        Write-SupervisorLog "Total run restart budget exhausted"
-        exit 1
-    }
     if ($restartCount -gt $maxRestarts) {
-        Write-SupervisorLog "Restart budget exhausted ($maxRestarts consecutive crashes); supervisor standing down"
+        Write-SupervisorLog "Restart budget exhausted ($MaxRestarts total crashes); supervisor standing down"
         exit 1
     }
     $jitter = Get-Random -Minimum 0 -Maximum 3

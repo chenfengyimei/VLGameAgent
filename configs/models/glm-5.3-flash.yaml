@@ -1,0 +1,11 @@
+# Repository operational policy; NOT a live provider qualification record.
+model: glm-5.3-flash
+thinking:
+  type: enabled
+max_output_tokens: 4096
+decision_timeout_seconds: 60
+image_width: 640
+max_images: 9
+live_qualification: NOT_RUN
+# Use the final endpoint and authorized account for the selected provider.
+# Never silently send a Coding Plan key to an unrelated endpoint.

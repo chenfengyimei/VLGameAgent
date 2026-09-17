@@ -26,7 +26,7 @@ const BACKEND_DXGI: u32 = 2;
 const RESPONSE_GRACE_MS: u64 = 2_000;
 const INIT_DEADLINE_MS: u64 = 10_000;
 const CLOSE_DEADLINE_MS: u64 = 500;
-const MAX_CAPTURE_TIMEOUT_MS: u32 = 10_000;
+const MAX_CAPTURE_TIMEOUT_MS: u32 = 2_000;
 static ABANDONED_WORKERS: AtomicUsize = AtomicUsize::new(0);
 const MAX_ABANDONED_WORKERS: usize = 2;
 
@@ -326,6 +326,8 @@ pub unsafe extern "C" fn uga_capture_create(
         set_last_error("out_handle cannot be null");
         return STATUS_INVALID_ARGUMENT;
     }
+    // SAFETY: caller supplied a writable non-null pointer.
+    unsafe { out_handle.write(ptr::null_mut()) };
     match catch_unwind(AssertUnwindSafe(|| create_handle(backend, hwnd))) {
         Ok(Ok(handle)) => {
             // SAFETY: checked non-null above; ownership transfers to the caller.
@@ -466,6 +468,46 @@ pub unsafe extern "C" fn uga_capture_last_error(buffer: *mut c_char, capacity: u
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_full_command_queue_never_blocks_capture_admission() {
+        let (commands, _receiver) = sync_channel::<CaptureCommand>(1);
+        assert!(commands.try_send(CaptureCommand::Stop).is_ok());
+        let mut handle = NativeCaptureHandle {
+            commands,
+            worker: None,
+            poisoned: false,
+        };
+        let started = Instant::now();
+        assert!(capture_frame(&mut handle, 0).is_err());
+        assert!(started.elapsed() < Duration::from_millis(100));
+        assert!(handle.poisoned);
+    }
+
+    #[test]
+    fn healthy_worker_teardown_has_a_deadline_too() {
+        let (wake, parked) = sync_channel::<()>(1);
+        let worker = thread::spawn(move || {
+            let _ = parked.recv();
+        });
+        let started = Instant::now();
+        assert!(!finish_worker(worker, 10));
+        assert!(started.elapsed() < Duration::from_secs(1));
+        let _ = wake.send(());
+    }
+
+    #[test]
+    fn excessive_timeout_is_rejected_without_queueing() {
+        let (commands, receiver) = sync_channel::<CaptureCommand>(1);
+        let mut handle = NativeCaptureHandle {
+            commands,
+            worker: None,
+            poisoned: false,
+        };
+        let error = capture_frame(&mut handle, u32::MAX).unwrap_err();
+        assert_eq!(error.status, STATUS_INVALID_ARGUMENT);
+        assert!(receiver.try_recv().is_err());
+    }
 
     // R21: a stuck worker (driver never answers) must fail the capture
     // within the bounded wait and poison the session — never hang the caller.

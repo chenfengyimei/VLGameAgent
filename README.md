@@ -31,6 +31,14 @@ Existing recordings stay immutable. Only actual pre-action evidence qualifies
 training inputs and demonstrated duration. CI does not establish physical-input
 latency, long-running device reliability or five-stage GPU model training.
 
+## PR2/PR3 integration notes
+
+The [conflict-resolution contract](docs/reviews/pr3-conflict-resolution-2026-09-17.md)
+preserves the PNG `gui-export` command and adds `gui-export-references` for
+reference-only JSONL. Evidence coverage and active execution are reported as
+separate durations; neither uses action TTL. Both public run entries accept
+`--decision-timeout-seconds` and `--perception-timeout-seconds`.
+
 ## Architectural rules
 
 - Slow reasoning and real-time control are separate.

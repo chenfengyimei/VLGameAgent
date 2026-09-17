@@ -218,39 +218,43 @@ class CaptureHubTests(unittest.IsolatedAsyncioTestCase):
         self.assertGreaterEqual(stats.fallback_frames, 3)
         self.assertLess(stats.max_gap_ns, 300_000_000)
 
-    async def test_gap_statistics_stay_bounded_over_long_runs(self) -> None:
-        # F16 regression: the gap history was an unbounded list and stats()
-        # sorted the whole thing under the capture lock.  The rolling window
-        # plus O(1) accumulators keep memory and stats() cost flat no matter
-        # how many frames a run accepts.
+    def test_gap_statistics_stay_bounded_over_long_runs(self) -> None:
+        # F16 checks statistics retention, not Windows timer resolution or
+        # thread-start throughput. Drive the real publication path with an
+        # explicit timeline instead of racing 512 captures against five seconds.
         from uga.capture import hub as hub_module
 
-        hub = CaptureHub(
-            primary=_Source(period_s=0.001),
-            frames=FrameRingBuffer(),
-            consumer_timeout_s=1.0,
-        )
-        stop = asyncio.Event()
-        task = asyncio.create_task(hub.run(stop))
+        frames = FrameRingBuffer(capacity=8)
+        hub = CaptureHub(primary=_Source(), frames=frames)
+        count = 2 * hub_module._GAP_WINDOW + 100
+        gaps = [1_000_000_000] + [
+            10_000_000 + (index % 7) * 1_000_000 for index in range(count - 2)
+        ]
+        timestamp_ns = 1
+        hub._publish(frame(1, timestamp_ns=timestamp_ns), "primary", 0.0)
+        for number, gap in enumerate(gaps, start=2):
+            timestamp_ns += gap
+            hub._publish(frame(number, timestamp_ns=timestamp_ns), "primary", number / 100.0)
 
-        deadline = asyncio.get_running_loop().time() + 5.0
-        while (
-            hub.stats().accepted_frames < hub_module._GAP_WINDOW + 100
-            and asyncio.get_running_loop().time() < deadline
-        ):
-            await asyncio.sleep(0.01)
         stats = hub.stats()
-        stop.set()
-        await task
-
+        window = list(hub._gaps_ns)
+        expected_window = gaps[-hub_module._GAP_WINDOW:]
+        self.assertEqual(stats.accepted_frames, count)
         self.assertGreater(stats.accepted_frames, hub_module._GAP_WINDOW)
-        window = hub._gaps_ns  # type: ignore[attr-defined]
-        self.assertLessEqual(len(window), hub_module._GAP_WINDOW)
-        self.assertGreater(len(window), 0)
-        self.assertGreaterEqual(hub._gap_count, stats.accepted_frames - 1)  # type: ignore[attr-defined]
-        # The reported max covers the WHOLE run (all-time accumulator), not
-        # just the rolling window.
-        self.assertEqual(stats.max_gap_ns, max(hub._gap_max_ns, 0))  # type: ignore[attr-defined]
+        self.assertEqual(stats.primary_frames, count)
+        self.assertEqual(len(frames.snapshot()), 8)
+        self.assertEqual(frames.dropped, count - 8)
+        self.assertEqual(len(window), hub_module._GAP_WINDOW)
+        self.assertEqual(window, expected_window)
+        self.assertEqual(hub._gap_count, count - 1)
+        # The early largest gap has left the rolling window but must remain
+        # in the all-time maximum. p95 must use only the retained window.
+        self.assertNotIn(gaps[0], window)
+        self.assertEqual(stats.max_gap_ns, max(gaps))
+        self.assertEqual(hub._gap_max_ns, max(gaps))
+        expected_p95 = sorted(expected_window)[round((len(expected_window) - 1) * 0.95)]
+        self.assertEqual(stats.p95_gap_ns, expected_p95)
+        self.assertEqual(list(hub._gaps_ns), expected_window)
 
     async def test_slow_recorder_does_not_block_latest_frame_publication(self) -> None:
         # F16: a slow recorder callback must not stall the publish path — the

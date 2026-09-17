@@ -205,6 +205,16 @@ class ReplayEngine:
         provenance_by_id = {
             str(row["action_id"]): row for row in self.provenance
         }
+        if len(observation_ids) != len(self.observations):
+            raise ContractViolation("Episode contains duplicate observation identifiers")
+        for row in self.provenance:
+            parent_id = row.get("parent_action_id")
+            if parent_id is not None:
+                parent = action_by_id.get(str(parent_id))
+                if parent is None or parent.get("action_layer") == "physical":
+                    raise ContractViolation("physical child references an invalid logical parent")
+                if row.get("proposal_id") != provenance_by_id[str(parent_id)].get("proposal_id"):
+                    raise ContractViolation("child and logical parent proposal identities differ")
         receipt_counts = Counter(
             str(row["action_id"]) for row in self.execution_receipts
         )

@@ -30,12 +30,12 @@ from threading import Event, Lock
 from typing import Any
 
 from uga.capture.frame import BufferHandle, BufferKind, Frame, PixelFormat
-from uga.core.deadline import remaining_timeout
 from uga.core.errors import BackendUnavailableError, ContractViolation
 from uga.policy.action_chunk import ActionButton, ActionChunk
+from uga.policy.call_budget import checkpoint, request_timeout
 from uga.policy.decision_journal import DecisionJournal, DecisionRecord, NullJournal
 from uga.policy.fast_policy import FastPolicyOutput, PolicyContext
-from uga.policy.model_capabilities import model_request_options
+from uga.policy.model_policy import request_policy, validated_extensions
 from uga.policy.vision_transport import (
     ProviderError,
     ProviderErrorKind,
@@ -206,8 +206,9 @@ class OpenAICompatibleVisionClient:
         self._max_output_tokens = max_output_tokens
         self._disable_thinking = disable_thinking
         self._json_object_mode = json_object_mode
-        self._extra_body = model_request_options(
-            model, disable_thinking=disable_thinking, extra_body=extra_body
+        self._extra_body = validated_extensions(
+            model, disable_thinking=disable_thinking,
+            max_output_tokens=max_output_tokens, extra_body=extra_body,
         )
 
     def decide(
@@ -218,9 +219,9 @@ class OpenAICompatibleVisionClient:
         response_format: dict[str, Any] | None = None,
     ) -> str:
         """Send one or more frames (oldest first) plus the instruction."""
-        remaining_timeout(self._timeout_s)  # do not repair an abandoned decision
-        if not images:
-            raise ContractViolation("vision client requires at least one image")
+        checkpoint()
+        if not images or len(images) > request_policy(self._model).max_images:
+            raise ContractViolation("vision client requires a bounded, non-empty image list")
         content: list[dict[str, Any]] = [
             {
                 "type": "image_url",
@@ -268,13 +269,11 @@ class OpenAICompatibleVisionClient:
             method="POST",
         )
         try:
-            with open_vision_request(
-                request, timeout=remaining_timeout(self._timeout_s)
-            ) as response:
+            with open_vision_request(request, timeout=request_timeout(self._timeout_s)) as response:
                 raw = response.read(MAX_VISION_RESPONSE_BYTES + 1)
                 if len(raw) > MAX_VISION_RESPONSE_BYTES:
                     raise BackendUnavailableError("vision endpoint response is too large")
-                remaining_timeout(self._timeout_s)
+                checkpoint()
                 body = json.loads(raw.decode("utf-8"))
         except urllib.error.HTTPError as exc:
             detail = ""

@@ -32,7 +32,9 @@ def export_gui_samples(
 ) -> Path:
     replay = ReplayEngine(episode_path, limits=limits)
     processed = DatasetProcessor(limits=limits).process(episode_path)
-    samples = [s for s in processed.samples if s.action_layer == "gui"]
+    samples = [
+        s for s in processed.samples if s.action_layer == "gui" or s.action_type == "GuiAction"
+    ]
     if not samples or len(samples) > limits.max_training_samples:
         raise ContractViolation("GUI export needs qualified logical actions within sample limits")
     frames = [row for row in replay.timeline if row["kind"] == "frame"]

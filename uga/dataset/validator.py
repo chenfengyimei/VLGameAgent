@@ -213,12 +213,12 @@ class DatasetValidator:
             for action_id, row in receipt_by_action.items()
             if action_id in agent_physical_ids and row.get("status") == "executed"
         ]
-        if any(row.get("execution_observation_id") is None for row in executed):
+        if any(row.get("pre_action_observation_id") is None for row in executed):
             findings.append(
                 QualityFinding(
-                    "missing_execution_observation",
+                    "missing_pre_action_observation",
                     FindingSeverity.ERROR,
-                    "executed action has no fresh execution observation",
+                    "executed action has no causal pre-action observation",
                 )
             )
         failed = [

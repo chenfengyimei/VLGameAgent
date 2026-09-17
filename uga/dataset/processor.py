@@ -40,6 +40,7 @@ class AlignedSample:
     inference_observation_json: str
     execution_status: str
     action_layer: str = "physical"
+    action_type: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,6 +52,7 @@ class ProcessedEpisode:
     qualification: EpisodeQualification = EpisodeQualification.LEGACY
     qualified_duration_ns: int = 0
     exclusion_counts: tuple[tuple[str, int], ...] = ()
+    active_execution_duration_ns: int = 0
 
 
 class DatasetProcessor:
@@ -58,7 +60,8 @@ class DatasetProcessor:
 
     Coverage is the union of pre-capture to last-execution evidence spans,
     clipped to the Episode. Unused action TTL is not demonstrated data.
-    Point samples may be valid with zero duration; count and hours differ.
+    Active execution is separately measured from first to last actual primitive.
+    Point samples may be valid with zero active duration; count and hours differ.
     """
 
     def __init__(
@@ -82,6 +85,7 @@ class DatasetProcessor:
         canonical_actions = [
             action for action in replay.actions
             if action.get("action_layer") in {"canonical", "gui"}
+            or action.get("action_type") == "GuiAction"
         ]
         selected_actions = canonical_actions or replay.actions
         start = int(replay.metadata["start_monotonic_ns"])
@@ -97,6 +101,7 @@ class DatasetProcessor:
                 (("legacy_missing_receipts", len(selected_actions)),),
             )
         qualified_intervals: list[tuple[int, int]] = []
+        active_intervals: list[tuple[int, int]] = []
         for action in selected_actions:
             action_id = str(action["action_id"])
             provenance = replay.provenance_for_action(action_id)
@@ -163,6 +168,7 @@ class DatasetProcessor:
                     str(inference_observation["payload_json"]),
                     "executed",
                     str(action.get("action_layer", "physical")),
+                    str(action.get("action_type", "")),
                 )
             )
             qualified_intervals.append(
@@ -170,6 +176,9 @@ class DatasetProcessor:
                     max(start, observation_time),
                     min(end, max(int(str(receipt["at_ns"])) for receipt in receipts)),
                 )
+            )
+            active_intervals.append(
+                (max(start, action_time), min(end, int(str(latest_receipt["at_ns"]))))
             )
         qualified_duration = self._merged_duration(qualified_intervals)
         qualification = (
@@ -185,6 +194,7 @@ class DatasetProcessor:
             qualification,
             qualified_duration,
             tuple(sorted(exclusions.items())),
+            self._merged_duration(active_intervals),
         )
 
     @staticmethod
@@ -194,7 +204,8 @@ class DatasetProcessor:
         provenance: dict[str, object],
     ) -> tuple[dict[str, object], ...]:
         action_id = str(action["action_id"])
-        if action.get("action_layer") not in {"canonical", "gui"}:
+        if (action.get("action_layer") not in {"canonical", "gui"}
+                and action.get("action_type") != "GuiAction"):
             proposal_id = provenance.get("proposal_id")
             if provenance.get("action_source") == "GUI_AGENT" and proposal_id is not None:
                 children = replay.proposal_action_ids(str(proposal_id))

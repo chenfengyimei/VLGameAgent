@@ -62,6 +62,8 @@ class PyAvVideoRecorder:
             self._stream.width = encode_width
             self._stream.height = encode_height
             self._stream.pix_fmt = "yuv420p"
+            self._stream.time_base = Fraction(1, 1_000_000)
+            self._stream.codec_context.time_base = Fraction(1, 1_000_000)
         assert self._stream is not None
         encode_width = frame.width & ~1
         encode_height = frame.height & ~1
@@ -93,12 +95,14 @@ class PyAvVideoRecorder:
         if self._start_timestamp_ns is None:
             self._start_timestamp_ns = timestamp_ns
         self._last_timestamp_ns = timestamp_ns
-        pts = round((timestamp_ns - self._start_timestamp_ns) * self._fps / 1_000_000_000)
+        # FPS is an encoder hint, not a replacement for capture timestamps.
+        # Coarse 1/fps PTS used to stretch a 60 Hz capture recorded at 15 fps.
+        pts = (timestamp_ns - self._start_timestamp_ns) // 1_000
         if self._last_pts is not None:
             pts = max(pts, self._last_pts + 1)
         self._last_pts = pts
         video_frame.pts = pts
-        video_frame.time_base = Fraction(1, self._fps)
+        video_frame.time_base = Fraction(1, 1_000_000)
         for packet in self._stream.encode(video_frame):
             self._container.mux(packet)
 
