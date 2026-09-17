@@ -18,6 +18,15 @@ dashboard/replay/dataset UIs, a developer-owned Fixture World, qualification
 evidence tooling, and verified Windows development packaging. The project is
 licensed under [MIT](LICENSE).
 
+## Runtime hardening status
+
+The [2026-09-17 implementation and migration record](docs/reviews/runtime-completion-2026-09-17.md)
+covers bounded inference/capture/recording, sensitive-page suspension, causal
+logical GUI labels and measured execution duration. Development CI is separate
+from real desktop, licensed corpus, live provider, GPU training and V1 release
+qualification. Unmeasured gates remain open; the deterministic CPU trainer is
+not a substitute for five-stage GPU training.
+
 ## Architectural rules
 
 - Slow reasoning and real-time control are separate.
