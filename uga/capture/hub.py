@@ -13,6 +13,7 @@ from typing import Protocol
 from uga.capture.frame import Frame
 from uga.capture.ring_buffer import FrameRingBuffer, SequencedFrame
 from uga.core.errors import BackendUnavailableError, CaptureTimeoutError, ContractViolation
+from uga.recording.frame_queue import FrameQueueStats, FrameRecorderQueue
 
 
 class SynchronousFrameSource(Protocol):
@@ -43,9 +44,9 @@ class CaptureHub:
     The primary source is capture-driven.  The fallback is sampled only after
     the accepted timeline has been quiet for ``fallback_after_s``. Consumers
     always receive the newest item and may skip obsolete frames.  The recorder
-    callback is invoked for every accepted frame, serialised after publication
-    and outside the publish lock (F16): a slow recorder never delays the
-    newest frame's visibility or the capture timeline.
+    callback is queued in publication order with independent frame and byte
+    budgets. Overflow stops recording instead of silently dropping evidence
+    or blocking the control plane.
     """
 
     records_frames = True
@@ -62,6 +63,9 @@ class CaptureHub:
         primary_hz: float | None = None,
         consumer_timeout_s: float = 10.0,
         source_error_backoff_s: float = 0.05,
+        recording_max_frames: int = 64,
+        recording_max_bytes: int = 256 * 1024 * 1024,
+        recording_close_timeout_s: float = 5.0,
     ) -> None:
         if not math.isfinite(fallback_after_s) or fallback_after_s <= 0:
             raise ContractViolation("capture fallback delay must be positive")
@@ -82,14 +86,20 @@ class CaptureHub:
         self._primary = primary
         self._fallback = fallback
         self._frames = frames
-        self._record_frame = record_frame
+        if not math.isfinite(recording_close_timeout_s) or recording_close_timeout_s <= 0:
+            raise ContractViolation("recording close timeout must be positive")
+        self._recording_close_timeout_s = recording_close_timeout_s
+        self._recording = (
+            None if record_frame is None else FrameRecorderQueue(
+                record_frame, max_frames=recording_max_frames, max_bytes=recording_max_bytes
+            )
+        )
         self._fallback_after_s = fallback_after_s
         self._fallback_period_s = 1.0 / fallback_hz
         self._primary_period_s = None if primary_hz is None else 1.0 / primary_hz
         self._consumer_timeout_s = consumer_timeout_s
         self._source_error_backoff_s = source_error_backoff_s
         self._publish_lock = Lock()
-        self._record_lock = Lock()
         self._stats_lock = Lock()
         self._started = asyncio.Event()
         # Scheduling follows when the accepted image was sampled, not when its
@@ -114,10 +124,30 @@ class CaptureHub:
 
     async def run(self, stop: asyncio.Event) -> None:
         self._started.set()
-        async with asyncio.TaskGroup() as tasks:
-            tasks.create_task(self._capture_primary(stop))
-            if self._fallback is not None:
-                tasks.create_task(self._capture_fallback(stop))
+        try:
+            async with asyncio.TaskGroup() as tasks:
+                tasks.create_task(self._capture_primary(stop))
+                if self._fallback is not None:
+                    tasks.create_task(self._capture_fallback(stop))
+                if self._recording is not None:
+                    tasks.create_task(self._monitor_recording(stop))
+        finally:
+            if self._recording is not None:
+                await asyncio.to_thread(self._recording.close, self._recording_close_timeout_s)
+
+    async def _monitor_recording(self, stop: asyncio.Event) -> None:
+        assert self._recording is not None
+        while not stop.is_set():
+            self._recording.check()
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(stop.wait(), timeout=0.05)
+
+    @property
+    def recording_complete(self) -> bool:
+        return self._recording is None or self._recording.complete
+
+    def recording_stats(self) -> FrameQueueStats | None:
+        return None if self._recording is None else self._recording.stats()
 
     async def capture_once(self) -> SequencedFrame:
         await self._started.wait()
@@ -237,6 +267,8 @@ class CaptureHub:
                 with self._stats_lock:
                     self._stale += 1
                 return
+            if self._recording is not None:
+                self._recording.submit(frame)
             self._frames.publish(frame)
             with self._stats_lock:
                 if self._last_capture_timestamp_ns is not None:
@@ -249,10 +281,3 @@ class CaptureHub:
                 self._last_frame_monotonic = sampled_monotonic
                 self._accepted += 1
                 self._sources[source] += 1
-        # F16: the recorder callback runs OUTSIDE the publish lock — a slow
-        # disk/encoder must never delay the newest frame's visibility or the
-        # capture timeline.  A dedicated lock serialises recorder calls
-        # (episode frame order preserved) without blocking publishing.
-        if self._record_frame is not None:
-            with self._record_lock:
-                self._record_frame(frame)

@@ -14,6 +14,10 @@ class BackendUnavailableError(UGAError, RuntimeError):
     """Raised when a requested platform backend cannot operate."""
 
 
+class FatalRuntimeError(BackendUnavailableError):
+    """A stopped run needs operator intervention and must not auto-restart."""
+
+
 class BackendStateError(UGAError, RuntimeError):
     """Raised when a backend lifecycle operation is invalid."""
 

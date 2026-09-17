@@ -877,6 +877,11 @@ async def _run(args: argparse.Namespace) -> int:
             loop.fail_closed_loop("runtime_error")
         elif duration_expired:
             loop.fail_closed_loop("timeout")
+    if recorder is not None and not capture_source.recording_complete:
+        print(f"recording incomplete; unpublished staging retained: {recorder.staging_path}")
+        if run_error is not None:
+            raise run_error
+        raise BackendUnavailableError("recording queue did not finish cleanly")
     if recorder is not None:
         stats = scheduler.stats()
         diagnostics = loop.closed_loop_diagnostics or {}

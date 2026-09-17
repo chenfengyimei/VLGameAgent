@@ -151,6 +151,8 @@ class EpisodeWriter:
         self._latest_timestamp_ns = metadata.start_monotonic_ns
         self._closed = False
         self._lock = Lock()
+        self._video_lock = Lock()
+        self._video_failed = False
 
     @property
     def staging_path(self) -> Path:
@@ -183,22 +185,27 @@ class EpisodeWriter:
             )
 
     def record_frame(self, frame: Frame) -> None:
-        with self._lock:
-            self._ensure_open()
-            self._validate_timestamp(frame.capture_timestamp)
-            if self._video is None and self._require_video:
-                raise ContractViolation("attach a video sink before recording frames")
-            envelope = frame.to_envelope()
-            self._ensure_table_capacity(len(self._timeline), 1, "timeline")
-            self._reserve_buffer(1, envelope)
-            if self._video is not None:
-                self._video.append(frame)
-            self._append_timeline(
-                frame.capture_timestamp,
-                TimelineKind.FRAME,
-                frame.frame_id,
-                envelope,
-            )
+        # The codec lock serializes video; metadata never waits behind it.
+        with self._video_lock:
+            with self._lock:
+                self._ensure_open()
+                self._validate_timestamp(frame.capture_timestamp)
+                if self._video is None and self._require_video:
+                    raise ContractViolation("attach a video sink before recording frames")
+                envelope = frame.to_envelope()
+                self._ensure_table_capacity(len(self._timeline), 1, "timeline")
+                self._reserve_buffer(1, envelope)
+                self._append_timeline(
+                    frame.capture_timestamp, TimelineKind.FRAME, frame.frame_id, envelope
+                )
+                video = self._video
+            if video is not None:
+                try:
+                    video.append(frame)
+                except BaseException:
+                    with self._lock:
+                        self._video_failed = True
+                    raise
 
     def record_observation(self, observation_id: str, timestamp: UGATime, payload: object) -> None:
         if not observation_id.strip():
@@ -439,8 +446,10 @@ class EpisodeWriter:
     def finalize(self, result: EpisodeResult, end: UGATime | None = None) -> Path:
         if result == EpisodeResult.IN_PROGRESS:
             raise ContractViolation("a finalized episode cannot remain in progress")
-        with self._lock:
+        with self._video_lock, self._lock:
             self._ensure_open()
+            if self._video_failed:
+                raise ContractViolation("cannot publish an Episode with failed video recording")
             ending = end or UGATime(self._latest_timestamp_ns)
             self._validate_timestamp(ending)
             if self._video is not None:
@@ -470,7 +479,7 @@ class EpisodeWriter:
 
     def abort(self) -> None:
         """Close attached resources and remove this writer's private staging tree."""
-        with self._lock:
+        with self._video_lock, self._lock:
             if self._closed:
                 return
             staging_prefix = f".{self._metadata.episode_id}.inprogress-"
