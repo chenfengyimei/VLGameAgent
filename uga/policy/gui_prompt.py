@@ -25,6 +25,7 @@ def gui_instruction(
     consumed_action_target: str | None = None,
     session_context: str | None = None,
     repair_error: str | None = None,
+    available_keys: Sequence[str] = (),
 ) -> str:
     if not isinstance(goal, str) or not goal.strip() or len(goal) > 4096:
         raise ContractViolation("GUI goal must be nonempty and at most 4096 characters")
@@ -74,6 +75,7 @@ def gui_instruction(
         "frame_id": snapshot.frame_id[:160],
         "frame_sequence": snapshot.frame_sequence,
         "coordinate_space": coordinate_space,
+        "confirmed_key_bindings": list(available_keys),
         "image_map": list(image_manifest),
         "ocr": ocr,
         "ocr_omitted": max(0, len(snapshot.visible_text) - len(regions)),
@@ -175,7 +177,9 @@ def gui_instruction(
         "Scroll one small step at a clearly scrollable item/panel, then inspect the result. "
         "long_click holds for 700ms; use it only when the UI explicitly asks for a hold. "
         "Do not invent drag/type operations. "
-        "key/hotkey: target_bbox=null, key is a confirmed semantic binding, <=32 chars. "
+        "key/hotkey: target_bbox=null, key must exactly match confirmed_key_bindings, "
+        "<=32 chars. An empty binding list forbids all key/hotkey actions. "
+        "Do not invent key codes, shortcuts or chords. "
         'WAIT: kind="wait", action=null, wait_reason=loading/animation/no_safe_action. '
         'ABSTAIN: kind="abstain", action=null, wait_reason=null. '
         'DONE: kind="done", action=null, wait_reason=null; '

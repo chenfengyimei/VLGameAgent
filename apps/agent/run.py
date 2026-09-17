@@ -13,7 +13,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
-import json
 import math
 import os
 import re
@@ -64,6 +63,7 @@ from uga.perception.text import NullTextProvider, RapidOcrProvider, TextObservat
 from uga.policy.chunk_controller import ActionChunkController
 from uga.policy.decision_journal import DecisionJournal, DecisionRecord
 from uga.policy.grounded_vlm import GroundedOutcomeVerifier, GroundedVlmPlanner
+from uga.policy.gui_protocol import reply_object
 from uga.policy.scripted_tap import ScriptedTapPolicy
 from uga.policy.vlm_planner import OpenAICompatibleVisionClient, encode_frame_png
 from uga.recording.episode_writer import EpisodeWriter
@@ -238,8 +238,9 @@ async def _run(args: argparse.Namespace) -> int:
     outcome_verifier: GroundedOutcomeVerifier | None = None
     if args.policy == "vlm":
         try:
-            parsed_extra = json.loads(args.vlm_extra_body) if args.vlm_extra_body else None
-        except json.JSONDecodeError as exc:
+            parsed_extra = (reply_object(args.vlm_extra_body, allow_answer_wrapper=False)
+                            if args.vlm_extra_body else None)
+        except ValueError as exc:
             raise SystemExit(f"--vlm-extra-body is not valid JSON: {exc}") from exc
         if parsed_extra is not None and not isinstance(parsed_extra, dict):
             raise SystemExit("--vlm-extra-body must be a JSON object")
@@ -266,8 +267,12 @@ async def _run(args: argparse.Namespace) -> int:
                 api_key=os.environ.get(args.verifier_api_key_env, ""),
                 timeout_s=args.vlm_timeout_seconds,
                 max_output_tokens=args.vlm_max_output_tokens,
+                disable_thinking=args.verifier_no_thinking,
+                json_object_mode=args.verifier_json_object,
             )
             outcome_verifier = GroundedOutcomeVerifier(verifier_client)
+        if args.gui_verification == "always" and outcome_verifier is None:
+            raise SystemExit("--gui-verification always requires an enabled verifier model")
     profile = load_game_profile(args.profile)
     environment = GenericEnvironment(profile)
     windows = Win32WindowBackend()
@@ -388,6 +393,9 @@ async def _run(args: argparse.Namespace) -> int:
             grounded_planner = GroundedVlmPlanner(
                 vision_client,
                 strategy_registry=registry_for(profile.game_id),
+                enable_rule_fast_paths=args.gui_planning_mode == "rules-first",
+                coordinate_space=args.gui_coordinate_space,
+                available_keys=available_keys,
                 structured_output=True,
                 max_image_width=vlm_image_width,
                 max_temporal_frames=vlm_temporal_frames,
@@ -540,7 +548,9 @@ async def _run(args: argparse.Namespace) -> int:
                 back_hotspot=back_hotspot,
                 close_hotspot=close_hotspot,
                 promote_hotspot=promote_hotspot,
-                available_keys=available_keys or None,
+                available_keys=available_keys,
+                allow_calibrated_intents=args.gui_planning_mode == "rules-first",
+                verify_all_actions=args.gui_verification == "always",
                 session=game_session,
                 journal=journal,
                 on_exit_executed=(
@@ -1032,7 +1042,7 @@ def build_parser(*, add_help: bool = True) -> argparse.ArgumentParser:
         action="store_true",
         help=(
             "keep one VLM process alive by retrying transient planner failures and "
-            "starting a fresh closed-loop cycle after blocked or completed states"
+            "starting a fresh cycle only after permitted completed states; blocks remain latched"
         ),
     )
     parser.add_argument("--tap-delay", type=float, default=2.0)
@@ -1144,7 +1154,7 @@ def build_parser(*, add_help: bool = True) -> argparse.ArgumentParser:
     parser.add_argument(
         "--vlm-ocr-task-fallback",
         action="store_true",
-        help="replace WAIT or unrelated actions with a high-confidence OCR task-panel click",
+        help="rules-first only: enable registered OCR task-panel navigation fallback",
     )
     parser.add_argument(
         "--vlm-no-thinking",
@@ -1174,6 +1184,15 @@ def build_parser(*, add_help: bool = True) -> argparse.ArgumentParser:
         help="enable profile-requested OCR when its locked extras are installed",
     )
     parser.add_argument("--max-recoveries", type=int, default=2)
+    parser.add_argument("--gui-planning-mode", choices=("model-first", "rules-first"),
+                        default="model-first",
+                        help="model-first disables game-specific OCR decision shortcuts")
+    parser.add_argument("--gui-coordinate-space", choices=("unit", "normalized_1000"),
+                        default="unit", help="explicit coordinate scale for model replies")
+    parser.add_argument("--gui-verification", choices=("ambiguous", "always"),
+                        default="ambiguous", help="when to use the separately configured verifier")
+    parser.add_argument("--verifier-no-thinking", action="store_true")
+    parser.add_argument("--verifier-json-object", action="store_true")
     parser.add_argument("--verifier-base-url")
     parser.add_argument("--verifier-model")
     parser.add_argument("--verifier-api-key-env", default="UGA_VERIFIER_API_KEY")

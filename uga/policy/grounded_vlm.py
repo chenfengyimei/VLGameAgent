@@ -356,10 +356,18 @@ class GroundedVlmPlanner:
         promote_hotspot: tuple[float, float] | None = None,
         strategy_registry: StrategyRegistry | None = None,
         coordinate_space: str = "unit",
+        enable_rule_fast_paths: bool = True,
+        available_keys: frozenset[str] = frozenset(),
     ) -> None:
         if coordinate_space not in COORDINATE_SPACES:
             raise ContractViolation("unsupported GUI coordinate space")
         self._coordinate_space = coordinate_space
+        self._enable_rule_fast_paths = enable_rule_fast_paths
+        if not isinstance(available_keys, frozenset) or any(
+            not isinstance(key, str) or not 1 <= len(key) <= 32 for key in available_keys
+        ):
+            raise ContractViolation("GUI key inventory must contain bounded semantic names")
+        self._available_keys = available_keys
         if not 320 <= max_image_width <= 1280:
             raise ContractViolation("grounded planner image width must be within [320, 1280]")
         if not 1 <= max_temporal_frames <= 3:
@@ -434,9 +442,9 @@ class GroundedVlmPlanner:
         including an empty one for a generic profile — scopes the planner to
         its own inventory.
         """
-        return self._strategy_registry is None or (
+        return self._enable_rule_fast_paths and (self._strategy_registry is None or (
             self._strategy_registry.allows_fast_paths()
-        )
+        ))
 
     @property
     def last_decision_source(self) -> str:
@@ -1067,7 +1075,9 @@ class GroundedVlmPlanner:
                 latency_s=latency_s,
                 action=action_label,
                 detail=(
-                    f"source={self._last_decision_source}; "
+                    f"source={self._last_decision_source}; prompt={PROMPT_VERSION}; "
+                    f"coordinates={self._coordinate_space}; "
+                    f"image_map={json.dumps(self.last_input_manifest, separators=(',', ':'))}; "
                     f"schema_valid={self.last_schema_valid}; confidence={outcome.confidence:.3f}; "
                     f"expected_effect={None if action is None else action.expected_effect}"
                 ),
@@ -1393,6 +1403,7 @@ class GroundedVlmPlanner:
             preferred_action_target=preferred_target,
             consumed_action_target=consumed_target,
             session_context=session_context, repair_error=repair_error,
+            available_keys=sorted(self._available_keys),
         )
 
     @staticmethod
@@ -1590,7 +1601,7 @@ VERIFIER_RESPONSE_FORMAT: dict[str, Any] = {
 
 
 class GroundedOutcomeVerifier:
-    """Optional larger-model cross-check used only for ambiguous decisions."""
+    """Independent pre-action audit, enabled by the configured verification policy."""
 
     def __init__(self, client: StructuredVisionClient, *, threshold: float = 0.85) -> None:
         if not 0.0 <= threshold <= 1.0:

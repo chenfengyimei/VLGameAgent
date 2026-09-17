@@ -38,6 +38,13 @@ def model_request_options(
         if not isinstance(effort, str) or effort not in {"low", "high", "max"}:
             raise ContractViolation("GLM-5.3 reasoning_effort must be low, high or max")
         extra["thinking"] = {"type": "enabled"}
+    elif "qwen3-vl" in name:
+        # Instruct and Thinking are different checkpoints, not a GLM-style switch.
+        # Backend-specific template extensions must be explicitly configured.
+        if "thinking" in name and disable_thinking:
+            raise ContractViolation("use a Qwen3-VL Instruct checkpoint for no-thinking mode")
+        if "thinking" in extra:
+            raise ContractViolation("Qwen3-VL does not use the GLM thinking request field")
     elif disable_thinking:
         if "thinking" in extra or extra.get("enable_thinking") is True:
             raise ContractViolation("conflicting thinking switches")

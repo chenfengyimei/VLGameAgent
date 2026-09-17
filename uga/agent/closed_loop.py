@@ -528,6 +528,8 @@ class ClosedLoopSupervisor:
         max_stuck_waits: int = 10,
         on_exit_executed: Callable[[], None] | None = None,
         max_execution_frame_age_ns: int = 1_000_000_000,
+        allow_calibrated_intents: bool = True,
+        verify_all_actions: bool = False,
     ) -> None:
         if not 0 <= max_recoveries <= 2:
             raise ContractViolation("closed-loop recoveries must be within [0, 2]")
@@ -562,6 +564,8 @@ class ClosedLoopSupervisor:
         self._clock = clock
         self._profile = profile
         self._verifier = verifier
+        self._allow_calibrated_intents = allow_calibrated_intents
+        self._verify_all_actions = verify_all_actions
         if back_hotspot is None:
             self._back_hotspot: tuple[float, float] | None = None
         else:
@@ -1292,6 +1296,7 @@ class ClosedLoopSupervisor:
                 or self._promote_hotspot is not None
             )
             and is_trusted_deterministic_source(decision_source)
+            and not self._verify_all_actions
         ):
             # A reserved label is display text, not a permission: it only
             # reaches this deterministic branch when trusted runtime rule code
@@ -1322,7 +1327,8 @@ class ClosedLoopSupervisor:
                 "deterministic exit control executed without OCR grounding",
                 outcome,
             )
-        if self._is_back_intent(outcome.action):
+        if (self._allow_calibrated_intents and not self._verify_all_actions
+                and self._is_back_intent(outcome.action)):
             # Graphical back/close controls carry no OCR text, so model boxes
             # on them can never pass OCR grounding and would block-loop the
             # cycle.  Route the model's exit *intent* through the user-
@@ -1380,7 +1386,7 @@ class ClosedLoopSupervisor:
                     outcome, "high-resolution recovery remained below confidence threshold"
                 )
             return self._retry_or_block(outcome, "decision confidence is at or below 0.55")
-        requires_verifier = confidence <= 0.85
+        requires_verifier = self._verify_all_actions or confidence <= 0.85
         secondary_verified = False
         if requires_verifier:
             if self._verifier is None:
