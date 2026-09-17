@@ -41,6 +41,7 @@ from uga.policy.chunk_controller import ActionChunkController, ActionChunkSubmis
 from uga.policy.fast_policy import FastPolicy, FastPolicyOutput, PolicyContext
 from uga.policy.vision_transport import ProviderError, ProviderErrorKind
 from uga.recording.episode_writer import EpisodeWriter
+from uga.safety.semantic_gate import sensitive_page_reason
 from uga.time.clock import ClockBackend
 from uga.windows.coordinates import CoordinateTransform, Rect
 
@@ -361,6 +362,9 @@ class RealtimeAgentLoop:
                 task_generation=self._task_generation,
             )
             assert self._closed_loop is not None
+            if sensitive_page_reason(perception.visible_text) is not None:
+                self._leases.revoke_all()
+                self._scheduler.neutralize()
             effect_pending = self._closed_loop.observe(perception, pending.frame).pending
             # observe() may commit a new task. Stamp the request AFTER that
             # update rather than one iteration late.

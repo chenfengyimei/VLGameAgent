@@ -1,4 +1,4 @@
-﻿"""D12 regression tests: game-strategy isolation.
+"""D12 regression tests: game-strategy isolation.
 
 A game profile's rule inventory is explicit data scoped to its game id; a
 generic profile resolves to an EMPTY registry and none of the commercial-game
@@ -82,7 +82,6 @@ class StrategyRegistryTests(unittest.TestCase):
         for source in (
             "ocr_mumu_dialog_cancel_fast",
             "ocr_dialogue_click_fast",
-            "ocr_login_agreement_fast",
             "ocr_close_glyph_fast",
             "ocr_task_panel_fast",
             "ocr_progress_control_fast",

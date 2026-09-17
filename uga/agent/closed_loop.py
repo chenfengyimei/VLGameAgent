@@ -54,6 +54,7 @@ from uga.safety.action_gate import (
     point_is_clickable,
     resolved_click_point,
 )
+from uga.safety.semantic_gate import sensitive_action_reason, sensitive_page_reason
 from uga.time.clock import ClockBackend, UGATime
 from uga.windows.coordinates import Point
 from uga.windows.window_identity import WindowIdentity
@@ -146,6 +147,11 @@ class GoalVerifier:
         ] | None = None
         self.last_missing_evidence: tuple[str, ...] = ()
         self.last_evidence_confidence: float | None = None
+
+    def reset(self) -> None:
+        self._candidate = None
+        self.last_missing_evidence = ()
+        self.last_evidence_confidence = None
 
     @property
     def required_evidence(self) -> tuple[str, ...]:
@@ -322,6 +328,13 @@ class ActionValidator:
         action = outcome.action
         if action is None:
             return False, "ACT decision did not include an action"
+        sensitive = (
+            sensitive_page_reason(fresh_snapshot.visible_text)
+            or sensitive_page_reason(decided_snapshot.visible_text)
+            or sensitive_action_reason(action)
+        )
+        if sensitive is not None:
+            return False, sensitive
         consistent, generation_reason = generations_consistent(
             outcome, decided_snapshot, fresh_snapshot
         )
@@ -970,6 +983,14 @@ class ClosedLoopSupervisor:
                 "real-name registration gate: standing by for the owner",
                 outcome,
             )
+        sensitive = (
+            sensitive_page_reason(fresh_snapshot.visible_text)
+            or sensitive_page_reason(decided_snapshot.visible_text)
+            or sensitive_action_reason(outcome.action)
+        )
+        if sensitive is not None:
+            self._goal.reset()
+            return SupervisedDecision(DecisionDisposition.WAIT, sensitive, outcome)
         consistent, _ = generations_consistent(outcome, decided_snapshot, fresh_snapshot)
         if not consistent:
             self._stale_results_discarded += 1

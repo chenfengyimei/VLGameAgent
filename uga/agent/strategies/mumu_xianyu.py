@@ -41,19 +41,6 @@ _RULES: tuple[StrategyRule, ...] = (
         cooldown_s=0.0,
     ),
     StrategyRule(
-        name="login_agreement_tick",
-        source="ocr_login_agreement_fast",
-        game_id=GAME_ID,
-        summary=(
-            "游戏登录页：开始游戏 与 同意用户协议 同屏时勾选协议框"
-            "（仅登录流程；开始游戏 单独出现时不适用）"
-        ),
-        allowed_action="click(同意用户协议)",
-        risk="agreement-tick (login page precondition)",
-        effect="the user agreement checkbox is ticked",
-        cooldown_s=0.0,
-    ),
-    StrategyRule(
         name="popup_close_glyph",
         source="ocr_close_glyph_fast",
         game_id=GAME_ID,
