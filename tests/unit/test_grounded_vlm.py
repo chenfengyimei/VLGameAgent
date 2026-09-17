@@ -996,7 +996,7 @@ class GroundedVlmTests(unittest.TestCase):
         self.assertIsNone(GroundedVlmPlanner._progress_control_candidate(current))
 
     def test_model_target_is_snapped_to_matching_latest_ocr_box(self) -> None:
-        loose_box = [0.84, 0.81, 0.98, 0.88]
+        loose_box = [0.68, 0.85, 0.85, 0.97]
         ocr_box = NormalizedBox(0.70, 0.87, 0.83, 0.95)
         reply = json.dumps(
             {

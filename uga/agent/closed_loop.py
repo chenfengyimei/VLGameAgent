@@ -388,17 +388,20 @@ class ActionValidator:
                 and action.confidence >= _VISUAL_CLICK_MIN_CONFIDENCE
                 and action.kind == GuiActionKind.CLICK
             )
-            if not visual_only:
-                if (
-                    self._target_changed(action.target_box, decided_frame, fresh_frame)
-                    and grounding != "match"
-                ):
-                    return False, "target pixels changed while the model was deciding"
-                if not secondary_verified:
-                    if grounding == "missing":
-                        return False, "target no longer exists at the grounded OCR region"
-                    if grounding == "conflict":
-                        return False, "OCR and model target grounding conflict"
+            # A high-confidence icon is not exempt from visual freshness.
+            if (self._target_changed(action.target_box, decided_frame, fresh_frame)
+                    and grounding != "match"):
+                return False, "target pixels changed while the model was deciding"
+            if grounding != "match" and any(
+                normalize_visible_text(region.text) == normalized_target
+                and region.confidence >= 0.5 for region in fresh_snapshot.visible_text
+            ):
+                return False, "target text is visible elsewhere, not at the proposed location"
+            if not visual_only and not secondary_verified:
+                if grounding == "missing":
+                    return False, "target no longer exists at the grounded OCR region"
+                if grounding == "conflict":
+                    return False, "OCR and model target grounding conflict"
             for element in fresh_snapshot.ui_elements:
                 if (
                     action.target_box.intersection_ratio(element.box) >= 0.35
@@ -1370,6 +1373,8 @@ class ClosedLoopSupervisor:
             if reason in {
                 "decision generation became stale",
                 "target no longer exists at the grounded OCR region",
+                "target text is visible elsewhere, not at the proposed location",
+                "target pixels changed while the model was deciding",
             }:
                 self._stale_results_discarded += 1
                 return SupervisedDecision(

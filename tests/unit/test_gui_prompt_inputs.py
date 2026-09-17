@@ -24,7 +24,9 @@ class GuiPromptInputTests(unittest.TestCase):
         client = _Client([_reply()])
         planner = GroundedVlmPlanner(client, compact_output=True)
         planner.decide(
-            snapshot=_snapshot(), frames=(_large_frame(99), _large_frame(100)), goal=_snapshot().text[0]
+            snapshot=_snapshot(),
+            frames=(_large_frame(99), _large_frame(100)),
+            goal=_snapshot().text[0],
         )
         prompt = str(client.calls[0]["instruction"])
         self.assertIn("Image 2 is the CURRENT full overview", prompt)
