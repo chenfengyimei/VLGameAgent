@@ -14,7 +14,8 @@ jobs:
         with:
           python-version: '3.13'
       - name: Stage binary wheels for offline tests
-        run: python -m pip download --only-binary=:all: --dest wheels ruff==0.16.6 mypy==2.3.1 pyarrow==25.0.1 av==18.1.0
+        run: |
+          python -m pip download --only-binary=:all: --dest wheels ruff==0.16.6 mypy==2.3.1 pyarrow==25.0.1 av==18.1.0
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: review-linux-test-wheels
