@@ -38,6 +38,8 @@ class ExecutionReceipt:
     lease_id: str
     lease_generation: int
     failure_reason: str | None = None
+    pre_action_observation_id: str | None = None
+    pre_action_capture_ns: int | None = None
 
     @property
     def executed(self) -> bool:
@@ -46,7 +48,7 @@ class ExecutionReceipt:
     def to_envelope(self) -> dict[str, object]:
         """Versionable row: additive fields keep old episodes immutable."""
         return {
-            "schema": "uga.execution-receipt/1",
+            "schema": "uga.execution-receipt/2",
             "action_id": self.action_id,
             "proposal_id": self.proposal_id,
             "primitive": self.primitive,
@@ -55,6 +57,8 @@ class ExecutionReceipt:
             "lease_id": self.lease_id,
             "lease_generation": self.lease_generation,
             "failure_reason": self.failure_reason,
+            "pre_action_observation_id": self.pre_action_observation_id,
+            "pre_action_capture_ns": self.pre_action_capture_ns,
         }
 
 

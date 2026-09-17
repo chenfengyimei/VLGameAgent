@@ -548,6 +548,7 @@ class GameSessionState:
     persistence_path: Path | None = None
     _candidate_raw: str | None = None
     _candidate_frame_id: str | None = None
+    _last_observed_frame: tuple[str, int] | None = None
     # F08: the single task-generation source.  Quest identity changes bump it
     # and every request/snapshot stamped with the old generation is stale.
     task_generation: int = 1
@@ -661,6 +662,10 @@ class GameSessionState:
             self.last_persistence_error = f"save failed: {exc}"
 
     def observe_snapshot(self, snapshot: PerceptionSnapshot, captured_at_ns: int) -> None:
+        marker = (snapshot.frame_id, captured_at_ns)
+        if self._last_observed_frame == marker:
+            return
+        self._last_observed_frame = marker
         self._update_quest_memory(snapshot, captured_at_ns)
         self._classify_screen(snapshot)
 

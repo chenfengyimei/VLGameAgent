@@ -204,6 +204,10 @@ while ($true) {
     $agentExitCode = $LASTEXITCODE
     $ranSeconds = [int]((Get-Date) - $startedAt).TotalSeconds
     Write-SupervisorLog "Continuous UGA agent exited with code $agentExitCode after ${ranSeconds}s"
+    if ($agentExitCode -eq 78) {
+        Write-SupervisorLog "Fatal provider failure: automatic restart is disabled"
+        exit 78
+    }
     if ($agentExitCode -eq 0) {
         # Clean exit means the user stopped the agent (Ctrl+Shift+F12).
         exit 0

@@ -244,7 +244,9 @@ fn capture_frame(
             handle.commands = dead_tx;
             Err(NativeError {
                 status: STATUS_TIMEOUT,
-                message: "capture worker did not respond within the bounded wait; session abandoned".to_string(),
+                message:
+                    "capture worker did not respond within the bounded wait; session abandoned"
+                        .to_string(),
             })
         }
         Err(RecvTimeoutError::Disconnected) => {
@@ -461,7 +463,7 @@ mod tests {
     #[test]
     fn poisoned_handle_capture_fails_fast_without_worker() {
         let (commands, receiver) = sync_channel::<CaptureCommand>(1);
-        let _unused = receiver;  // the dead peer is the point of this fixture
+        let _unused = receiver; // the dead peer is the point of this fixture
         let mut handle = NativeCaptureHandle {
             commands,
             worker: None,
@@ -484,10 +486,12 @@ mod tests {
     #[test]
     fn destroy_poisoned_handle_is_bounded() {
         let (commands, receiver) = sync_channel::<CaptureCommand>(1);
-        let _live_receiver = receiver;  // keep the worker's recv() alive
+        let _live_receiver = receiver; // keep the worker's recv() alive
         let worker = thread::Builder::new()
-            .spawn(|| loop {
-                std::thread::park();
+            .spawn(|| {
+                loop {
+                    std::thread::park();
+                }
             })
             .unwrap();
         let handle = NativeCaptureHandle {

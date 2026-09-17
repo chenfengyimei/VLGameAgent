@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from uga.control.arbiter import ActionArbiter, ArbiterDecision
@@ -111,6 +112,10 @@ class ActionChunkController:
         chunk: ActionChunk,
         target: WindowIdentity,
         lease: ControlLease,
+        *,
+        pre_action_observation_id: str | None = None,
+        pre_action_capture_ns: int | None = None,
+        execution_guard: Callable[[], bool] | None = None,
     ) -> ActionChunkSubmission:
         if lease.owner != ControlOwner.FAST_POLICY or lease.mode != ControlMode.PLAY_3D:
             raise ContractViolation("Fast Policy chunk requires a PLAY_3D Fast Policy lease")
@@ -176,5 +181,10 @@ class ActionChunkController:
                             canonical_action.action_id,
                         ),
                     )
-        scheduled = self._scheduler.schedule(decision, target, lease)
+        scheduled = self._scheduler.schedule(
+            decision, target, lease,
+            pre_action_observation_id=pre_action_observation_id,
+            pre_action_capture_ns=pre_action_capture_ns,
+            execution_guard=execution_guard,
+        )
         return ActionChunkSubmission(canonical, decision, scheduled)

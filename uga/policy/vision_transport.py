@@ -13,17 +13,23 @@ travels in the Authorization header only.
 from __future__ import annotations
 
 import re
+import urllib.request
+from collections.abc import Sequence
 from enum import StrEnum
-from urllib.parse import parse_qs, urlsplit
+from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
 from uga.core.errors import BackendUnavailableError
 
 _MAX_ERROR_DETAIL_CHARS = 200
 
-_SECRET_QUERY_KEYS = ("key", "token", "secret", "signature", "apikey", "access_token")
 _SECRET_PATTERNS = (
     re.compile(r"Bearer\s+\S+", re.IGNORECASE),
-    re.compile(r"(?i)(api[_-]?key|token|secret|signature)\s*[=:]\s*\S+"),
+    re.compile(
+        r"(?i)[\"']?(?:api[_-]?key|access[_-]?token|refresh[_-]?token|token|secret|"
+        r"password|signature|authorization)[\"']?\s*[=:]\s*"
+        r"(?:\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'\\])*'|[^\s,;}]+)"
+    ),
     re.compile(r"(?i)\b(sk|ak)-[A-Za-z0-9]{8,}"),
 )
 
@@ -77,32 +83,37 @@ class VisionRateLimitedError(ProviderError):
         )
 
 
-def redact_error_detail(detail: str, *, limit: int = _MAX_ERROR_DETAIL_CHARS) -> str:
+def redact_error_detail(
+    detail: str, *, limit: int = _MAX_ERROR_DETAIL_CHARS, secrets: Sequence[str] = ()
+) -> str:
     """Strip credentials from a provider error body and cap its length."""
     redacted = detail
+    for secret in secrets:
+        if secret:
+            redacted = redacted.replace(secret, "[redacted]")
     for pattern in _SECRET_PATTERNS:
         redacted = pattern.sub("[redacted]", redacted)
     return redacted[:limit]
 
 
-def classify_provider_failure(
-    status: int, detail: str
-) -> tuple[ProviderErrorKind, bool]:
+def classify_provider_failure(status: int, detail: str) -> tuple[ProviderErrorKind, bool]:
     """Map an HTTP failure to (kind, fatal).  Fatal means "stop the run"."""
     lowered = detail.casefold()
     if status in {401, 403}:
         return ProviderErrorKind.AUTH, True
+    if status == 402 or any(
+        marker in lowered
+        for marker in ("arrearage", "insufficient_quota", "quota_exceeded", "欠费")
+    ):
+        return ProviderErrorKind.QUOTA, True
     if status == 429:
         return ProviderErrorKind.RATE_LIMIT, False
-    if status == 402 or "arrearage" in lowered or "欠费" in detail:
-        return ProviderErrorKind.QUOTA, True
     if status == 408:
         return ProviderErrorKind.TIMEOUT, False
     if status >= 500:
         return ProviderErrorKind.TRANSIENT_5XX, False
     if status in {400, 422} and any(
-        token in lowered
-        for token in ("response_format", "json_schema", "structured output")
+        token in lowered for token in ("response_format", "json_schema", "structured output")
     ):
         return ProviderErrorKind.UNSUPPORTED_CAPABILITY, False
     return ProviderErrorKind.INVALID_REQUEST, False
@@ -119,7 +130,7 @@ def validate_vision_endpoint(base_url: str) -> str:
     parts = urlsplit(base_url.strip())
     if not parts.hostname:
         raise ContractViolationError("vision endpoint URL has no host")
-    if parts.username or parts.password:
+    if parts.username is not None or parts.password is not None:
         raise ContractViolationError("vision endpoint URL must not carry userinfo")
     if parts.scheme == "http":
         if parts.hostname not in {"127.0.0.1", "localhost", "::1"}:
@@ -128,15 +139,40 @@ def validate_vision_endpoint(base_url: str) -> str:
             )
     elif parts.scheme != "https":
         raise ContractViolationError("vision endpoint scheme must be http(s)")
-    for key in parse_qs(parts.query):
-        if key.casefold() in _SECRET_QUERY_KEYS:
-            raise ContractViolationError(
-                f"vision endpoint URL must not carry a {key!r} query parameter"
-            )
-    root = base_url.strip().rstrip("/")
-    if not root.endswith("/chat/completions"):
-        root = root + "/chat/completions"
-    return root
+    if parts.query or parts.fragment:
+        raise ContractViolationError("vision endpoint must not carry a query or fragment")
+    try:
+        _ = parts.port
+    except ValueError as exc:
+        raise ContractViolationError("vision endpoint port is invalid") from exc
+    path = parts.path.rstrip("/")
+    if not path.endswith("/chat/completions"):
+        path += "/chat/completions"
+    return urlunsplit((parts.scheme, parts.netloc, path, "", ""))
+
+
+class RejectVisionRedirect(urllib.request.HTTPRedirectHandler):
+    """Do not forward prompts or credentials, even to a same-host redirect.
+
+    Configure the final endpoint explicitly. Returning None makes urllib
+    raise HTTPError for redirects instead of rebuilding an authenticated GET.
+    """
+
+    def redirect_request(
+        self,
+        req: urllib.request.Request,
+        fp: Any,
+        code: int,
+        msg: str,
+        headers: Any,
+        newurl: str,
+    ) -> None:
+        return None
+
+
+def open_vision_request(request: urllib.request.Request, *, timeout: float) -> Any:
+    # A private opener avoids changing process-global networking behavior.
+    return urllib.request.build_opener(RejectVisionRedirect()).open(request, timeout=timeout)
 
 
 class ContractViolationError(ValueError):

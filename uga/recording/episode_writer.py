@@ -90,7 +90,10 @@ _EXECUTION_RECEIPT_SCHEMA = (
     ("lease_generation", "int64"),
     ("failure_reason", "string"),
     ("inference_observation_id", "string"),
-    ("execution_observation_id", "string"),
+    ("execution_observation_id", "string"),  # Legacy post-action field.
+    ("pre_action_observation_id", "string"),
+    ("pre_action_capture_ns", "int64"),
+    ("effect_observation_id", "string"),
 )
 
 _PUBLISH_RETRY_ATTEMPTS = 20
@@ -138,6 +141,7 @@ class EpisodeWriter:
         self._annotations: list[dict[str, Any]] = []
         self._action_ids: set[str] = set()
         self._observation_ids: set[str] = set()
+        self._observation_times: dict[str, int] = {}
         self._receipt_action_ids: set[str] = set()
         self._provenance_by_action: dict[str, dict[str, Any]] = {}
         self._sequence = 0
@@ -214,6 +218,7 @@ class EpisodeWriter:
             self._reserve_buffer(2, observation, payload)
             self._observation_ids.add(observation_id)
             self._observations.append(observation)
+            self._observation_times[observation_id] = timestamp.value_ns
             pending_receipts = [
                 row
                 for row in self._execution_receipts
@@ -224,6 +229,7 @@ class EpisodeWriter:
                 self._reserve_buffer(0, *(observation_id for _ in pending_receipts))
                 for row in pending_receipts:
                     row["execution_observation_id"] = observation_id
+                    row["effect_observation_id"] = observation_id
             self._append_timeline(timestamp, TimelineKind.OBSERVATION, observation_id, payload)
 
     def record_action(
@@ -334,6 +340,18 @@ class EpisodeWriter:
                 recorded_proposal = provenance.get("proposal_id")
                 if recorded_proposal is not None and recorded_proposal != receipt.proposal_id:
                     raise ContractViolation("execution receipt proposal identity does not match")
+                pre_id = receipt.pre_action_observation_id
+                captured = receipt.pre_action_capture_ns
+                if (pre_id is None) != (captured is None):
+                    raise ContractViolation("pre-action observation binding is incomplete")
+                if pre_id is not None:
+                    observed_at = self._observation_times.get(pre_id)
+                    if observed_at is None or captured is None or not (
+                        0 <= captured <= observed_at <= receipt.at.value_ns
+                    ):
+                        raise ContractViolation(
+                            "pre-action observation must exist before execution"
+                        )
                 row = {
                     "action_id": receipt.action_id,
                     "proposal_id": receipt.proposal_id,
@@ -345,6 +363,9 @@ class EpisodeWriter:
                     "failure_reason": receipt.failure_reason,
                     "inference_observation_id": provenance.get("observation_id"),
                     "execution_observation_id": None,
+                    "pre_action_observation_id": pre_id,
+                    "pre_action_capture_ns": captured,
+                    "effect_observation_id": None,
                 }
                 self._ensure_table_capacity(
                     len(self._execution_receipts), 1, "execution receipts"

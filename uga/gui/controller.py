@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from uga.control.arbiter import ActionArbiter, ArbiterDecision
@@ -44,6 +45,9 @@ class GuiActionController:
         *,
         observation_id: str,
         policy_version: str,
+        pre_action_observation_id: str | None = None,
+        pre_action_capture_ns: int | None = None,
+        execution_guard: Callable[[], bool] | None = None,
     ) -> GuiActionSubmission:
         physical = self._bridge.translate(action, transform)
         proposal = self._bridge.proposal(
@@ -76,5 +80,10 @@ class GuiActionController:
                         proposal.proposal_id,
                     ),
                 )
-        scheduled = self._scheduler.schedule(decision, target, lease)
+        scheduled = self._scheduler.schedule(
+            decision, target, lease,
+            pre_action_observation_id=pre_action_observation_id,
+            pre_action_capture_ns=pre_action_capture_ns,
+            execution_guard=execution_guard,
+        )
         return GuiActionSubmission(physical, decision, scheduled)

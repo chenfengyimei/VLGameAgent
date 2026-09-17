@@ -222,7 +222,22 @@ class ReplayEngine:
                 raise ContractViolation(
                     "execution receipt references missing inference observation"
                 )
-            execution_id = receipt.get("execution_observation_id")
+            pre_id = receipt.get("pre_action_observation_id")
+            captured = receipt.get("pre_action_capture_ns")
+            if (pre_id is None) != (captured is None):
+                raise ContractViolation("pre-action observation binding is incomplete")
+            if pre_id is not None:
+                if str(pre_id) not in observation_times:
+                    raise ContractViolation(
+                        "execution receipt references missing pre-action observation"
+                    )
+                if type(captured) is not int or not (
+                    0 <= captured <= observation_times[str(pre_id)] <= at_ns
+                ):
+                    raise ContractViolation("pre-action observation must precede execution")
+            execution_id = receipt.get("effect_observation_id") or receipt.get(
+                "execution_observation_id"
+            )
             if execution_id is not None:
                 execution_key = str(execution_id)
                 if execution_key not in observation_ids:

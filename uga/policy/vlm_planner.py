@@ -39,6 +39,7 @@ from uga.policy.vision_transport import (
     ProviderErrorKind,
     VisionRateLimitedError,
     classify_provider_failure,
+    open_vision_request,
     redact_error_detail,
     validate_vision_endpoint,
 )
@@ -262,7 +263,7 @@ class OpenAICompatibleVisionClient:
             method="POST",
         )
         try:
-            with urllib.request.urlopen(request, timeout=self._timeout_s) as response:
+            with open_vision_request(request, timeout=self._timeout_s) as response:
                 raw = response.read(MAX_VISION_RESPONSE_BYTES + 1)
                 if len(raw) > MAX_VISION_RESPONSE_BYTES:
                     raise BackendUnavailableError("vision endpoint response is too large")
@@ -271,7 +272,8 @@ class OpenAICompatibleVisionClient:
             detail = ""
             with contextlib.suppress(OSError, ValueError):
                 detail = redact_error_detail(
-                    exc.read(MAX_VISION_ERROR_DETAIL_BYTES).decode("utf-8", "replace")
+                    exc.read(MAX_VISION_ERROR_DETAIL_BYTES).decode("utf-8", "replace"),
+                    secrets=(self._api_key,),
                 )
             kind, fatal = classify_provider_failure(exc.code, detail)
             retry_after_s: float | None = None
@@ -289,12 +291,14 @@ class OpenAICompatibleVisionClient:
                 kind, message, fatal=fatal, status=exc.code
             ) from exc
         except TimeoutError as exc:
+            detail = redact_error_detail(str(exc), secrets=(self._api_key,))
             raise ProviderError(
-                ProviderErrorKind.TIMEOUT, f"vision endpoint timed out: {exc}"
+                ProviderErrorKind.TIMEOUT, f"vision endpoint timed out: {detail}"
             ) from exc
         except (urllib.error.URLError, OSError, ValueError) as exc:
+            detail = redact_error_detail(str(exc), secrets=(self._api_key,))
             raise ProviderError(
-                ProviderErrorKind.UNREACHABLE, f"vision endpoint unreachable: {exc}"
+                ProviderErrorKind.UNREACHABLE, f"vision endpoint unreachable: {detail}"
             ) from exc
         try:
             message = body["choices"][0]["message"]
@@ -307,11 +311,11 @@ class OpenAICompatibleVisionClient:
             raise ProviderError(
                 ProviderErrorKind.MALFORMED_OUTPUT, "vision reply message is malformed"
             )
+        if body["choices"][0].get("finish_reason") in {"length", "content_filter"}:
+            raise ProviderError(
+                ProviderErrorKind.MALFORMED_OUTPUT, "vision reply was truncated or filtered"
+            )
         reply_text = message.get("content")
-        if not isinstance(reply_text, str) or not reply_text.strip():
-            # Some providers park everything in reasoning_content when the
-            # answer never fits; use it as a last resort so the loop can retry.
-            reply_text = message.get("reasoning_content")
         if not isinstance(reply_text, str) or not reply_text.strip():
             raise ProviderError(
                 ProviderErrorKind.MALFORMED_OUTPUT, "vision reply content is empty"

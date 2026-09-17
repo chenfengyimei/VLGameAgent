@@ -17,6 +17,7 @@ class ExecutionReason(StrEnum):
     EXECUTED = "executed"
     NOT_YET_EFFECTIVE = "not_yet_effective"
     EXPIRED = "expired"
+    CONTEXT_STALE = "context_stale"
 
 
 @dataclass(frozen=True, slots=True)
