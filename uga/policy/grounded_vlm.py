@@ -35,6 +35,7 @@ from uga.perception.schema import (
     DecisionKind,
     GoalStatus,
     GroundedAction,
+    GuiEffect,
     NormalizedBox,
     PerceptionSnapshot,
     PlannerOutcome,
@@ -242,6 +243,23 @@ COMPACT_GROUNDING_RESPONSE_FORMAT: dict[str, Any] = {
         },
     },
 }
+
+
+# v2 adds an explicit postcondition. Legacy replies without this nullable field
+# remain readable, but their free-text expected_effect is never treated as proof.
+for _format in (GROUNDING_RESPONSE_FORMAT, COMPACT_GROUNDING_RESPONSE_FORMAT):
+    _action_schema = _format["json_schema"]["schema"]["properties"]["action"]["anyOf"][1]
+    _action_schema["required"].append("effect")
+    _action_schema["properties"]["effect"] = {"anyOf": [
+        {"type": "null"},
+        {"type": "object", "additionalProperties": False, "required": ["kind", "text"],
+         "properties": {
+             "kind": {"enum": ["text_appears", "text_disappears",
+                                "target_changes", "scene_changes"]},
+             "text": {"anyOf": [{"type": "string", "minLength": 1, "maxLength": 80},
+                                 {"type": "null"}]},
+         }},
+    ]}
 
 
 class StructuredVisionClient(Protocol):
@@ -1466,11 +1484,21 @@ class GroundedVlmPlanner:
         if not compact:
             fields |= {"expected_effect", "risk"}
         try:
-            require_fields(value, fields)
+            require_fields(value, fields, optional={"effect"})
             if value["kind"] not in {"click", "key", "hotkey"}:
                 raise ValueError("unsupported grounded GUI operation")
         except (TypeError, ValueError) as exc:
             raise PlannerReplyError(f"invalid grounded action: {exc}") from exc
+        effect = None
+        if value.get("effect") is not None:
+            try:
+                effect_raw = value["effect"]
+                if not isinstance(effect_raw, dict):
+                    raise ValueError("effect must be an object or null")
+                require_fields(effect_raw, {"kind", "text"})
+                effect = GuiEffect(effect_raw["kind"], effect_raw["text"])
+            except (ValueError, TypeError, ContractViolation) as exc:
+                raise PlannerReplyError(f"invalid GUI effect: {exc}") from exc
         box_raw = value["target_bbox"]
         box: NormalizedBox | None = None
         if box_raw is not None:
@@ -1505,6 +1533,7 @@ class GroundedVlmPlanner:
                 None if key_raw is None else strict_bounded_text(
                     key_raw, max_chars=32, field="key"
                 ),
+                effect=effect,
             )
         except (KeyError, TypeError, ValueError, ContractViolation) as exc:
             raise PlannerReplyError(f"invalid grounded action: {exc}") from exc

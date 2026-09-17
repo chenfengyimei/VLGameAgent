@@ -1619,7 +1619,8 @@ class ClosedLoopSupervisorTests(unittest.TestCase):
         )
 
         decision = supervisor.assess(
-            proposal, decided, fresh, frame(1, 0), replace(frame(1, 1), frame_id="frame-2"), "持续推进"
+            proposal, decided, fresh, frame(1, 0),
+            replace(frame(1, 1), frame_id="frame-2"), "持续推进"
         )
 
         self.assertEqual(decision.disposition, DecisionDisposition.EXECUTE)

@@ -108,13 +108,13 @@ def gui_instruction(
     protocol = (
         "Return exactly ONE JSON object, no markdown, no thought process, no tool calls. "
         "Top fields: kind, confidence, action, wait_reason. "
-        "ACT action fields: kind, target_label (<=48 chars), target_bbox, confidence, key. "
+        "ACT action fields: kind, target_label (<=48 chars), target_bbox, confidence, key, effect. "
         if compact
         else "Return exactly ONE JSON object, no markdown, no thought process, no tool calls. "
         "Top fields: kind, scene_summary (<=160 chars), visible_text (<=16 strings, each <=80), "
         "goal_status, confidence, action, wait_reason, explanation (<=240 chars). "
         "ACT action fields: kind, target_label (<=80 chars), target_bbox, expected_effect "
-        "(<=160 chars, concrete observable next-state change), confidence, risk, key. "
+        "(<=160 chars, concrete observable next-state change), confidence, risk, key, effect. "
         "risk: low/normal/critical. goal_status: unknown/in_progress/succeeded/failed. "
     )
     goal_rule = (
@@ -160,6 +160,11 @@ def gui_instruction(
         'ABSTAIN: kind="abstain", action=null, wait_reason=null. '
         'DONE: kind="done", action=null, wait_reason=null; '
         'full output also has goal_status=succeeded. '
+        'effect: {"kind":"text_appears"|"text_disappears"|"target_changes"|"scene_changes",'
+        '"text":literal visible target text or null}. Prefer a concrete postcondition. '
+        'text_appears means NEW text not already present; text_disappears means text currently '
+        'present vanishes. Non-text effects require text=null. Use effect=null only when the '
+        'postcondition cannot be specified. A claimed expectation is not execution evidence. '
         "All confidences are finite numbers in [0,1], not strings or booleans.\n"
         "Valid WAIT example: "
         + json.dumps(decision, ensure_ascii=False)

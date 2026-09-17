@@ -142,6 +142,23 @@ class PerceptionSnapshot(VersionedMixin):
 
 
 @dataclass(frozen=True, slots=True)
+class GuiEffect:
+    """An observable postcondition, not a model's self-reported success."""
+
+    kind: str
+    text: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.kind not in {"text_appears", "text_disappears", "target_changes", "scene_changes"}:
+            raise ContractViolation("unsupported GUI effect predicate")
+        if self.kind in {"text_appears", "text_disappears"}:
+            if not isinstance(self.text, str) or not self.text.strip() or len(self.text) > 80:
+                raise ContractViolation("text effect requires a literal string of 1..80 characters")
+        elif self.text is not None:
+            raise ContractViolation("non-text GUI effect requires text=null")
+
+
+@dataclass(frozen=True, slots=True)
 class GroundedAction:
     kind: GuiActionKind
     target_label: str
@@ -152,6 +169,7 @@ class GroundedAction:
     key: str | None = None
     pointer_offset_x: float = 0.0
     pointer_offset_y: float = 0.0
+    effect: GuiEffect | None = None
 
     def __post_init__(self) -> None:
         if not self.target_label.strip() or not self.expected_effect.strip():

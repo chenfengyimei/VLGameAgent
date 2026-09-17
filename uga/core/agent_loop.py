@@ -509,12 +509,14 @@ class RealtimeAgentLoop:
                 outcome = await self._bounded_call(self._model_worker, partial(
                     grounded_planner.decide,
                     snapshot=perception,
-                    frames=history[-3:],
+                    frames=history[-120:],
                     goal=observation.user_goal,
                     high_resolution_retry=closed_loop.high_resolution_retry,
                     preferred_action_available=closed_loop.preferred_action_available,
                     session_context=(
-                        None if session is None else session.context_summary()
+                        ((closed_loop.session.context_summary() or "") + "\n"
+                         if closed_loop.session is not None else "")
+                        + closed_loop.planner_feedback(self._task_generation)
                     ),
                     quest_target_level=(
                         None
@@ -655,6 +657,7 @@ class RealtimeAgentLoop:
             # consumer must act on the SUPERVISED outcome.  Submitting the
             # raw planner proposal once sent a routed exit's original box —
             # parked on MuMu's own title-bar close button — to SendInput.
+            closed_loop.record_decision_feedback(supervised)
             outcome = supervised.outcome
             execution_item = latest_after_inference
             if supervised.disposition in {DecisionDisposition.EXECUTE, DecisionDisposition.RECOVER}:
