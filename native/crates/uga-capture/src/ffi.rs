@@ -413,7 +413,11 @@ pub unsafe extern "C" fn uga_capture_destroy(handle: *mut NativeCaptureHandle) {
     // No blocking send to a full command queue or unbounded driver join.
     let _ = handle.commands.try_send(CaptureCommand::Stop);
     if let Some(worker) = handle.worker.take() {
-        let budget = if handle.poisoned { 0 } else { CLOSE_DEADLINE_MS };
+        let budget = if handle.poisoned {
+            0
+        } else {
+            CLOSE_DEADLINE_MS
+        };
         if !finish_worker(worker, budget) {
             set_last_error("native capture worker exceeded shutdown deadline; detached");
             return;
@@ -564,11 +568,12 @@ mod tests {
     #[test]
     fn normal_worker_destructor_is_also_bounded() {
         let (release, wait) = sync_channel::<()>(1);
-        let worker = thread::spawn(move || { let _ = wait.recv(); });
+        let worker = thread::spawn(move || {
+            let _ = wait.recv();
+        });
         let started = Instant::now();
         assert!(!finish_worker(worker, 20));
         assert!(started.elapsed() < Duration::from_secs(1));
         let _ = release.send(());
     }
-
 }
