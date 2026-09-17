@@ -6,6 +6,7 @@ from dataclasses import asdict
 from pathlib import Path
 
 from uga.dataset.builder import build_dataset_manifest
+from uga.dataset.gui import export_gui_samples
 from uga.dataset.manifest import DatasetManifest
 from uga.dataset.opencua import (
     OpenCuaExporter,
@@ -39,6 +40,9 @@ def _process(args: argparse.Namespace) -> None:
         "episode_id": episode.episode_id,
         "game_id": episode.game_id,
         "duration_ns": episode.duration_ns,
+        "qualification": episode.qualification.value,
+        "qualified_duration_ns": episode.qualified_duration_ns,
+        "exclusion_counts": dict(episode.exclusion_counts),
         "samples": [asdict(sample) for sample in episode.samples],
     }
     args.output.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
@@ -77,6 +81,10 @@ def _manifest(args: argparse.Namespace) -> None:
 def _build_manifest(args: argparse.Namespace) -> None:
     manifest = build_dataset_manifest(args.inventory, args.root)
     print(manifest.write(args.output).resolve())
+
+
+def _gui_export(args: argparse.Namespace) -> None:
+    print(export_gui_samples(args.episode, args.output))
 
 
 def _opencua_export(args: argparse.Namespace) -> None:
@@ -134,6 +142,11 @@ def main() -> None:
     build_manifest.add_argument("--root", type=Path, required=True)
     build_manifest.add_argument("--output", type=Path, required=True)
     build_manifest.set_defaults(handler=_build_manifest)
+
+    gui = subparsers.add_parser("gui-export", help="export causal GUI labels and pre-action PNGs")
+    gui.add_argument("episode", type=Path)
+    gui.add_argument("--output", type=Path, required=True)
+    gui.set_defaults(handler=_gui_export)
 
     export = subparsers.add_parser("opencua-export", help="export GUI Episode to OpenCUA")
     export.add_argument("episode", type=Path)

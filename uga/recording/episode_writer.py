@@ -23,6 +23,7 @@ from uga.core.artifact_limits import (
     sha256_file_limited,
 )
 from uga.core.errors import ContractViolation
+from uga.gui.schema import GuiAction
 from uga.recording.json_codec import canonical_json, to_json_value, write_json
 from uga.recording.parquet_io import write_rows
 from uga.recording.schema import (
@@ -253,12 +254,15 @@ class EpisodeWriter:
     ) -> None:
         self._record_action(action, provenance, RecordedActionLayer.CANONICAL, None)
 
+    def record_gui_action(self, action: GuiAction, provenance: ActionProvenance) -> None:
+        self._record_action(action, provenance, RecordedActionLayer.GUI, None)
+
     def record_semantic_action(self, action: SemanticAction, provenance: ActionProvenance) -> None:
         self._record_action(action, provenance, RecordedActionLayer.SEMANTIC, None)
 
     def _record_action(
         self,
-        action: PhysicalAction | CanonicalAction | SemanticAction,
+        action: PhysicalAction | CanonicalAction | SemanticAction | GuiAction,
         provenance: ActionProvenance,
         layer: RecordedActionLayer,
         input_state: InputStateRecord | None,
@@ -451,6 +455,8 @@ class EpisodeWriter:
             if self._video_failed:
                 raise ContractViolation("cannot publish an Episode with failed video recording")
             ending = end or UGATime(self._latest_timestamp_ns)
+            if ending.value_ns < self._latest_timestamp_ns:
+                raise ContractViolation("Episode end precedes recorded evidence")
             self._validate_timestamp(ending)
             if self._video is not None:
                 self._video.close()

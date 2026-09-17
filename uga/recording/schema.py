@@ -32,6 +32,7 @@ class TimelineKind(StrEnum):
 
 
 class RecordedActionLayer(StrEnum):
+    GUI = "gui"
     SEMANTIC = "semantic"
     CANONICAL = "canonical"
     PHYSICAL = "physical"

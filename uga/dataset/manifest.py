@@ -102,8 +102,6 @@ class DatasetEpisode:
             raise ContractViolation("dataset receipt qualification must be a boolean")
         if self.qualified_duration_ns < 0 or self.qualified_duration_ns > self.duration_ns:
             raise ContractViolation("dataset qualified duration is invalid")
-        if self.execution_receipts_qualified and self.qualified_duration_ns <= 0:
-            raise ContractViolation("receipt-qualified Episode needs positive active duration")
         if self.execution_receipts_qualified and self.content_digest is None:
             raise ContractViolation("receipt-qualified Episode needs a content digest")
         if not math.isfinite(self.quality_score) or not 0 <= self.quality_score <= 100:
