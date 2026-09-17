@@ -35,6 +35,23 @@ jobs:
           python-version: '3.11.9'
       - name: Verify exact per-module trees
         run: python ../staging/.github/review-completion/apply_series.py
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '24.15.0'
+      - name: Verify npm installation and TypeScript with captured diagnostics
+        shell: python
+        run: |
+          import os, pathlib, shutil, subprocess
+          npm = shutil.which('npm.cmd')
+          assert npm, 'Node setup did not provide npm.cmd'
+          log = pathlib.Path(os.environ['RUNNER_TEMP']) / 'runtime-ui-validation.txt'
+          for args in [('ci', '--include=dev', '--loglevel=verbose'), ('run', 'typecheck'), ('run', 'build')]:
+              result = subprocess.run([npm, *args], capture_output=True, text=True, errors='replace', timeout=180)
+              output = f'COMMAND: {npm} {args}; EXIT={result.returncode}\n' + result.stdout + result.stderr
+              print(output)
+              with log.open('a', encoding='utf-8') as handle:
+                  handle.write(output)
+              result.check_returncode()
       - run: python -m pip install --require-hashes -r requirements-lock.txt
       - run: python -m pip install --no-deps --no-build-isolation -e .
       - run: ruff check .
@@ -57,23 +74,22 @@ jobs:
           $sha = (Get-FileHash -Algorithm SHA256 -LiteralPath $dll).Hash.ToLowerInvariant()
           Add-Content -LiteralPath $env:GITHUB_ENV -Value "UGA_NATIVE_CAPTURE_DLL=$dll"
           Add-Content -LiteralPath $env:GITHUB_ENV -Value "UGA_NATIVE_CAPTURE_SHA256=$sha"
-      - run: pytest -q -ra
+      - name: Full Python regression
+        run: pytest -q -ra --junitxml="$env:RUNNER_TEMP/runtime-tests.xml"
       - run: python -m apps.agent
       - run: python -m apps.example_game --headless-smoke
       - run: python -m apps.benchmark validate-config configs/benchmarks/uga-bench-smoke.yaml
       - run: python -m apps.dependency_inventory --require-known --output build/dependency-inventory.json
       - run: python -m build --no-isolation
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
-        with:
-          node-version: '24.15.0'
-      - run: npm ci --include=dev
-      - run: npm run typecheck
-      - run: npm run build
-      - name: Export verification ledger
+      - name: Export verification evidence
+        if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: runtime-verified-module-ledger
-          path: ${{ runner.temp }}/runtime-module-ledger.json
+          path: |
+            ${{ runner.temp }}/runtime-module-ledger.json
+            ${{ runner.temp }}/runtime-tests.xml
+            ${{ runner.temp }}/runtime-ui-validation.txt
           retention-days: 7
           if-no-files-found: error
   publish:
@@ -114,7 +130,7 @@ jobs:
           assert tips.get(branch) == base, 'repair branch changed: refusing overwrite'
           subprocess.run(['git', 'push', 'origin', 'HEAD:' + branch], env=env, check=True)
           print('Published module tip:')
-          subprocess.run(['git', 'log', '-11', '--oneline'], check=True)
+          subprocess.run(['git', 'log', '-12', '--oneline'], check=True)
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: runtime-published-module-ledger
