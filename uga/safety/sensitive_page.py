@@ -11,6 +11,7 @@ from dataclasses import dataclass
 
 from uga.perception.builder import normalize_visible_text
 from uga.perception.schema import ActionRisk, GroundedAction, TextRegion
+from uga.safety.semantic_gate import sensitive_action_reason, sensitive_page_reason
 
 _CUES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("identity", ("\u5b9e\u540d", "\u8eab\u4efd\u8bc1", "\u9632\u6c89\u8ff7", "passportnumber")),
@@ -90,7 +91,7 @@ class SensitivePageVerdict:
     @property
     def reason(self) -> str:
         return (
-            f"owner_confirmation_required:{self.category}"
+            f"owner_confirmation_required:handoff:{self.category}"
             if self.requires_owner
             else "ordinary_page"
         )
@@ -100,10 +101,27 @@ def inspect_sensitive_page(
     visible_text: Sequence[TextRegion],
     action: GroundedAction | None = None,
 ) -> SensitivePageVerdict:
-    text = "".join(normalize_visible_text(item.text) for item in visible_text)
-    for category, cues in _CUES:
-        if any(normalize_visible_text(cue) in text for cue in cues):
-            return SensitivePageVerdict(True, category)
+    for item in visible_text:
+        text = normalize_visible_text(item.text)
+        for category, cues in _CUES:
+            if any(normalize_visible_text(cue) in text for cue in cues):
+                return SensitivePageVerdict(True, category)
+    # Recognizers may split a credential/consent phrase across adjacent boxes.
+    # Match complete cues over small token windows, not arbitrary substrings
+    # created by concatenating every unrelated label on the screen.
+    pieces = tuple(normalize_visible_text(item.text) for item in visible_text)
+    for start in range(len(pieces)):
+        for length in (2, 3, 4):
+            joined = "".join(pieces[start:start + length])
+            if any(not piece for piece in pieces[start:start + length]):
+                continue
+            for category, cues in _CUES:
+                if joined in {normalize_visible_text(cue) for cue in cues}:
+                    return SensitivePageVerdict(True, category)
+    if sensitive_page_reason(visible_text) is not None:
+        return SensitivePageVerdict(True, "sensitive_page")
+    if sensitive_action_reason(action) is not None:
+        return SensitivePageVerdict(True, "critical_action")
     if action is not None:
         label = normalize_visible_text(action.target_label)
         if action.risk == ActionRisk.CRITICAL or any(

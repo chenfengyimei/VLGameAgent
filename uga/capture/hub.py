@@ -13,10 +13,16 @@ from typing import Protocol
 
 from uga.capture.frame import BufferKind, Frame
 from uga.capture.ring_buffer import FrameRingBuffer, SequencedFrame
-from uga.core.errors import BackendUnavailableError, CaptureTimeoutError, ContractViolation
+from uga.core.errors import (
+    BackendUnavailableError,
+    CaptureTimeoutError,
+    ContractViolation,
+    FatalRuntimeError,
+)
 from uga.policy.call_budget import CallBudget, DeadlineWorker
 from uga.policy.vision_transport import ProviderError
 from uga.recording.channel import RecorderChannel
+from uga.recording.frame_queue import RecordingFailure
 
 
 class SynchronousFrameSource(Protocol):
@@ -70,7 +76,21 @@ class CaptureHub:
         recorder_max_bytes: int = 256 * 1024 * 1024,
         recorder_close_timeout_s: float = 5.0,
         capture_call_timeout_s: float = 4.0,
+        capture_operation_timeout_s: float | None = None,
+        recording_max_frames: int | None = None,
+        recording_max_bytes: int | None = None,
+        recording_close_timeout_s: float | None = None,
     ) -> None:
+        # Keep the already-published API names while accepting PR3's aliases.
+        if capture_operation_timeout_s is not None:
+            capture_call_timeout_s = capture_operation_timeout_s
+        if recording_max_frames is not None:
+            recorder_capacity = recording_max_frames
+        if recording_max_bytes is not None:
+            recorder_max_bytes = recording_max_bytes
+        if recording_close_timeout_s is not None:
+            recorder_close_timeout_s = recording_close_timeout_s
+        self._retired_sources: set[str] = set()
         if not math.isfinite(fallback_after_s) or fallback_after_s <= 0:
             raise ContractViolation("capture fallback delay must be positive")
         if not math.isfinite(fallback_hz) or fallback_hz <= 0 or fallback_hz > 4.0:
@@ -102,7 +122,8 @@ class CaptureHub:
         self._consumer_timeout_s = consumer_timeout_s
         self._source_error_backoff_s = source_error_backoff_s
         self._publish_lock = Lock()
-        if recorder_capacity < 1 or recorder_max_bytes < 1:
+        if (type(recorder_capacity) is not int or recorder_capacity < 1
+                or type(recorder_max_bytes) is not int or recorder_max_bytes < 1):
             raise ContractViolation("recorder queue limits must be positive")
         if not math.isfinite(recorder_close_timeout_s) or recorder_close_timeout_s <= 0:
             raise ContractViolation("recorder close timeout must be finite and positive")
@@ -147,6 +168,11 @@ class CaptureHub:
                         producer.cancel()
 
                 tasks.create_task(cancel_on_stop())
+                tasks.create_task(self._monitor_recording(stop))
+        except BaseException as exc:
+            if self._record_failure is not None and not isinstance(exc, asyncio.CancelledError):
+                raise RecordingFailure("recording failed; manual intervention required") from exc
+            raise
         finally:
             if self._record_channel is not None:
                 try:
@@ -155,7 +181,30 @@ class CaptureHub:
                     )
                 except BaseException as exc:
                     self._record_failure = exc
-                    raise
+                    if isinstance(exc, asyncio.CancelledError):
+                        raise
+                    raise RecordingFailure(
+                        "recording did not drain; inspect retained staging"
+                    ) from exc
+
+    async def _monitor_recording(self, stop: asyncio.Event) -> None:
+        # Notice an asynchronous writer failure even while both sources are idle.
+        while not stop.is_set():
+            if self._record_channel is not None:
+                try:
+                    self._record_channel.check_health()
+                except Exception as exc:
+                    self._record_failure = exc
+                    raise RecordingFailure("recording worker failed") from exc
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(stop.wait(), timeout=0.01)
+
+    def _retire_source(self, source: str) -> None:
+        self._retired_sources.add(source)
+        if "primary" in self._retired_sources and (
+            self._fallback is None or "fallback" in self._retired_sources
+        ):
+            raise FatalRuntimeError("all capture sources exceeded their operation deadline")
 
     @property
     def recording_complete(self) -> bool:
@@ -218,6 +267,7 @@ class CaptureHub:
                 # series of detached threads. Fallback can still own capture.
                 with self._stats_lock:
                     self._source_errors["primary"] += 1
+                self._retire_source("primary")
                 return
             except CaptureTimeoutError:
                 await asyncio.sleep(0)
@@ -233,6 +283,8 @@ class CaptureHub:
                         stop.wait(), timeout=self._source_error_backoff_s
                     )
                 continue
+            if stop.is_set():
+                break
             await self._primary_worker.call(
                 partial(self._publish, frame, "primary", time.monotonic()),
                 CallBudget(self._capture_call_timeout_s),
@@ -277,6 +329,7 @@ class CaptureHub:
                     raise
                 with self._stats_lock:
                     self._source_errors["fallback"] += 1
+                self._retire_source("fallback")
                 return
             except (CaptureTimeoutError, BackendUnavailableError, ContractViolation):
                 # A failed heartbeat did not publish a frame and therefore does
@@ -287,6 +340,8 @@ class CaptureHub:
                     self._source_errors["fallback"] += 1
                 await asyncio.sleep(min(0.05, self._fallback_period_s / 10.0))
                 continue
+            if stop.is_set():
+                break
             last_attempt = attempt_started
             await self._fallback_worker.call(
                 partial(self._publish, frame, "fallback", attempt_started),

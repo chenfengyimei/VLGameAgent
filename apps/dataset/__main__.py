@@ -6,7 +6,8 @@ from dataclasses import asdict
 from pathlib import Path
 
 from uga.dataset.builder import build_dataset_manifest
-from uga.dataset.gui_export import export_gui_samples
+from uga.dataset.gui import export_gui_samples
+from uga.dataset.gui_export import export_gui_samples as export_gui_references
 from uga.dataset.manifest import DatasetManifest
 from uga.dataset.opencua import (
     OpenCuaExporter,
@@ -41,9 +42,9 @@ def _process(args: argparse.Namespace) -> None:
         "game_id": episode.game_id,
         "duration_ns": episode.duration_ns,
         "qualification": episode.qualification.value,
-        "qualified_active_duration_ns": episode.qualified_duration_ns,
-        "duration_basis": "executed_primitive_span_union_v2",
-        "exclusions": dict(episode.exclusion_counts),
+        "qualified_duration_ns": episode.qualified_duration_ns,
+        "active_execution_duration_ns": episode.active_execution_duration_ns,
+        "exclusion_counts": dict(episode.exclusion_counts),
         "samples": [asdict(sample) for sample in episode.samples],
     }
     args.output.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
@@ -68,7 +69,6 @@ def _manifest(args: argparse.Namespace) -> None:
                 "source_revision": manifest.source_revision,
                 "episodes": len(manifest.episodes),
                 "hours": manifest.hours(),
-                "qualified_active_hours": manifest.qualified_hours(),
                 "locked_test_games": manifest.locked_test_games,
                 "distribution": {
                     category.value: fraction
@@ -86,7 +86,11 @@ def _build_manifest(args: argparse.Namespace) -> None:
 
 
 def _gui_export(args: argparse.Namespace) -> None:
-    print(export_gui_samples(args.episodes, args.output))
+    print(export_gui_samples(args.episode, args.output))
+
+
+def _gui_references(args: argparse.Namespace) -> None:
+    print(export_gui_references(args.episodes, args.output))
 
 
 def _opencua_export(args: argparse.Namespace) -> None:
@@ -145,15 +149,22 @@ def main() -> None:
     build_manifest.add_argument("--output", type=Path, required=True)
     build_manifest.set_defaults(handler=_build_manifest)
 
+    gui = subparsers.add_parser("gui-export", help="export causal GUI labels and pre-action PNGs")
+    gui.add_argument("episode", type=Path)
+    gui.add_argument("--output", type=Path, required=True)
+    gui.set_defaults(handler=_gui_export)
+
+    references = subparsers.add_parser(
+        "gui-export-references", help="export causal GUI JSONL with source video references"
+    )
+    references.add_argument("episodes", type=Path, nargs="+")
+    references.add_argument("--output", type=Path, required=True)
+    references.set_defaults(handler=_gui_references)
+
     export = subparsers.add_parser("opencua-export", help="export GUI Episode to OpenCUA")
     export.add_argument("episode", type=Path)
     export.add_argument("--output", type=Path, required=True)
     export.set_defaults(handler=_opencua_export)
-
-    gui_export = subparsers.add_parser("gui-export", help="export causal logical GUI JSONL")
-    gui_export.add_argument("episodes", nargs="+", type=Path)
-    gui_export.add_argument("--output", required=True, type=Path)
-    gui_export.set_defaults(handler=_gui_export)
 
     import_trajectory = subparsers.add_parser(
         "opencua-import", help="validate and summarize OpenCUA trajectory"

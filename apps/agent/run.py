@@ -45,7 +45,13 @@ from uga.control.lease_manager import ControlLeaseManager
 from uga.control.scheduler import ActionScheduler
 from uga.control.windows_input import SendInputBackend
 from uga.core.agent_loop import RealtimeAgentLoop
-from uga.core.errors import BackendUnavailableError, CaptureTimeoutError, ContractViolation
+from uga.core.deadline import BoundedWorker, Deadline
+from uga.core.errors import (
+    BackendUnavailableError,
+    CaptureTimeoutError,
+    ContractViolation,
+    FatalRuntimeError,
+)
 from uga.core.events import EventBus
 from uga.core.run_context import RunContext
 from uga.environment.generic import GenericEnvironment
@@ -61,6 +67,7 @@ from uga.policy.grounded_vlm import GroundedOutcomeVerifier, GroundedVlmPlanner
 from uga.policy.scripted_tap import ScriptedTapPolicy
 from uga.policy.vlm_planner import OpenAICompatibleVisionClient, encode_frame_png
 from uga.recording.episode_writer import EpisodeWriter
+from uga.recording.finalize import finalize_episode
 from uga.recording.schema import EpisodeMetadata, EpisodeResult
 from uga.recording.video import PyAvVideoRecorder
 from uga.release.fixture_qualification import _activate
@@ -192,8 +199,8 @@ async def _run(args: argparse.Namespace) -> int:
         or args.watchdog_timeout_seconds <= 0
     ):
         raise SystemExit("--watchdog-timeout-seconds must be positive")
-    for name, default in (("decision_timeout_seconds", 60.0), ("perception_timeout_seconds", 10.0)):
-        timeout_s = float(getattr(args, name, default))
+    for name in ("decision_timeout_seconds", "perception_timeout_seconds"):
+        timeout_s = getattr(args, name)
         if not math.isfinite(timeout_s) or timeout_s <= 0:
             raise SystemExit(f"--{name.replace('_', '-')} must be finite and positive")
     if not math.isfinite(args.tap_delay) or args.tap_delay < 0:
@@ -601,8 +608,8 @@ async def _run(args: argparse.Namespace) -> int:
         run_context=run_context,
         control_heartbeat=watchdog.heartbeat,
         recovery_budget=recovery_budget,
-        decision_timeout_s=float(getattr(args, "decision_timeout_seconds", 60.0)),
-        perception_timeout_s=float(getattr(args, "perception_timeout_seconds", 10.0)),
+        decision_timeout_s=args.decision_timeout_seconds,
+        perception_timeout_s=args.perception_timeout_seconds,
     )
 
     if journal is not None and args.dashboard_port > 0:
@@ -762,7 +769,9 @@ async def _run(args: argparse.Namespace) -> int:
 
     def _on_sigint(signum: int, frame: FrameType | None) -> None:
         del signum, frame
-        request_stop(ShutdownCause.NORMAL_STOP, True)
+        # Avoid reentrant lease/backend lock acquisition in Python signal
+        # handlers. The independent native emergency hotkey remains immediate.
+        loop_ref.call_soon_threadsafe(request_stop, ShutdownCause.NORMAL_STOP, True)
 
     previous_handler = None
     if os.name == "nt":
@@ -774,6 +783,7 @@ async def _run(args: argparse.Namespace) -> int:
     )
     try:
         hotkey.start()
+        watchdog_monitor.start()
     except BaseException:
         _best_effort_cleanup(
             scheduler.neutralize,
@@ -785,6 +795,7 @@ async def _run(args: argparse.Namespace) -> int:
             ),
             backend.stop,
             hotkey.close,
+            watchdog_monitor.close,
         )
         if previous_handler is not None:
             signal.signal(signal.SIGINT, previous_handler)
@@ -792,11 +803,10 @@ async def _run(args: argparse.Namespace) -> int:
 
     # The emergency latch and watchdog enforcement are live before any
     # physical input is authorized; only then are inputs armed.
-    watchdog_monitor.start()
-    enabled.set(True)
+    armed = safety.arm()
     print(
         f"[safety] emergency hotkey + {args.watchdog_timeout_seconds:.0f}s watchdog "
-        "armed; physical inputs enabled",
+        + ("armed; physical inputs enabled" if armed else "disarmed; startup stop is latched"),
         flush=True,
     )
 
@@ -820,10 +830,7 @@ async def _run(args: argparse.Namespace) -> int:
                 request_stop(ShutdownCause.NORMAL_STOP)
                 break
             trip = safety.tripped
-            if trip is not None and trip.cause in (
-                ShutdownCause.WATCHDOG_TIMEOUT,
-                ShutdownCause.RUNTIME_FAILURE,
-            ):
+            if trip is not None:
                 # Watchdog-initiated trip: neutralization already happened
                 # inside trip(); stop the loop and surface it as a failure.
                 stop.set()
@@ -852,29 +859,32 @@ async def _run(args: argparse.Namespace) -> int:
             if run_error is None:
                 run_error = exc
 
-        def cleanup(operation: Callable[[], object]) -> None:
+        async def cleanup(operation: Callable[[], object]) -> None:
             nonlocal run_error
             try:
-                operation()
+                await BoundedWorker().run(Deadline.after(5.0), operation)
             except BaseException as exc:
                 if run_error is None:
-                    run_error = exc
+                    run_error = FatalRuntimeError("cleanup failed; manual intervention required")
+                    run_error.__cause__ = exc
 
         if journal is not None:
-            cleanup(journal.close)
-        cleanup(watchdog_monitor.close)
-        cleanup(scheduler.neutralize)
-        cleanup(loop.drain_execution_receipts)
-        cleanup(lambda: leases.revoke_all(notify=False))
+            await cleanup(journal.close)
+        await cleanup(watchdog_monitor.close)
+        await cleanup(scheduler.neutralize)
+        await cleanup(loop.drain_execution_receipts)
+        await cleanup(lambda: leases.revoke_all(notify=False))
         if sampler_backend is not None:
-            cleanup(sampler_backend.stop)
+            await cleanup(sampler_backend.stop)
         if dashboard is not None:
-            cleanup(dashboard.stop)
-        cleanup(backend.stop)
-        cleanup(hotkey.close)
+            await cleanup(dashboard.stop)
+        await cleanup(backend.stop)
+        await cleanup(hotkey.close)
         if previous_handler is not None:
-            cleanup(lambda: signal.signal(signal.SIGINT, previous_handler))
+            signal.signal(signal.SIGINT, previous_handler)
     trip = safety.tripped
+    if trip is not None and trip.cleanup_errors and run_error is None:
+        run_error = FatalRuntimeError("safety cleanup did not complete successfully")
     if (
         trip is not None
         and run_error is None
@@ -887,12 +897,10 @@ async def _run(args: argparse.Namespace) -> int:
         elif duration_expired:
             loop.fail_closed_loop("timeout")
     if recorder is not None and not capture_source.recording_complete:
-        # A timed-out recorder may still own its codec. Never close/delete its
-        # resources concurrently, or publish an incomplete Episode as valid.
-        print(f"incomplete episode retained: {recorder.staging_path}", flush=True)
-        if run_error is None:
-            run_error = RuntimeError("recording failed to drain; Episode was not published")
-        recorder = None
+        print(f"recording incomplete; unpublished staging retained: {recorder.staging_path}")
+        if run_error is not None:
+            raise run_error
+        raise BackendUnavailableError("recording queue did not finish cleanly")
     if recorder is not None:
         stats = scheduler.stats()
         diagnostics = loop.closed_loop_diagnostics or {}
@@ -967,11 +975,16 @@ async def _run(args: argparse.Namespace) -> int:
                 task_graph.get(task_node_id).to_envelope(),
             )
         recorder.set_terminal_context(termination_reason, loop.goal_confidence)
-        episode_path = recorder.finalize(result, clock.now())
+        episode_path = await finalize_episode(recorder, result, clock.now())
         print(f"episode: {episode_path}")
     if run_error is not None:
         raise run_error
     print(f"physical actions executed: {scheduler.stats().executed}")
+    if (
+        not stop_state["user"] and args.policy == "vlm"
+        and loop.terminal_status != TerminalStatus.SUCCEEDED
+    ):
+        return 78
     return 0
 
 
@@ -982,9 +995,12 @@ def _client_fraction(value: str) -> float:
     return fraction
 
 
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Run the UGA agent against a live window")
+def build_parser(*, add_help: bool = True) -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Run the UGA agent against a live window", add_help=add_help
+    )
     parser.add_argument("--profile", type=Path, required=True)
+    parser.add_argument("--perception-timeout-seconds", type=float, default=10.0)
     parser.add_argument("--goal", default="Interact with the target")
     parser.add_argument(
         "--goal-evidence",
@@ -1052,14 +1068,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="serve the read-only VLM decision dashboard on loopback (0 = disabled)",
     )
     parser.add_argument(
-        "--decision-timeout-seconds", type=float, default=60.0,
-        help="total deadline for inference, schema fallback, repair and verification",
-    )
-    parser.add_argument(
-        "--perception-timeout-seconds", type=float, default=10.0,
-        help="bounded OCR/perception worker deadline",
-    )
-    parser.add_argument(
         "--watchdog-timeout-seconds",
         type=float,
         default=60.0,
@@ -1089,6 +1097,10 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=6.0,
         help="seconds between vision planner decisions",
+    )
+    parser.add_argument(
+        "--decision-timeout-seconds", type=float, default=90.0,
+        help="total decision budget including repair and secondary verification",
     )
     parser.add_argument(
         "--vlm-timeout-seconds",

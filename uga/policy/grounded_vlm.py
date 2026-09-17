@@ -660,7 +660,7 @@ class GroundedVlmPlanner:
             )
         sensitive = inspect_sensitive_page(snapshot.visible_text)
         if sensitive.requires_owner:
-            self._last_decision_source = "sensitive_page_standby"
+            self._last_decision_source = "sensitive_page_handoff"
             return PlannerOutcome(
                 uuid.uuid4().hex, snapshot.frame_id, snapshot.frame_sequence,
                 snapshot.window_identity.window_generation, snapshot.geometry_generation,

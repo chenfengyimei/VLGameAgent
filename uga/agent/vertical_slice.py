@@ -47,9 +47,16 @@ class FirstVerticalSlice:
         self._scheduler = scheduler
         self._recorder = recorder
 
+    def drain_execution_receipts(self) -> None:
+        """Drain after scheduler ticks and once after shutdown neutralization."""
+        receipts = self._scheduler.drain_receipts()
+        if self._recorder is not None:
+            self._recorder.record_execution_receipts(receipts)
+
     def step(
         self, observation: Observation, tasks: TaskGraph, lease: ControlLease
     ) -> VerticalSliceResult:
+        self.drain_execution_receipts()
         ready = next(
             (
                 node
@@ -144,6 +151,7 @@ class FirstVerticalSlice:
                     1.0,
                     False,
                     output.lifetime,
+                    proposal.proposal_id,
                 ),
             )
             for action in physical:
@@ -160,10 +168,14 @@ class FirstVerticalSlice:
                     1.0,
                     False,
                     action.lifetime,
+                    proposal.proposal_id,
+                    output.action_id,
                 )
                 self._recorder.record_action(action, provenance)
         scheduled = self._scheduler.schedule(
-            decision, observation.latest_frame.window_identity, lease
+            decision, observation.latest_frame.window_identity, lease,
+            pre_action_observation_id=observation.observation_id,
+            pre_action_capture_ns=observation.latest_frame.capture_timestamp.value_ns,
         )
         return VerticalSliceResult(plan, proposal, decision, scheduled)
 

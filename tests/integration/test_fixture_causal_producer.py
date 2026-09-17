@@ -70,12 +70,19 @@ class FixtureProducerTests(unittest.TestCase):
             replay = ReplayEngine(path)
             processed = DatasetProcessor().process(path)
             motor = [s for s in processed.samples if s.action_layer == "canonical"]
-            self.assertEqual(len(motor), 1)
-            target_action = json.loads(motor[0].action_json)
+            self.assertEqual(len(motor), 3)
+            movement = next(s for s in motor if "-movement-" in s.action_id)
+            look = next(s for s in motor if "-look-" in s.action_id)
+            interact = next(s for s in motor if "-interact-" in s.action_id)
+            self.assertEqual(json.loads(look.action_json)["look_x"], 0.12)
+            self.assertTrue(json.loads(interact.action_json)["interact"])
+            self.assertEqual(json.loads(look.action_json)["move_x"], 0)
+            self.assertEqual(json.loads(interact.action_json)["move_x"], 0)
+            target_action = json.loads(movement.action_json)
             self.assertFalse(target_action["interact"])
             self.assertEqual(target_action["look_x"], 0)
             children = [
-                r for r in replay.provenance if r.get("parent_action_id") == motor[0].action_id
+                r for r in replay.provenance if r.get("parent_action_id") == movement.action_id
             ]
             self.assertTrue(children)
             self.assertTrue(all("-d-" in r["action_id"] for r in children))

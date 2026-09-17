@@ -28,13 +28,16 @@ def export_gui_samples(
     if not episodes or len(episodes) > limits.max_dataset_episodes:
         raise ContractViolation("GUI export requires a bounded, non-empty Episode list")
     destination = Path(output).resolve()
+    sources = tuple(Path(episode).resolve() for episode in episodes)
+    if any(destination == source or source in destination.parents for source in sources):
+        raise ContractViolation("GUI export must be outside every source Episode")
     destination.parent.mkdir(parents=True, exist_ok=True)
     fd, temporary = tempfile.mkstemp(prefix=".gui-export-", dir=destination.parent)
     count = size = 0
     seen: set[tuple[str, str]] = set()
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as stream:
-            for episode_path in episodes:
+            for episode_path in sources:
                 replay = ReplayEngine(episode_path, limits=limits)
                 processed = DatasetProcessor(limits=limits).process(episode_path)
                 for sample in processed.samples:

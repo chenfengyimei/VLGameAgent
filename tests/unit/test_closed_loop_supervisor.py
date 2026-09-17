@@ -508,7 +508,7 @@ class ClosedLoopSupervisorTests(unittest.TestCase):
         self.assertEqual(second.disposition, DecisionDisposition.BLOCK)
         self.assertEqual(self.supervisor.status, TerminalStatus.BLOCKED)
 
-    def test_critical_action_requires_owner_not_a_free_text_goal(self) -> None:
+    def test_critical_action_requires_handoff_even_with_matching_goal(self) -> None:
         current = snapshot(1, 0)
         proposal = outcome(1, label="delete", risk=ActionRisk.CRITICAL)
 

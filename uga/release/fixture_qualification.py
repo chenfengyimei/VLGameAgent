@@ -271,6 +271,7 @@ class FixtureActionGroup:
     actions: tuple[PhysicalAction, ...]
     cycle: int
     movement: bool = False
+    intent: str | None = None
 
     @property
     def effective_ns(self) -> int:
@@ -280,7 +281,7 @@ class FixtureActionGroup:
 def _fixture_action_groups(
     actions: tuple[PhysicalAction, ...], cycle: int
 ) -> tuple[FixtureActionGroup, ...]:
-    """Label reset/menu/click/look separately from motor movement.
+    """Keep reset/menu/click diagnostics separate from movement/look/interact.
 
     Each group is admitted only when its first primitive is due, using a real
     captured pre-action observation. Held movement and releases share one label.
@@ -292,8 +293,10 @@ def _fixture_action_groups(
         group = "movement" if name in {"w", "a", "s", "d"} else name
         groups.setdefault(group, []).append(action)
     return tuple(sorted(
-        (FixtureActionGroup(tuple(values), cycle, name == "movement")
-         for name, values in groups.items()),
+        (FixtureActionGroup(
+            tuple(values), cycle, name == "movement",
+            name if name in {"movement", "look", "interact"} else None,
+        ) for name, values in groups.items()),
         key=lambda group: group.effective_ns,
     ))
 
@@ -313,7 +316,7 @@ def _submit_fixture_group(
     actions = group.actions
     pre_id = f"fixture-pre-{group.cycle:04d}-{actions[0].action_id}"
     visual = analyze_fixture_frame(frame)
-    writer.record_observation(pre_id, now, {
+    writer.record_observation(pre_id, frame.capture_timestamp, {
         "source": "captured-pre-action-screen",
         "frame_id": frame.frame_id,
         "capture_timestamp_ns": frame.capture_timestamp.value_ns,
@@ -332,11 +335,23 @@ def _submit_fixture_group(
     if not decision.accepted:
         raise ContractViolation("fixture group proposal was not accepted")
     parent_id = None
-    if group.movement:
-        move_x, move_y = FixtureWorld(scenario=scenario).canonical_movement
-        canonical = CanonicalAction(
-            f"fixture-{group.cycle:04d}-canonical", lifetime, move_x=move_x, move_y=move_y,
-        )
+    intent = "movement" if group.movement else group.intent
+    if intent is not None:
+        canonical_id = f"fixture-{group.cycle:04d}-{intent}-canonical"
+        if intent == "movement":
+            move_x, move_y = FixtureWorld(scenario=scenario).canonical_movement
+            canonical = CanonicalAction(canonical_id, lifetime, move_x=move_x, move_y=move_y)
+        elif intent == "look":
+            relative = [a for a in actions if isinstance(a, RelativeMouseAction)]
+            if len(relative) != len(actions) or len(relative) != 1:
+                raise ContractViolation("fixture look needs exactly one relative primitive")
+            canonical = CanonicalAction(
+                canonical_id, lifetime, look_x=relative[0].dx / 100, look_y=relative[0].dy / 100
+            )
+        elif intent == "interact":
+            canonical = CanonicalAction(canonical_id, lifetime, interact=True)
+        else:
+            raise ContractViolation("unknown fixture logical intent")
         parent_id = canonical.action_id
         writer.record_canonical_action(
             canonical,
@@ -352,7 +367,7 @@ def _submit_fixture_group(
     )
     if added != len(actions):
         raise ContractViolation("fixture group was not fully scheduled")
-    return added, group.movement
+    return added, parent_id is not None
 
 
 def _capture_registry(preference: str, windows: Win32WindowBackend) -> CaptureBackendRegistry:
@@ -1083,7 +1098,9 @@ def run_fixture_qualification(
         execution_ratio = stats.executed / scheduled if scheduled else 0.0
         control_passed = (
             next_cycle == cycle_count
-            and canonical_recorded == cycle_count
+            and canonical_recorded == 3 * cycle_count
+            and not pending_groups
+            and stats.executed == scheduled
             and stats.expired == 0
             and stats.rejected == 0
             and execution_ratio >= 0.95

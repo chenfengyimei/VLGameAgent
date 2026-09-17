@@ -102,8 +102,6 @@ class DatasetEpisode:
             raise ContractViolation("dataset receipt qualification must be a boolean")
         if self.qualified_duration_ns < 0 or self.qualified_duration_ns > self.duration_ns:
             raise ContractViolation("dataset qualified duration is invalid")
-        # Causal point labels can be valid with zero measured active time.
-        # Label qualification is not a claim of recorded corpus hours.
         if self.execution_receipts_qualified and self.content_digest is None:
             raise ContractViolation("receipt-qualified Episode needs a content digest")
         if not math.isfinite(self.quality_score) or not 0 <= self.quality_score <= 100:

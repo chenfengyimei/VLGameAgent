@@ -151,6 +151,11 @@ class GoalVerifier:
         self.last_missing_evidence: tuple[str, ...] = ()
         self.last_evidence_confidence: float | None = None
 
+    def reset(self) -> None:
+        self._candidate = None
+        self.last_missing_evidence = ()
+        self.last_evidence_confidence = None
+
     @property
     def required_evidence(self) -> tuple[str, ...]:
         return tuple(original for original, _ in self._required_evidence)
@@ -327,6 +332,8 @@ class ActionValidator:
         if action is None:
             return False, "ACT decision did not include an action"
         sensitive = inspect_sensitive_page(fresh_snapshot.visible_text, action)
+        if not sensitive.requires_owner:
+            sensitive = inspect_sensitive_page(decided_snapshot.visible_text, action)
         if sensitive.requires_owner:
             return False, sensitive.reason
         consistent, generation_reason = generations_consistent(
@@ -734,6 +741,12 @@ class ClosedLoopSupervisor:
         }
 
     def observe(self, snapshot: PerceptionSnapshot, frame: Frame) -> EffectObservation:
+        sensitive = inspect_sensitive_page(snapshot.visible_text)
+        if sensitive.requires_owner:
+            self._goal.reset()
+            self._pending = None
+            self.last_effect_observed = None
+            return EffectObservation(False, None, sensitive.reason)
         if self._session is not None:
             self._session.observe_snapshot(snapshot, snapshot.captured_at.value_ns)
         pending = self._pending
@@ -1010,7 +1023,10 @@ class ClosedLoopSupervisor:
                 DecisionDisposition.REOBSERVE, "decision generation became stale", outcome
             )
         sensitive = inspect_sensitive_page(fresh_snapshot.visible_text, outcome.action)
+        if not sensitive.requires_owner:
+            sensitive = inspect_sensitive_page(decided_snapshot.visible_text, outcome.action)
         if sensitive.requires_owner:
+            self._goal.reset()
             # Source tags and goals cannot authorize sensitive pages.
             # WAIT here never escalates to an automatic recovery click.
             return SupervisedDecision(DecisionDisposition.WAIT, sensitive.reason, outcome)

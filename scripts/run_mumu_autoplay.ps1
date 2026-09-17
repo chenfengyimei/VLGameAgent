@@ -30,7 +30,7 @@ if ($VisionTimeoutSeconds -lt 30) {
 if ($DecisionTimeoutSeconds -lt 1 -or $MaxRestarts -lt 0) {
     throw "DecisionTimeoutSeconds must be positive and MaxRestarts non-negative"
 }
-$requiresThinking = $Model -ieq "glm-5.3-flash"
+$requiresThinking = $Model -match '(?i)(^|/)glm-5\.3(-flash)?$'
 if ($MaxOutputTokens -eq 0) {
     $MaxOutputTokens = if ($requiresThinking) { 4096 } else { 256 }
 }
@@ -147,12 +147,15 @@ function Ensure-LocalModel {
 
 $useLocalModel = $BaseUrl -match '^https?://(?:127\.0\.0\.1|localhost)(?::|/)'
 if ($useLocalModel) {
+    $readinessAttempts = 0
     while ($true) {
         try {
             Ensure-LocalModel
             break
         }
         catch {
+            $readinessAttempts += 1
+            if ($readinessAttempts -ge 5) { throw "Local model startup retry budget exhausted" }
             Write-SupervisorLog "Model readiness failed: $($_.Exception.Message)"
             Write-SupervisorLog "Retrying model startup in $RestartDelaySeconds seconds"
             Start-Sleep -Seconds $RestartDelaySeconds
@@ -231,8 +234,7 @@ while ($true) {
         exit 0
     }
     if ($ranSeconds -ge 300) {
-        # A crash after a long healthy run is a fresh failure, not part of
-        # the previous crash loop: reset the restart budget.
+        # A healthy run resets delay, never the lifetime restart budget.
         if ($restartCount -gt 0) {
             Write-SupervisorLog "Agent ran ${ranSeconds}s before crashing; resetting restart delay (total attempt budget retained)"
         }
@@ -241,7 +243,7 @@ while ($true) {
     }
     $restartCount += 1
     if ($restartCount -gt $maxRestarts) {
-        Write-SupervisorLog "Restart budget exhausted ($maxRestarts consecutive crashes); supervisor standing down"
+        Write-SupervisorLog "Restart budget exhausted ($MaxRestarts total crashes); supervisor standing down"
         exit 1
     }
     $jitter = Get-Random -Minimum 0 -Maximum 3

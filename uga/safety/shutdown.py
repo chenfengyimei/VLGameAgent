@@ -49,30 +49,42 @@ class SafetyShutdown:
         self._trip: SafetyTrip | None = None
         self._lock = Lock()
 
+    def arm(self) -> bool:
+        """Atomic with the stop latch: startup cannot undo an early hotkey."""
+        with self._lock:
+            if self._trip is not None:
+                return False
+            self._enabled.set(True)
+            return True
+
     def trip(self, cause: ShutdownCause) -> SafetyTrip:
+        # Publish the disabled latch before any clock or driver operation.
+        # Status readers must not wait for cleanup held inside a driver call.
         with self._lock:
             if self._trip is not None:
                 return self._trip
-            errors: list[str] = []
-            try:
-                occurred_at = self._clock.now()
-            except Exception as exc:
-                # A failing clock must never abort the neutralization sequence.
-                occurred_at = UGATime(0)
-                errors.append(f"clock unavailable during trip: {exc}")
             self._enabled.set(False)
-            # This shutdown owns the ordered flush/release below, so suppress the
-            # scheduler's lease-loss callback and avoid duplicate backend writes.
+            self._trip = SafetyTrip(cause, UGATime(0), 0, ("cleanup_in_progress",))
+        errors: list[str] = []
+        try:
+            occurred_at = self._clock.now()
+        except Exception as exc:
+            occurred_at = UGATime(0)
+            errors.append(f"clock unavailable during trip: {exc}")
+        try:
             self._leases.revoke_all(notify=False)
-            try:
-                flushed = self._queue.flush()
-            except Exception as exc:
-                flushed = 0
-                errors.append(f"queue flush failed: {exc}")
-            try:
-                self._executor.release_all()
-            except Exception as exc:
-                errors.append(f"input release failed: {exc}")
+        except Exception as exc:
+            errors.append(f"lease revoke failed: {exc}")
+        try:
+            flushed = self._queue.flush()
+        except Exception as exc:
+            flushed = 0
+            errors.append(f"queue flush failed: {exc}")
+        try:
+            self._executor.release_all()
+        except Exception as exc:
+            errors.append(f"input release failed: {exc}")
+        with self._lock:
             self._trip = SafetyTrip(cause, occurred_at, flushed, tuple(errors))
             return self._trip
 

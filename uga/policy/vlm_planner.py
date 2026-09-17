@@ -219,6 +219,7 @@ class OpenAICompatibleVisionClient:
         response_format: dict[str, Any] | None = None,
     ) -> str:
         """Send one or more frames (oldest first) plus the instruction."""
+        checkpoint()
         if not images or len(images) > request_policy(self._model).max_images:
             raise ContractViolation("vision client requires a bounded, non-empty image list")
         content: list[dict[str, Any]] = [

@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from uga.core.errors import ContractViolation
+from uga.policy.model_capabilities import model_request_options
 
 _RESERVED = frozenset({
     "model", "messages", "max_tokens", "max_completion_tokens", "response_format",
@@ -26,7 +27,7 @@ class ModelRequestPolicy:
 
 
 def request_policy(model: str) -> ModelRequestPolicy:
-    if model.casefold() == "glm-5.3-flash":
+    if model.casefold().rsplit("/", 1)[-1] in {"glm-5.3", "glm-5.3-flash"}:
         # This output floor is our operational policy, not an API limit.
         return ModelRequestPolicy(thinking_required=True, minimum_output_budget=1024)
     return ModelRequestPolicy()
@@ -47,4 +48,6 @@ def validated_extensions(
                 or ("thinking" in extra and extra["thinking"] != {"type": "enabled"})):
             raise ContractViolation("this model request policy requires enabled thinking")
         extra["thinking"] = {"type": "enabled"}
-    return extra
+    return model_request_options(
+        model, disable_thinking=disable_thinking, extra_body=extra
+    )

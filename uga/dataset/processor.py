@@ -52,10 +52,17 @@ class ProcessedEpisode:
     qualification: EpisodeQualification = EpisodeQualification.LEGACY
     qualified_duration_ns: int = 0
     exclusion_counts: tuple[tuple[str, int], ...] = ()
+    active_execution_duration_ns: int = 0
 
 
 class DatasetProcessor:
-    """Aligns by monotonic timestamp/reference, never by array position."""
+    """Causal logical actions qualified by their complete physical outcomes.
+
+    Coverage is the union of pre-capture to last-execution evidence spans,
+    clipped to the Episode. Unused action TTL is not demonstrated data.
+    Active execution is separately measured from first to last actual primitive.
+    Point samples may be valid with zero active duration; count and hours differ.
+    """
 
     def __init__(
         self,
@@ -75,23 +82,12 @@ class DatasetProcessor:
         times = [int(str(row["timestamp_ns"])) for row in observations]
         samples: list[AlignedSample] = []
         exclusions: dict[str, int] = {}
-        # Keep mixed motor/GUI episodes. Physical children are evidence for a
-        # logical label, never duplicate labels of their own.
-        logical_ids = {
-            str(action["action_id"]) for action in replay.actions
-            if action.get("action_layer") == "canonical"
-            or action.get("action_type") == "GuiAction"
-        }
-        children = {
-            str(row["action_id"]) for row in replay.provenance
-            if row.get("parent_action_id") in logical_ids
-        }
-        selected_actions = [
+        canonical_actions = [
             action for action in replay.actions
-            if str(action["action_id"]) in logical_ids
-            or (action.get("action_layer") == "physical"
-                and str(action["action_id"]) not in children)
+            if action.get("action_layer") in {"canonical", "gui"}
+            or action.get("action_type") == "GuiAction"
         ]
+        selected_actions = canonical_actions or replay.actions
         start = int(replay.metadata["start_monotonic_ns"])
         end = int(replay.metadata["end_monotonic_ns"])
         if not replay.has_execution_receipt_table:
@@ -105,6 +101,7 @@ class DatasetProcessor:
                 (("legacy_missing_receipts", len(selected_actions)),),
             )
         qualified_intervals: list[tuple[int, int]] = []
+        active_intervals: list[tuple[int, int]] = []
         for action in selected_actions:
             action_id = str(action["action_id"])
             provenance = replay.provenance_for_action(action_id)
@@ -150,6 +147,9 @@ class DatasetProcessor:
             inference_observation = self._resolve_observation(
                 action, observations, observation_by_id, times
             )
+            if int(str(inference_observation["timestamp_ns"])) > action_time:
+                self._exclude(exclusions, "future_inference_observation")
+                continue
             samples.append(
                 AlignedSample(
                     str(replay.metadata["episode_id"]),
@@ -167,13 +167,17 @@ class DatasetProcessor:
                     int(str(inference_observation["timestamp_ns"])),
                     str(inference_observation["payload_json"]),
                     "executed",
-                    str(action["action_layer"]),
-                    str(action["action_type"]),
+                    str(action.get("action_layer", "physical")),
+                    str(action.get("action_type", "")),
                 )
             )
-            # Measured active execution time, not action TTL or wall time.
-            # Instantaneous point labels are valid but contribute zero duration.
             qualified_intervals.append(
+                (
+                    max(start, observation_time),
+                    min(end, max(int(str(receipt["at_ns"])) for receipt in receipts)),
+                )
+            )
+            active_intervals.append(
                 (max(start, action_time), min(end, int(str(latest_receipt["at_ns"]))))
             )
         qualified_duration = self._merged_duration(qualified_intervals)
@@ -190,6 +194,7 @@ class DatasetProcessor:
             qualification,
             qualified_duration,
             tuple(sorted(exclusions.items())),
+            self._merged_duration(active_intervals),
         )
 
     @staticmethod
@@ -199,33 +204,23 @@ class DatasetProcessor:
         provenance: dict[str, object],
     ) -> tuple[dict[str, object], ...]:
         action_id = str(action["action_id"])
-        if action.get("action_layer") != "canonical" and action.get("action_type") != "GuiAction":
+        if (action.get("action_layer") not in {"canonical", "gui"}
+                and action.get("action_type") != "GuiAction"):
             proposal_id = provenance.get("proposal_id")
             if provenance.get("action_source") == "GUI_AGENT" and proposal_id is not None:
-                children = {
-                    str(row["action_id"]) for row in replay.provenance
-                    if row.get("proposal_id") == proposal_id
-                    and str(row["action_id"]) in {
-                        str(item["action_id"]) for item in replay.actions
-                        if item.get("action_layer") == "physical"
-                    }
-                }
+                children = replay.proposal_action_ids(str(proposal_id))
                 receipts = replay.receipts_for_proposal(str(proposal_id))
                 if {str(row["action_id"]) for row in receipts} != children:
                     return ()
                 return receipts
             return replay.receipts_for_action(action_id)
-        child_ids = {
-            str(row["action_id"])
-            for row in replay.provenance
-            if row.get("parent_action_id") == action_id
-        }
+        child_ids = replay.child_action_ids(action_id)
         if not child_ids:
             return ()
         receipts = tuple(
             receipt
-            for receipt in replay.execution_receipts
-            if str(receipt.get("action_id")) in child_ids
+            for child in child_ids
+            for receipt in replay.receipts_for_action(child)
         )
         if len(receipts) != len(child_ids):
             return ()

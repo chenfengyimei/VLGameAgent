@@ -288,7 +288,6 @@ class CaptureHubTests(unittest.IsolatedAsyncioTestCase):
         parked_stats = hub.stats()
         self.assertGreaterEqual(parked_stats.accepted_frames, 1)
 
-        release.set()
         deadline = asyncio.get_running_loop().time() + 2.0
         while (
             hub.stats().accepted_frames <= parked_stats.accepted_frames
@@ -296,6 +295,7 @@ class CaptureHubTests(unittest.IsolatedAsyncioTestCase):
         ):
             await asyncio.sleep(0.005)
         stats = hub.stats()
+        release.set()
         stop.set()
         await task
 

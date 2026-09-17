@@ -89,6 +89,23 @@ class ReplayEngine:
         )
         self._events = self._validate_and_materialize()
         self._cursor = 0
+        self._provenance_index = {str(row["action_id"]): row for row in self.provenance}
+        self._receipt_index: dict[str, list[dict[str, Any]]] = {}
+        self._proposal_receipt_index: dict[str, list[dict[str, Any]]] = {}
+        self._children_index: dict[str, set[str]] = {}
+        self._proposal_action_index: dict[str, set[str]] = {}
+        for row in self.execution_receipts:
+            self._receipt_index.setdefault(str(row["action_id"]), []).append(row)
+            self._proposal_receipt_index.setdefault(str(row["proposal_id"]), []).append(row)
+        for row in self.provenance:
+            if row.get("parent_action_id") is not None:
+                self._children_index.setdefault(str(row["parent_action_id"]), set()).add(
+                    str(row["action_id"])
+                )
+            if row.get("proposal_id") is not None:
+                self._proposal_action_index.setdefault(str(row["proposal_id"]), set()).add(
+                    str(row["action_id"])
+                )
 
     def validation(self) -> ReplayValidation:
         digest_payload = [
@@ -148,20 +165,19 @@ class ReplayEngine:
         )
 
     def provenance_for_action(self, action_id: str) -> dict[str, Any] | None:
-        return next(
-            (row for row in self.provenance if row.get("action_id") == action_id),
-            None,
-        )
+        return self._provenance_index.get(action_id)
 
     def receipts_for_action(self, action_id: str) -> tuple[dict[str, Any], ...]:
-        return tuple(
-            row for row in self.execution_receipts if row.get("action_id") == action_id
-        )
+        return tuple(self._receipt_index.get(action_id, ()))
 
     def receipts_for_proposal(self, proposal_id: str) -> tuple[dict[str, Any], ...]:
-        return tuple(
-            row for row in self.execution_receipts if row.get("proposal_id") == proposal_id
-        )
+        return tuple(self._proposal_receipt_index.get(proposal_id, ()))
+
+    def child_action_ids(self, parent: str) -> frozenset[str]:
+        return frozenset(self._children_index.get(parent, ()))
+
+    def proposal_action_ids(self, proposal: str) -> frozenset[str]:
+        return frozenset(self._proposal_action_index.get(proposal, ()))
 
     def _validate_and_materialize(self) -> tuple[ReplayEvent, ...]:
         ordered = sorted(
@@ -225,13 +241,17 @@ class ReplayEngine:
             if not str(receipt.get("proposal_id", "")).strip():
                 raise ContractViolation("execution receipt proposal id is missing")
             at_ns = int(receipt["at_ns"])
-            if receipt.get("status") == "executed" and not (
+            start_ns = int(self.metadata["start_monotonic_ns"])
+            end_ns = int(self.metadata["end_monotonic_ns"])
+            if not start_ns <= at_ns <= end_ns:
+                raise ContractViolation("execution receipt is outside its Episode")
+            if receipt["status"] == "executed" and not (
                 int(receipt_action["effective_from_ns"]) <= at_ns
                 <= int(receipt_action["expires_at_ns"])
             ):
-                raise ContractViolation("executed receipt is outside the action lifetime")
-            if at_ns < 0:
-                raise ContractViolation("execution receipt timestamp is negative")
+                raise ContractViolation("executed receipt is outside action lifetime")
+            if receipt.get("primitive") != receipt_action.get("action_type"):
+                raise ContractViolation("receipt primitive does not match its recorded action")
             inference_id = receipt.get("inference_observation_id")
             if inference_id is not None and str(inference_id) not in observation_ids:
                 raise ContractViolation(

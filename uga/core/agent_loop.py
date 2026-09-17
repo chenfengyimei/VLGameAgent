@@ -7,7 +7,7 @@ import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from functools import partial
-from typing import Protocol, runtime_checkable
+from typing import Protocol, TypeVar, runtime_checkable
 
 from uga.agent.closed_loop import (
     ActionValidator,
@@ -46,6 +46,8 @@ from uga.safety.action_gate import generations_consistent, point_is_clickable, r
 from uga.safety.sensitive_page import inspect_sensitive_page
 from uga.time.clock import ClockBackend
 from uga.windows.coordinates import CoordinateTransform, Rect
+
+_T = TypeVar("_T")
 
 
 class CaptureSource(Protocol):
@@ -159,7 +161,7 @@ class RealtimeAgentLoop:
         ):
             raise ContractViolation("grounded loop components must be configured together")
         for timeout_s in (decision_timeout_s, perception_timeout_s):
-            if not math.isfinite(timeout_s) or timeout_s <= 0:
+            if isinstance(timeout_s, bool) or not math.isfinite(timeout_s) or timeout_s <= 0:
                 raise ContractViolation("worker deadlines must be finite and positive")
         self._decision_timeout_s = decision_timeout_s
         self._perception_timeout_s = perception_timeout_s
@@ -339,6 +341,22 @@ class RealtimeAgentLoop:
             and current.frame.physical_rect == validated.physical_rect
         )
 
+    def _run_cancelled(self) -> bool:
+        return self._run_context is not None and self._run_context.should_stop()
+
+    async def _bounded_call(
+        self, worker: DeadlineWorker, operation: Callable[[], _T], budget: CallBudget
+    ) -> _T:
+        try:
+            return await worker.call(operation, budget)
+        except (ProviderError, asyncio.CancelledError) as exc:
+            if isinstance(exc, asyncio.CancelledError) or exc.fatal:
+                if self._run_context is not None:
+                    self._run_context.cancel()
+                self._leases.revoke_all()
+                self._scheduler.neutralize()
+            raise
+
     async def step(self) -> AgentLoopStep:
         item = await self._capture.capture_once()
         latest_item = self._frames.latest()
@@ -371,14 +389,17 @@ class RealtimeAgentLoop:
         effect_pending = False
         if self._perception_builder is not None:
             geometry_generation = self._update_geometry_generation(pending.frame)
-            perception = await self._perception_worker.call(partial(
+            perception = await self._bounded_call(self._perception_worker, partial(
                 self._perception_builder.build,
                 pending,
                 self._mode_router.current,
                 geometry_generation=geometry_generation,
                 task_generation=self._task_generation,
-            ), CallBudget(self._perception_timeout_s))
+            ), CallBudget(self._perception_timeout_s, cancelled=self._run_cancelled))
             assert self._closed_loop is not None
+            if inspect_sensitive_page(perception.visible_text).requires_owner:
+                self._leases.revoke_all()
+                self._scheduler.neutralize()
             effect_pending = self._closed_loop.observe(perception, pending.frame).pending
             # observe() may commit a new task. Stamp the request AFTER that
             # update rather than one iteration late.
@@ -479,13 +500,13 @@ class RealtimeAgentLoop:
             # Stamp the request generation: a stop or supervisor rebuild that
             # lands while the model thinks must kill this result on arrival.
             stamp = self._run_context.stamp() if self._run_context is not None else None
-            budget = CallBudget(self._decision_timeout_s)
+            budget = CallBudget(self._decision_timeout_s, cancelled=self._run_cancelled)
             try:
                 session = closed_loop.session
                 restored_unverified = (
                     session is not None and session.restored_task_unverified
                 )
-                outcome = await self._model_worker.call(partial(
+                outcome = await self._bounded_call(self._model_worker, partial(
                     grounded_planner.decide,
                     snapshot=perception,
                     frames=history[-3:],
@@ -589,7 +610,7 @@ class RealtimeAgentLoop:
                 geometry_generation = self._update_geometry_generation(
                     latest_after_inference.frame
                 )
-                fresh_perception = await self._perception_worker.call(partial(
+                fresh_perception = await self._bounded_call(self._perception_worker, partial(
                     self._perception_builder.build,
                     latest_after_inference,
                     self._mode_router.current,
@@ -606,7 +627,7 @@ class RealtimeAgentLoop:
                 fresh_perception = replace(
                     fresh_perception, task_generation=self._task_generation
                 )
-            supervised = await self._supervision_worker.call(partial(
+            supervised = await self._bounded_call(self._supervision_worker, partial(
                 closed_loop.assess,
                 outcome,
                 perception,
@@ -641,7 +662,7 @@ class RealtimeAgentLoop:
                 final_perception = fresh_perception
                 if current_item.sequence != latest_after_inference.sequence:
                     assert self._perception_builder is not None
-                    final_perception = await self._perception_worker.call(partial(
+                    final_perception = await self._bounded_call(self._perception_worker, partial(
                         self._perception_builder.build, current_item, self._mode_router.current,
                         geometry_generation=self._update_geometry_generation(current_item.frame),
                         task_generation=self._task_generation,
@@ -943,8 +964,9 @@ class RealtimeAgentLoop:
                 observation.user_goal,
             )
             stamp = self._run_context.stamp() if self._run_context is not None else None
-            output = await self._model_worker.call(
-                partial(self._policy.infer, context), CallBudget(self._decision_timeout_s)
+            output = await self._bounded_call(self._model_worker,
+                partial(self._policy.infer, context),
+                CallBudget(self._decision_timeout_s, cancelled=self._run_cancelled)
             )
             await self._events.publish(
                 EventType.POLICY_INFERENCE_COMPLETED,

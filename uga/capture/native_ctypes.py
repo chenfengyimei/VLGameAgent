@@ -144,6 +144,8 @@ class NativeCaptureLibrary:
 
     def last_error(self) -> str:
         required = int(self._dll.uga_capture_last_error(None, 0))
+        if not 0 <= required <= 65_536:
+            return "native error detail exceeded the bounded buffer"
         buffer = ctypes.create_string_buffer(required + 1)
         self._dll.uga_capture_last_error(buffer, len(buffer))
         return buffer.value.decode("utf-8", errors="replace")
@@ -202,6 +204,9 @@ class NativeCaptureLibrary:
 
     def destroy(self, handle: ctypes.c_void_p) -> None:
         self._dll.uga_capture_destroy(handle)
+        detail = self.last_error()
+        if detail:
+            raise BackendUnavailableError(detail)
 
     def raise_status(self, status: int) -> None:
         detail = self.last_error() or f"native capture status {status}"
@@ -234,17 +239,18 @@ class CtypesNativeCaptureDriver(NativeCaptureDriver):
         self._target: WindowIdentity | None = None
 
     def probe(self, target: WindowIdentity) -> tuple[bool, str, CaptureCapability]:
-        capability = _capability(self._backend)
-        try:
-            self._verify_target(target)
-            handle = self._library.create(self._backend, target.hwnd)
-            self._verify_target(target)
-        except BackendUnavailableError as error:
-            return False, str(error), capability
-        finally:
-            if "handle" in locals():
-                self._library.destroy(handle)
-        return True, f"native ABI {_EXPECTED_ABI:#x} available", capability
+        with self._exclusive():
+            capability = _capability(self._backend)
+            try:
+                self._verify_target(target)
+                handle = self._library.create(self._backend, target.hwnd)
+                self._verify_target(target)
+            except BackendUnavailableError as error:
+                return False, str(error), capability
+            finally:
+                if "handle" in locals():
+                    self._library.destroy(handle)
+            return True, f"native ABI {_EXPECTED_ABI:#x} available", capability
 
     @contextlib.contextmanager
     def _exclusive(self) -> Iterator[None]:
