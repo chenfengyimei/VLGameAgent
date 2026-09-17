@@ -18,8 +18,13 @@ from uga.core.artifact_limits import (
 )
 from uga.core.errors import ContractViolation
 from uga.core.schema import VersionedMixin
-from uga.dataset.processor import DatasetSplit, LeakageSafeSplitRegistry
-from uga.dataset.validator import QualityStatus
+from uga.dataset.processor import (
+    DatasetProcessor,
+    DatasetSplit,
+    EpisodeQualification,
+    LeakageSafeSplitRegistry,
+)
+from uga.dataset.validator import DatasetValidator, QualityStatus
 from uga.recording.replay import ReplayEngine
 
 _SHA256 = re.compile(r"[0-9a-f]{64}")
@@ -73,6 +78,9 @@ class DatasetEpisode:
     checksum_digest: str
     instruction_labeled: bool = False
     reasoning_labeled: bool = False
+    execution_receipts_qualified: bool = False
+    qualified_duration_ns: int = 0
+    content_digest: str | None = None
 
     def __post_init__(self) -> None:
         identifiers = (
@@ -90,10 +98,20 @@ class DatasetEpisode:
             raise ContractViolation("dataset episode path must be safe relative POSIX path")
         if self.duration_ns <= 0:
             raise ContractViolation("dataset episode duration must be positive")
+        if type(self.execution_receipts_qualified) is not bool:
+            raise ContractViolation("dataset receipt qualification must be a boolean")
+        if self.qualified_duration_ns < 0 or self.qualified_duration_ns > self.duration_ns:
+            raise ContractViolation("dataset qualified duration is invalid")
+        if self.execution_receipts_qualified and self.qualified_duration_ns <= 0:
+            raise ContractViolation("receipt-qualified Episode needs positive active duration")
+        if self.execution_receipts_qualified and self.content_digest is None:
+            raise ContractViolation("receipt-qualified Episode needs a content digest")
         if not math.isfinite(self.quality_score) or not 0 <= self.quality_score <= 100:
             raise ContractViolation("dataset quality score must be in [0, 100]")
         if _SHA256.fullmatch(self.checksum_digest) is None:
             raise ContractViolation("dataset episode checksum digest must be SHA-256")
+        if self.content_digest is not None and _SHA256.fullmatch(self.content_digest) is None:
+            raise ContractViolation("dataset episode content digest must be SHA-256")
 
 
 @dataclass(frozen=True, slots=True)
@@ -129,6 +147,7 @@ class DatasetManifest(VersionedMixin):
             raise ContractViolation("dataset manifest exceeds the Episode resource limit")
         registry = LeakageSafeSplitRegistry()
         episode_ids: set[str] = set()
+        content_splits: dict[str, DatasetSplit] = {}
         for episode in self.episodes:
             if episode.episode_id in episode_ids:
                 raise ContractViolation(f"duplicate dataset episode: {episode.episode_id}")
@@ -152,12 +171,28 @@ class DatasetManifest(VersionedMixin):
                 game_id=episode.game_id,
                 split=episode.split,
             )
+            if episode.content_digest is not None:
+                previous_split = content_splits.get(episode.content_digest)
+                if previous_split is not None and previous_split != episode.split:
+                    raise ContractViolation(
+                        "dataset leakage: duplicate Episode content crosses splits"
+                    )
+                content_splits[episode.content_digest] = episode.split
 
     def hours(self, split: DatasetSplit | None = None) -> float:
         duration = sum(
             episode.duration_ns
             for episode in self.episodes
             if split is None or episode.split == split
+        )
+        return duration / 3_600_000_000_000
+
+    def qualified_hours(self, split: DatasetSplit | None = None) -> float:
+        duration = sum(
+            episode.qualified_duration_ns
+            for episode in self.episodes
+            if episode.execution_receipts_qualified
+            and (split is None or episode.split == split)
         )
         return duration / 3_600_000_000_000
 
@@ -209,7 +244,41 @@ class DatasetManifest(VersionedMixin):
             )
             if digest != episode.checksum_digest:
                 raise ContractViolation(f"dataset episode digest mismatch: {episode.episode_id}")
-            ReplayEngine(checksum_path.parent, limits=limits)
+            replay = ReplayEngine(checksum_path.parent, limits=limits)
+            artifact_episode_id = str(replay.metadata.get("episode_id", ""))
+            artifact_game_id = str(replay.metadata.get("game_id", ""))
+            artifact_duration = int(replay.metadata["end_monotonic_ns"]) - int(
+                replay.metadata["start_monotonic_ns"]
+            )
+            if artifact_episode_id != episode.episode_id:
+                raise ContractViolation("dataset episode id does not match artifact metadata")
+            if artifact_game_id != episode.game_id:
+                raise ContractViolation("dataset game id does not match artifact metadata")
+            if artifact_duration != episode.duration_ns:
+                raise ContractViolation("dataset duration does not match artifact metadata")
+            processed = DatasetProcessor(limits=limits).process(episode_path)
+            if episode.execution_receipts_qualified:
+                quality = DatasetValidator(limits=limits).validate(episode_path)
+                if (
+                    quality.status != episode.quality_status
+                    or not math.isclose(
+                        quality.quality_score, episode.quality_score, abs_tol=1e-9
+                    )
+                ):
+                    raise ContractViolation(
+                        "dataset quality does not match Episode artifacts"
+                    )
+                if processed.qualification != EpisodeQualification.QUALIFIED:
+                    raise ContractViolation("dataset Episode is not execution-receipt qualified")
+                if processed.qualified_duration_ns != episode.qualified_duration_ns:
+                    raise ContractViolation(
+                        "dataset qualified duration does not match execution receipts"
+                    )
+            if episode.content_digest is not None and (
+                episode_content_digest(episode_path, limits=limits)
+                != episode.content_digest
+            ):
+                raise ContractViolation("dataset Episode content digest mismatch")
 
     def write(self, path: str | Path) -> Path:
         destination = Path(path)
@@ -298,6 +367,9 @@ class DatasetManifest(VersionedMixin):
             "checksum_digest": item.checksum_digest,
             "instruction_labeled": item.instruction_labeled,
             "reasoning_labeled": item.reasoning_labeled,
+            "execution_receipts_qualified": item.execution_receipts_qualified,
+            "qualified_duration_ns": item.qualified_duration_ns,
+            "content_digest": item.content_digest,
         }
 
     @staticmethod
@@ -319,6 +391,12 @@ class DatasetManifest(VersionedMixin):
             str(item["checksum_digest"]),
             _strict_bool(item.get("instruction_labeled", False), "instruction_labeled"),
             _strict_bool(item.get("reasoning_labeled", False), "reasoning_labeled"),
+            _strict_bool(
+                item.get("execution_receipts_qualified", False),
+                "execution_receipts_qualified",
+            ),
+            int(item.get("qualified_duration_ns", 0)),
+            None if item.get("content_digest") is None else str(item["content_digest"]),
         )
 
 
@@ -326,3 +404,15 @@ def _strict_bool(value: object, field: str) -> bool:
     if type(value) is not bool:
         raise ContractViolation(f"dataset {field} must be a boolean")
     return value
+
+
+def episode_content_digest(
+    episode_path: str | Path,
+    *,
+    limits: ArtifactResourceLimits = DEFAULT_ARTIFACT_LIMITS,
+) -> str:
+    """Identity-independent visual-content digest for split leakage checks."""
+    video = Path(episode_path) / "video.mp4"
+    if not video.is_file():
+        raise ContractViolation("dataset Episode content digest requires video.mp4")
+    return sha256_file_limited(video, limits.max_video_bytes, "Episode video")

@@ -346,25 +346,12 @@ def _owned_focus_sink(windows: Win32WindowBackend) -> Iterator[WindowSnapshot]:
                 process.wait(timeout=5.0)
 
 
-def _provenance(action: PhysicalAction, lease_id: str, observation_id: str) -> ActionProvenance:
-    return ActionProvenance(
-        action.action_id,
-        "fixture-qualification",
-        "fixture-script-v1",
-        None,
-        observation_id,
-        "fixture-navigation",
-        "fixture-complete-task",
-        ControlMode.PLAY_3D.value,
-        lease_id,
-        1.0,
-        False,
-        action.lifetime,
-    )
-
-
-def _canonical_provenance(
-    action: CanonicalAction, lease_id: str, observation_id: str
+def _provenance(
+    action: PhysicalAction,
+    lease_id: str,
+    observation_id: str,
+    proposal_id: str,
+    parent_action_id: str,
 ) -> ActionProvenance:
     return ActionProvenance(
         action.action_id,
@@ -379,6 +366,31 @@ def _canonical_provenance(
         1.0,
         False,
         action.lifetime,
+        proposal_id,
+        parent_action_id,
+    )
+
+
+def _canonical_provenance(
+    action: CanonicalAction,
+    lease_id: str,
+    observation_id: str,
+    proposal_id: str,
+) -> ActionProvenance:
+    return ActionProvenance(
+        action.action_id,
+        "fixture-qualification",
+        "fixture-script-v1",
+        None,
+        observation_id,
+        "fixture-navigation",
+        "fixture-complete-task",
+        ControlMode.PLAY_3D.value,
+        lease_id,
+        1.0,
+        False,
+        action.lifetime,
+        proposal_id,
     )
 
 
@@ -743,7 +755,7 @@ def run_fixture_qualification(
     final_frame: Frame | None = None
     success_seen = False
     pending_checks: list[int] = []
-    pending_observations: list[tuple[int, int, str, int]] = []
+    pending_observations: list[tuple[int, int, str, int, str]] = []
     episode_path: Path | None = None
     capture_started = clock.now()
     capture_ended = capture_started
@@ -845,18 +857,31 @@ def run_fixture_qualification(
                 for action in actions:
                     writer.record_action(
                         action,
-                        _provenance(action, lease.lease_id, observation_id),
+                        _provenance(
+                            action,
+                            lease.lease_id,
+                            observation_id,
+                            proposal.proposal_id,
+                            f"fixture-{next_cycle:04d}-canonical",
+                        ),
                     )
                 accepted_proposals += 1
                 scheduled += added
                 pending_checks.append(success_check)
                 pending_observations.append(
-                    (base_ns + 250_000_000, next_cycle, lease.lease_id, base_ns)
+                    (
+                        base_ns + 250_000_000,
+                        next_cycle,
+                        lease.lease_id,
+                        base_ns,
+                        proposal.proposal_id,
+                    )
                 )
                 next_cycle += 1
             if loop_before.value_ns >= next_scheduler_ns:
                 before_stats = scheduler.stats()
                 after_stats = scheduler.tick()
+                writer.record_execution_receipts(scheduler.drain_receipts())
                 if after_stats.flushed > before_stats.flushed:
                     observed_flushes += after_stats.flushed - before_stats.flushed
                     writer.record_event(
@@ -879,14 +904,33 @@ def run_fixture_qualification(
                 writer.record_frame(frame)
                 frame_count += 1
                 final_frame = frame
+                visual = analyze_fixture_frame(frame)
+                writer.record_observation(
+                    f"fixture-execution-frame-{frame_count:08d}",
+                    frame.capture_timestamp,
+                    {
+                        "task": metadata.task,
+                        "source": "captured-execution-screen",
+                        "features": _visual_features(
+                            visual,
+                            frame.width,
+                            frame.height,
+                            scenario,
+                        ),
+                        "visual": asdict(visual),
+                    },
+                )
                 while (
                     pending_observations
                     and frame.capture_timestamp.value_ns >= pending_observations[0][0]
                 ):
-                    _, observation_cycle, lease_id, observation_base_ns = pending_observations.pop(
-                        0
-                    )
-                    visual = analyze_fixture_frame(frame)
+                    (
+                        _,
+                        observation_cycle,
+                        lease_id,
+                        observation_base_ns,
+                        proposal_id,
+                    ) = pending_observations.pop(0)
                     observation_id = f"fixture-observation-{observation_cycle:04d}"
                     writer.record_observation(
                         observation_id,
@@ -919,7 +963,9 @@ def run_fixture_qualification(
                     )
                     writer.record_canonical_action(
                         canonical,
-                        _canonical_provenance(canonical, lease_id, observation_id),
+                        _canonical_provenance(
+                            canonical, lease_id, observation_id, proposal_id
+                        ),
                     )
                     canonical_recorded += 1
                 while pending_checks and frame.capture_timestamp.value_ns >= pending_checks[0]:

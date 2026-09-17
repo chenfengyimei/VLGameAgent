@@ -73,8 +73,8 @@ class GuiActionController:
                         action.confidence,
                         False,
                         physical_action.lifetime,
+                        proposal.proposal_id,
                     ),
                 )
         scheduled = self._scheduler.schedule(decision, target, lease)
         return GuiActionSubmission(physical, decision, scheduled)
-

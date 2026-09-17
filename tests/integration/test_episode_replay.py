@@ -9,7 +9,8 @@ from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
-from tests.helpers import frame
+from tests.helpers import frame, identity
+from uga.control.execution_receipt import ExecutionPrimitiveStatus, ExecutionReceipt
 from uga.control.lifetime import ActionLifetime
 from uga.control.physical import KeyboardAction
 from uga.core.artifact_limits import DEFAULT_ARTIFACT_LIMITS
@@ -168,8 +169,23 @@ class EpisodeReplayTests(unittest.TestCase):
             confidence=0.95,
             human_override=False,
             lifetime=lifetime,
+            proposal_id="proposal:keyboard-1",
         )
         writer.record_action(action, provenance)
+        writer.record_execution_receipts(
+            (
+                ExecutionReceipt(
+                    action.action_id,
+                    "proposal:keyboard-1",
+                    type(action).__name__,
+                    ExecutionPrimitiveStatus.EXECUTED,
+                    UGATime(125),
+                    identity(),
+                    "lease-1",
+                    1,
+                ),
+            )
+        )
         human_lifetime = ActionLifetime(UGATime(140), UGATime(140), UGATime(210))
         human_action = KeyboardAction("human-action-1", human_lifetime, 0x11, False)
         human_provenance = ActionProvenance(
@@ -188,6 +204,9 @@ class EpisodeReplayTests(unittest.TestCase):
         )
         input_state = InputStateRecord(UGATime(140), human_action, (), ())
         writer.record_action(human_action, human_provenance, input_state=input_state)
+        writer.record_observation(
+            "observation-execution-1", UGATime(150), {"frame_id": "frame-2"}
+        )
         writer.record_annotation("annotation-1", UGATime(130), {"quality": "ok"})
         writer.set_terminal_context("goal_confirmed", 0.93)
         return writer.finalize(EpisodeResult.SUCCESS, UGATime(40_000_000))
@@ -217,9 +236,13 @@ class EpisodeReplayTests(unittest.TestCase):
             replay = ReplayEngine(episode)
             validation = replay.validation()
             self.assertEqual(validation.action_count, 2)
-            self.assertEqual(validation.observation_count, 1)
+            self.assertEqual(validation.observation_count, 2)
             self.assertTrue(replay.actions_for_observation("observation-1"))
             self.assertIsNotNone(replay.provenance_for_action("action-1"))
+            self.assertEqual(
+                replay.receipts_for_action("action-1")[0]["execution_observation_id"],
+                "observation-execution-1",
+            )
             first_digest = validation.digest
             self.assertEqual(ReplayEngine(episode).validation().digest, first_digest)
             elapsed = [event.elapsed_ns for event in replay.events_until(1_000)]

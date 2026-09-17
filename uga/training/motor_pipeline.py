@@ -358,6 +358,10 @@ def _verify_training_sample_provenance(
             raise ContractViolation("motor training samples must come from the train split")
         if episode.quality_status != QualityStatus.ACCEPTED:
             raise ContractViolation("motor training samples require accepted-quality Episodes")
+        if not episode.execution_receipts_qualified:
+            raise ContractViolation(
+                "motor training samples require execution-receipt-qualified Episodes"
+            )
         grouped.setdefault(episode_id, []).append(sample)
 
     root = Path(dataset_root).resolve()
@@ -365,6 +369,8 @@ def _verify_training_sample_provenance(
     for episode_id, episode_samples in grouped.items():
         episode = episodes[episode_id]
         episode_path = (root / episode.relative_path).resolve()
+        processed = DatasetProcessor(limits=limits).process(episode_path)
+        allowed_samples = {sample.action_id: sample for sample in processed.samples}
         observations: dict[str, tuple[float, ...]] = {}
         for row in read_rows(episode_path / "observations.parquet", limits=limits):
             observation_id = str(row["observation_id"])
@@ -387,11 +393,16 @@ def _verify_training_sample_provenance(
                 raise ContractViolation("motor sample references an unknown observation")
             if sample.action_id not in actions:
                 raise ContractViolation("motor sample references an unknown action")
+            aligned = allowed_samples.get(sample.action_id)
+            if aligned is None or aligned.observation_id != sample.observation_id:
+                raise ContractViolation(
+                    "motor sample is not backed by executed action/observation evidence"
+                )
             action = actions[sample.action_id]
             linked_observation = (
                 None if action["observation_id"] is None else str(action["observation_id"])
             )
-            if linked_observation != sample.observation_id:
+            if linked_observation != aligned.inference_observation_id:
                 raise ContractViolation("motor sample action/observation provenance does not match")
             provenance_key = (episode_id, sample.observation_id, sample.action_id)
             if provenance_key in seen_provenance:

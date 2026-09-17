@@ -288,7 +288,10 @@ def _proves_gate_for_revision(path: Path, expected: str | None, gate_id: str) ->
             return report.source_revision == expected and report.passed
         if gate_id == "dataset-5h":
             manifest = DatasetManifest.load(path)
-            return manifest.source_revision == expected and manifest.hours() >= 5.0
+            return (
+                manifest.source_revision == expected
+                and manifest.qualified_hours() >= 5.0
+            )
         payload: Any = parse_json_text(
             read_text_limited(
                 path,

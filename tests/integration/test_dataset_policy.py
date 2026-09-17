@@ -10,6 +10,7 @@ from pathlib import Path
 from tests.helpers import frame, identity
 from uga.control.arbiter import ActionArbiter
 from uga.control.canonical import CanonicalAction
+from uga.control.execution_receipt import ExecutionPrimitiveStatus, ExecutionReceipt
 from uga.control.lease import ControlMode, ControlOwner
 from uga.control.lease_manager import ControlLeaseManager
 from uga.control.lifetime import ActionLifetime
@@ -27,11 +28,13 @@ from uga.dataset.manifest import (
     DatasetEpisode,
     DatasetLicense,
     DatasetManifest,
+    episode_content_digest,
 )
 from uga.dataset.opencua import OpenCuaExporter, load_opencua_trajectory, write_opencua_trajectory
 from uga.dataset.processor import (
     DatasetProcessor,
     DatasetSplit,
+    EpisodeQualification,
     LeakageSafeSplitRegistry,
     MultiGameDataset,
 )
@@ -110,6 +113,7 @@ def make_episode(root: Path) -> Path:
             0.9,
             False,
             lifetime,
+            "proposal:motor-1",
         ),
     )
     action = KeyboardAction("action-1", lifetime, 0x11, True)
@@ -128,9 +132,114 @@ def make_episode(root: Path) -> Path:
             0.9,
             False,
             lifetime,
+            "proposal:motor-1",
+            canonical.action_id,
         ),
     )
+    writer.record_execution_receipts(
+        (
+            ExecutionReceipt(
+                action.action_id,
+                "proposal:motor-1",
+                type(action).__name__,
+                ExecutionPrimitiveStatus.EXECUTED,
+                UGATime(130),
+                identity(),
+                "lease",
+                1,
+            ),
+        )
+    )
+    writer.record_observation(
+        "obs-execution-1",
+        UGATime(140),
+        {"frame": "frame-1", "features": [1.0, -0.5]},
+    )
     return writer.finalize(EpisodeResult.SUCCESS, UGATime(1_000_000_100))
+
+
+def make_outcome_episode(
+    root: Path,
+    episode_id: str,
+    statuses: tuple[ExecutionPrimitiveStatus, ...],
+) -> Path:
+    writer = EpisodeWriter(
+        root,
+        EpisodeMetadata(
+            episode_id,
+            "game-a",
+            "1",
+            (2, 2),
+            "fixture",
+            100,
+            "move",
+            EpisodeResult.IN_PROGRESS,
+            "agent",
+            "policy",
+            False,
+        ),
+        require_video=False,
+    )
+    writer.record_observation("inference", UGATime(110), {"features": [1.0]})
+    lifetime = ActionLifetime(UGATime(120), UGATime(120), UGATime(200))
+    canonical = CanonicalAction(f"{episode_id}:canonical", lifetime, move_x=1.0)
+    proposal_id = f"proposal:{episode_id}"
+    writer.record_canonical_action(
+        canonical,
+        ActionProvenance(
+            canonical.action_id,
+            "FAST_POLICY",
+            "policy",
+            "checkpoint",
+            "inference",
+            "move",
+            "task",
+            "play_3d",
+            "lease",
+            0.9,
+            False,
+            lifetime,
+            proposal_id,
+        ),
+    )
+    receipts: list[ExecutionReceipt] = []
+    for index, status in enumerate(statuses):
+        physical = KeyboardAction(f"{episode_id}:physical:{index}", lifetime, 0x11, True)
+        writer.record_action(
+            physical,
+            ActionProvenance(
+                physical.action_id,
+                "FAST_POLICY",
+                "policy",
+                "checkpoint",
+                "inference",
+                "move",
+                "task",
+                "play_3d",
+                "lease",
+                0.9,
+                False,
+                lifetime,
+                proposal_id,
+                canonical.action_id,
+            ),
+        )
+        receipts.append(
+            ExecutionReceipt(
+                physical.action_id,
+                proposal_id,
+                type(physical).__name__,
+                status,
+                UGATime(130 + index),
+                identity(),
+                "lease",
+                1,
+                None if status == ExecutionPrimitiveStatus.EXECUTED else status.value,
+            )
+        )
+    writer.record_execution_receipts(tuple(receipts))
+    writer.record_observation("execution", UGATime(150), {"features": [2.0]})
+    return writer.finalize(EpisodeResult.FAILURE, UGATime(300))
 
 
 def chunk(chunk_id: str, value: float = 0.5) -> ActionChunk:
@@ -197,6 +306,38 @@ class ChunkScheduler:
 
 
 class DatasetPolicyTests(unittest.TestCase):
+    def test_rejected_and_partial_actions_excluded_from_positive_training_labels(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            rejected = make_outcome_episode(
+                root, "rejected", (ExecutionPrimitiveStatus.REJECTED,)
+            )
+            partial = make_outcome_episode(
+                root,
+                "partial",
+                (
+                    ExecutionPrimitiveStatus.EXECUTED,
+                    ExecutionPrimitiveStatus.REJECTED,
+                ),
+            )
+
+            for episode in (rejected, partial):
+                processed = DatasetProcessor().process(episode)
+                self.assertEqual(processed.samples, ())
+                self.assertEqual(processed.qualification, EpisodeQualification.UNQUALIFIED)
+                self.assertEqual(
+                    dict(processed.exclusion_counts)["not_fully_executed"], 1
+                )
+
+    def test_fresh_execution_observation_round_trip(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            processed = DatasetProcessor().process(make_episode(Path(temporary)))
+
+            self.assertEqual(processed.qualification, EpisodeQualification.QUALIFIED)
+            self.assertEqual(processed.samples[0].observation_id, "obs-execution-1")
+            self.assertEqual(processed.samples[0].inference_observation_id, "obs-1")
+            self.assertEqual(processed.samples[0].action_delay_ns, 10)
+
     def test_dataset_manifest_builder_verifies_inventory_and_episode(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -379,6 +520,7 @@ class DatasetPolicyTests(unittest.TestCase):
             checksum_digest = hashlib.sha256(
                 (episode_path / "checksum.json").read_bytes()
             ).hexdigest()
+            processed = DatasetProcessor().process(episode_path)
             manifest = DatasetManifest(
                 "dataset-v1-fixture",
                 "0.1",
@@ -410,6 +552,9 @@ class DatasetPolicyTests(unittest.TestCase):
                         checksum_digest,
                         True,
                         False,
+                        True,
+                        processed.qualified_duration_ns,
+                        episode_content_digest(episode_path),
                     ),
                 ),
             )
@@ -422,6 +567,7 @@ class DatasetPolicyTests(unittest.TestCase):
                     limits=replace(DEFAULT_ARTIFACT_LIMITS, max_dataset_bytes=1),
                 )
             self.assertGreater(loaded.hours(DatasetSplit.TRAIN), 0)
+            self.assertGreater(loaded.qualified_hours(DatasetSplit.TRAIN), 0)
             self.assertEqual(dict(loaded.category_distribution())[DatasetCategory.COMBAT], 0)
             samples = root / "motor-samples.jsonl"
             export_motor_samples((episode_path,), samples)
@@ -482,6 +628,120 @@ class DatasetPolicyTests(unittest.TestCase):
                     base_model_license="fixture-only",
                 )
 
+    def test_manifest_identity_duration_match_artifacts(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            episode_path = make_episode(root)
+            report = DatasetValidator().validate(episode_path)
+            processed = DatasetProcessor().process(episode_path)
+            entry = DatasetEpisode(
+                "dataset-episode",
+                "session-1",
+                "player-1",
+                "game-a",
+                "dataset-episode",
+                DatasetSplit.TRAIN,
+                DatasetCategory.EXPLORATION_NAVIGATION,
+                1_000_000_000,
+                report.status,
+                report.quality_score,
+                "fixture-license",
+                hashlib.sha256((episode_path / "checksum.json").read_bytes()).hexdigest(),
+                execution_receipts_qualified=True,
+                qualified_duration_ns=processed.qualified_duration_ns,
+                content_digest=episode_content_digest(episode_path),
+            )
+            manifest = DatasetManifest(
+                "identity-fixture",
+                "1",
+                "a" * 40,
+                (),
+                (
+                    DatasetLicense(
+                        "fixture-license", "owned", "test", False, False, "2026-09-17"
+                    ),
+                ),
+                (replace(entry, duration_ns=entry.duration_ns + 1),),
+            )
+
+            with self.assertRaisesRegex(ContractViolation, "duration"):
+                manifest.verify_episode_artifacts(root)
+
+    def test_cross_split_duplicate_episode_content_rejected(self) -> None:
+        license_record = DatasetLicense(
+            "fixture-license", "owned", "test", False, False, "2026-09-17"
+        )
+        common = dict(
+            relative_path="unused",
+            category=DatasetCategory.EXPLORATION_NAVIGATION,
+            duration_ns=100,
+            quality_status=QualityStatus.ACCEPTED,
+            quality_score=100.0,
+            license_id="fixture-license",
+            checksum_digest="a" * 64,
+            execution_receipts_qualified=True,
+            qualified_duration_ns=100,
+            content_digest="b" * 64,
+        )
+        train = DatasetEpisode(
+            "train-episode",
+            "train-session",
+            "train-player",
+            "game-a",
+            split=DatasetSplit.TRAIN,
+            **common,
+        )
+        test = DatasetEpisode(
+            "test-episode",
+            "test-session",
+            "test-player",
+            "game-d",
+            split=DatasetSplit.TEST,
+            **common,
+        )
+
+        with self.assertRaisesRegex(ContractViolation, "duplicate Episode content"):
+            DatasetManifest(
+                "duplicate-content",
+                "1",
+                "a" * 40,
+                ("game-d",),
+                (license_record,),
+                (train, test),
+            )
+
+    def test_legacy_episode_cannot_satisfy_qualified_dataset_gate(self) -> None:
+        legacy = DatasetManifest(
+            "legacy",
+            "1",
+            "a" * 40,
+            (),
+            (
+                DatasetLicense(
+                    "fixture-license", "owned", "test", False, False, "2026-09-17"
+                ),
+            ),
+            (
+                DatasetEpisode(
+                    "legacy-episode",
+                    "legacy-session",
+                    "legacy-player",
+                    "game-a",
+                    "legacy",
+                    DatasetSplit.TRAIN,
+                    DatasetCategory.EXPLORATION_NAVIGATION,
+                    18_000_000_000_000,
+                    QualityStatus.ACCEPTED,
+                    100.0,
+                    "fixture-license",
+                    "a" * 64,
+                ),
+            ),
+        )
+
+        self.assertEqual(legacy.hours(), 5.0)
+        self.assertEqual(legacy.qualified_hours(), 0.0)
+
     def test_motor_sample_export_preserves_episode_provenance(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -493,7 +753,7 @@ class DatasetPolicyTests(unittest.TestCase):
             self.assertEqual(len(samples), 1)
             self.assertEqual(samples[0].features, (1.0, -0.5))
             self.assertEqual(samples[0].episode_id, "dataset-episode")
-            self.assertEqual(samples[0].observation_id, "obs-1")
+            self.assertEqual(samples[0].observation_id, "obs-execution-1")
             self.assertEqual(samples[0].action_id, "canonical-action-1")
 
     def test_opencua_export_import_normalizes_gui_coordinates(self) -> None:

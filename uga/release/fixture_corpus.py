@@ -108,7 +108,7 @@ def run_fixture_corpus(
         "source_revision": revision,
         "dataset_manifest": str(manifest_path),
         "motor_samples": str(samples_path),
-        "hours": manifest.hours(),
+        "hours": manifest.qualified_hours(),
         "train_hours": sum(
             item.duration_ns for item in manifest.episodes if item.split.value == "train"
         )

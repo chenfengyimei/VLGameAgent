@@ -79,6 +79,7 @@ class DatasetValidator:
         self._check_capture_gaps(frames, findings)
         self._check_resolution(frames, findings)
         self._check_actions(replay.actions, findings)
+        self._check_execution_receipts(replay, findings)
         self._check_input_capture(replay.metadata, replay.actions, findings)
         self._check_events(replay.timeline, findings)
         self._check_video(path / "video.mp4", len(frames), findings)
@@ -171,6 +172,76 @@ class DatasetValidator:
                         f"action {action.get('action_id')} exceeds mouse delta threshold",
                     )
                 )
+
+    @staticmethod
+    def _check_execution_receipts(
+        replay: ReplayEngine, findings: list[QualityFinding]
+    ) -> None:
+        if not replay.has_execution_receipt_table:
+            findings.append(
+                QualityFinding(
+                    "legacy_execution_receipts",
+                    FindingSeverity.WARNING,
+                    "Episode predates terminal execution receipts and is training-unqualified",
+                )
+            )
+            return
+        provenance = {
+            str(row["action_id"]): row for row in replay.provenance
+        }
+        agent_physical_ids = {
+            str(action["action_id"])
+            for action in replay.actions
+            if action.get("action_layer") == "physical"
+            and action.get("category") != "raw_input"
+            and not bool(provenance[str(action["action_id"])]["human_override"])
+        }
+        receipt_by_action = {
+            str(row["action_id"]): row for row in replay.execution_receipts
+        }
+        missing = sorted(agent_physical_ids - receipt_by_action.keys())
+        if missing:
+            findings.append(
+                QualityFinding(
+                    "missing_execution_receipt",
+                    FindingSeverity.ERROR,
+                    f"{len(missing)} agent physical actions have no terminal receipt",
+                )
+            )
+        executed = [
+            row
+            for action_id, row in receipt_by_action.items()
+            if action_id in agent_physical_ids and row.get("status") == "executed"
+        ]
+        if any(row.get("execution_observation_id") is None for row in executed):
+            findings.append(
+                QualityFinding(
+                    "missing_execution_observation",
+                    FindingSeverity.ERROR,
+                    "executed action has no fresh execution observation",
+                )
+            )
+        failed = [
+            row
+            for action_id, row in receipt_by_action.items()
+            if action_id in agent_physical_ids and row.get("status") != "executed"
+        ]
+        if failed:
+            findings.append(
+                QualityFinding(
+                    "non_executed_actions",
+                    FindingSeverity.WARNING,
+                    f"{len(failed)} physical actions were not executed and are excluded",
+                )
+            )
+        if agent_physical_ids and not executed:
+            findings.append(
+                QualityFinding(
+                    "no_executed_training_actions",
+                    FindingSeverity.ERROR,
+                    "Episode contains no verified executed agent action",
+                )
+            )
 
     def _check_input_capture(
         self,

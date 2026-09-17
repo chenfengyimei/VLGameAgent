@@ -6,7 +6,7 @@ import queue
 import shutil
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import replace
 from pathlib import Path
 from threading import Lock, Thread
@@ -14,6 +14,7 @@ from typing import Any
 
 from uga.capture.frame import Frame
 from uga.control.canonical import CanonicalAction
+from uga.control.execution_receipt import ExecutionReceipt
 from uga.control.physical import PhysicalAction
 from uga.control.semantic import SemanticAction
 from uga.core.artifact_limits import (
@@ -76,6 +77,20 @@ _PROVENANCE_SCHEMA = (
     ("created_at_ns", "int64"),
     ("effective_from_ns", "int64"),
     ("expires_at_ns", "int64"),
+    ("proposal_id", "string"),
+    ("parent_action_id", "string"),
+)
+_EXECUTION_RECEIPT_SCHEMA = (
+    ("action_id", "string"),
+    ("proposal_id", "string"),
+    ("primitive", "string"),
+    ("status", "string"),
+    ("at_ns", "int64"),
+    ("lease_id", "string"),
+    ("lease_generation", "int64"),
+    ("failure_reason", "string"),
+    ("inference_observation_id", "string"),
+    ("execution_observation_id", "string"),
 )
 
 _PUBLISH_RETRY_ATTEMPTS = 20
@@ -115,6 +130,7 @@ class EpisodeWriter:
         self._actions: list[dict[str, Any]] = []
         self._observations: list[dict[str, Any]] = []
         self._provenance: list[dict[str, Any]] = []
+        self._execution_receipts: list[dict[str, Any]] = []
         self._tasks: list[dict[str, Any]] = []
         self._planner: list[dict[str, Any]] = []
         self._metrics: dict[str, float | int] = {}
@@ -122,6 +138,8 @@ class EpisodeWriter:
         self._annotations: list[dict[str, Any]] = []
         self._action_ids: set[str] = set()
         self._observation_ids: set[str] = set()
+        self._receipt_action_ids: set[str] = set()
+        self._provenance_by_action: dict[str, dict[str, Any]] = {}
         self._sequence = 0
         self._buffer_rows = 0
         self._buffer_bytes = 0
@@ -196,6 +214,16 @@ class EpisodeWriter:
             self._reserve_buffer(2, observation, payload)
             self._observation_ids.add(observation_id)
             self._observations.append(observation)
+            pending_receipts = [
+                row
+                for row in self._execution_receipts
+                if row["execution_observation_id"] is None
+                and int(row["at_ns"]) <= timestamp.value_ns
+            ]
+            if pending_receipts:
+                self._reserve_buffer(0, *(observation_id for _ in pending_receipts))
+                for row in pending_receipts:
+                    row["execution_observation_id"] = observation_id
             self._append_timeline(timestamp, TimelineKind.OBSERVATION, observation_id, payload)
 
     def record_action(
@@ -264,6 +292,8 @@ class EpisodeWriter:
                 "created_at_ns": provenance.lifetime.created_at.value_ns,
                 "effective_from_ns": provenance.lifetime.effective_from.value_ns,
                 "expires_at_ns": provenance.lifetime.expires_at.value_ns,
+                "proposal_id": provenance.proposal_id,
+                "parent_action_id": provenance.parent_action_id,
             }
             timeline_payload = {
                 "action_type": type(action).__name__,
@@ -276,12 +306,59 @@ class EpisodeWriter:
             self._action_ids.add(action.action_id)
             self._actions.append(action_row)
             self._provenance.append(provenance_row)
+            self._provenance_by_action[action.action_id] = provenance_row
             self._append_timeline(
                 timestamp,
                 TimelineKind.RAW_INPUT if input_state is not None else TimelineKind.ACTION,
                 action.action_id,
                 timeline_payload,
             )
+
+    def record_execution_receipts(self, receipts: Sequence[ExecutionReceipt]) -> None:
+        """Persist terminal scheduler outcomes for later training qualification."""
+        if not receipts:
+            return
+        with self._lock:
+            self._ensure_open()
+            for receipt in receipts:
+                self._validate_timestamp(receipt.at)
+                if receipt.action_id in self._receipt_action_ids:
+                    raise ContractViolation(
+                        f"duplicate execution receipt for action: {receipt.action_id}"
+                    )
+                provenance = self._provenance_by_action.get(receipt.action_id)
+                if provenance is None:
+                    raise ContractViolation(
+                        f"execution receipt references unrecorded action: {receipt.action_id}"
+                    )
+                recorded_proposal = provenance.get("proposal_id")
+                if recorded_proposal is not None and recorded_proposal != receipt.proposal_id:
+                    raise ContractViolation("execution receipt proposal identity does not match")
+                row = {
+                    "action_id": receipt.action_id,
+                    "proposal_id": receipt.proposal_id,
+                    "primitive": receipt.primitive,
+                    "status": receipt.status.value,
+                    "at_ns": receipt.at.value_ns,
+                    "lease_id": receipt.lease_id,
+                    "lease_generation": receipt.lease_generation,
+                    "failure_reason": receipt.failure_reason,
+                    "inference_observation_id": provenance.get("observation_id"),
+                    "execution_observation_id": None,
+                }
+                self._ensure_table_capacity(
+                    len(self._execution_receipts), 1, "execution receipts"
+                )
+                self._ensure_table_capacity(len(self._timeline), 1, "timeline")
+                self._reserve_buffer(2, row, row)
+                self._receipt_action_ids.add(receipt.action_id)
+                self._execution_receipts.append(row)
+                self._append_timeline(
+                    receipt.at,
+                    TimelineKind.EXECUTION_RECEIPT,
+                    receipt.action_id,
+                    row,
+                )
 
     def record_event(self, event_id: str, timestamp: UGATime, payload: object) -> None:
         self._record_jsonl(TimelineKind.EVENT, event_id, timestamp, payload, self._events)
@@ -475,6 +552,10 @@ class EpisodeWriter:
             key=lambda row: (row["timestamp_ns"], row["observation_id"]),
         )
         provenance = sorted(self._provenance, key=lambda row: row["action_id"])
+        execution_receipts = sorted(
+            self._execution_receipts,
+            key=lambda row: (row["at_ns"], row["action_id"]),
+        )
         write_rows(self._staging_path / "timeline.parquet", timeline, _TIMELINE_SCHEMA)
         write_rows(self._staging_path / "actions.parquet", actions, _ACTION_SCHEMA)
         write_rows(
@@ -486,6 +567,11 @@ class EpisodeWriter:
             self._staging_path / "provenance.parquet",
             provenance,
             _PROVENANCE_SCHEMA,
+        )
+        write_rows(
+            self._staging_path / "execution_receipts.parquet",
+            execution_receipts,
+            _EXECUTION_RECEIPT_SCHEMA,
         )
 
     def _write_json_files(self, result: EpisodeResult, end: UGATime) -> None:

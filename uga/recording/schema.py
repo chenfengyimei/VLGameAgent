@@ -28,6 +28,7 @@ class TimelineKind(StrEnum):
     ANNOTATION = "annotation"
     TASK = "task"
     PLANNER = "planner"
+    EXECUTION_RECEIPT = "execution_receipt"
 
 
 class RecordedActionLayer(StrEnum):
@@ -112,6 +113,8 @@ class ActionProvenance(VersionedMixin):
     confidence: float
     human_override: bool
     lifetime: ActionLifetime
+    proposal_id: str | None = None
+    parent_action_id: str | None = None
 
     def __post_init__(self) -> None:
         self.validate()
@@ -121,6 +124,10 @@ class ActionProvenance(VersionedMixin):
             raise ContractViolation("action provenance requires action id and source")
         if not self.mode.strip() or not self.lease_id.strip():
             raise ContractViolation("action provenance requires mode and lease id")
+        if self.proposal_id is not None and not self.proposal_id.strip():
+            raise ContractViolation("action provenance proposal id cannot be blank")
+        if self.parent_action_id is not None and not self.parent_action_id.strip():
+            raise ContractViolation("action provenance parent action id cannot be blank")
         if not 0.0 <= self.confidence <= 1.0:
             raise ContractViolation("action provenance confidence must be in [0, 1]")
         self.lifetime.validate()

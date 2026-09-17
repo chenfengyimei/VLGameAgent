@@ -31,6 +31,7 @@ _REQUIRED_FILES = frozenset(
     }
 )
 _CHECKSUM_NAME = "checksum.json"
+_EXECUTION_RECEIPTS_NAME = "execution_receipts.parquet"
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,6 +79,14 @@ class ReplayEngine:
         self.actions = read_rows(self.path / "actions.parquet", limits=limits)
         self.observations = read_rows(self.path / "observations.parquet", limits=limits)
         self.provenance = read_rows(self.path / "provenance.parquet", limits=limits)
+        self.has_execution_receipt_table = (
+            self.path / _EXECUTION_RECEIPTS_NAME
+        ).is_file()
+        self.execution_receipts = (
+            read_rows(self.path / _EXECUTION_RECEIPTS_NAME, limits=limits)
+            if self.has_execution_receipt_table
+            else []
+        )
         self._events = self._validate_and_materialize()
         self._cursor = 0
 
@@ -144,6 +153,16 @@ class ReplayEngine:
             None,
         )
 
+    def receipts_for_action(self, action_id: str) -> tuple[dict[str, Any], ...]:
+        return tuple(
+            row for row in self.execution_receipts if row.get("action_id") == action_id
+        )
+
+    def receipts_for_proposal(self, proposal_id: str) -> tuple[dict[str, Any], ...]:
+        return tuple(
+            row for row in self.execution_receipts if row.get("proposal_id") == proposal_id
+        )
+
     def _validate_and_materialize(self) -> tuple[ReplayEvent, ...]:
         ordered = sorted(
             self.timeline,
@@ -158,10 +177,62 @@ class ReplayEngine:
         ):
             raise ContractViolation("every recorded action must have exactly one provenance row")
         observation_ids = {str(row["observation_id"]) for row in self.observations}
+        observation_times = {
+            str(row["observation_id"]): int(row["timestamp_ns"])
+            for row in self.observations
+        }
         for action in self.actions:
             observation_id = action.get("observation_id")
             if observation_id is not None and observation_id not in observation_ids:
                 raise ContractViolation(f"action references missing observation: {observation_id}")
+        action_by_id = {str(row["action_id"]): row for row in self.actions}
+        provenance_by_id = {
+            str(row["action_id"]): row for row in self.provenance
+        }
+        receipt_counts = Counter(
+            str(row["action_id"]) for row in self.execution_receipts
+        )
+        if any(count != 1 for count in receipt_counts.values()):
+            raise ContractViolation("every physical action can have at most one terminal receipt")
+        valid_statuses = {"executed", "rejected", "expired", "flushed"}
+        for receipt in self.execution_receipts:
+            action_id = str(receipt.get("action_id", ""))
+            receipt_action = action_by_id.get(action_id)
+            if receipt_action is None or receipt_action.get("action_layer") != "physical":
+                raise ContractViolation(
+                    f"execution receipt references a non-physical action: {action_id}"
+                )
+            receipt_provenance = provenance_by_id[action_id]
+            recorded_proposal = receipt_provenance.get("proposal_id")
+            if recorded_proposal is not None and (
+                receipt.get("proposal_id") != recorded_proposal
+            ):
+                raise ContractViolation("execution receipt proposal identity does not match")
+            if receipt.get("lease_id") != receipt_provenance.get("lease_id"):
+                raise ContractViolation("execution receipt lease identity does not match")
+            if str(receipt.get("status")) not in valid_statuses:
+                raise ContractViolation("execution receipt has an invalid status")
+            if not str(receipt.get("proposal_id", "")).strip():
+                raise ContractViolation("execution receipt proposal id is missing")
+            at_ns = int(receipt["at_ns"])
+            if at_ns < 0:
+                raise ContractViolation("execution receipt timestamp is negative")
+            inference_id = receipt.get("inference_observation_id")
+            if inference_id is not None and str(inference_id) not in observation_ids:
+                raise ContractViolation(
+                    "execution receipt references missing inference observation"
+                )
+            execution_id = receipt.get("execution_observation_id")
+            if execution_id is not None:
+                execution_key = str(execution_id)
+                if execution_key not in observation_ids:
+                    raise ContractViolation(
+                        "execution receipt references missing execution observation"
+                    )
+                if observation_times[execution_key] < at_ns:
+                    raise ContractViolation(
+                        "execution observation predates its terminal receipt"
+                    )
 
         materialized: list[ReplayEvent] = []
         previous: tuple[int, int] | None = None

@@ -16,6 +16,12 @@ class DatasetSplit(StrEnum):
     TEST = "test"
 
 
+class EpisodeQualification(StrEnum):
+    QUALIFIED = "qualified"
+    LEGACY = "legacy"
+    UNQUALIFIED = "unqualified"
+
+
 @dataclass(frozen=True, slots=True)
 class AlignedSample:
     episode_id: str
@@ -29,6 +35,10 @@ class AlignedSample:
     action_json: str
     action_source: str
     human_override: bool
+    inference_observation_id: str
+    inference_observation_timestamp_ns: int
+    inference_observation_json: str
+    execution_status: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,6 +47,9 @@ class ProcessedEpisode:
     game_id: str
     duration_ns: int
     samples: tuple[AlignedSample, ...]
+    qualification: EpisodeQualification = EpisodeQualification.LEGACY
+    qualified_duration_ns: int = 0
+    exclusion_counts: tuple[tuple[str, int], ...] = ()
 
 
 class DatasetProcessor:
@@ -59,45 +72,143 @@ class DatasetProcessor:
         observation_by_id = {str(row["observation_id"]): row for row in observations}
         times = [int(str(row["timestamp_ns"])) for row in observations]
         samples: list[AlignedSample] = []
+        exclusions: dict[str, int] = {}
         canonical_actions = [
             action for action in replay.actions if action.get("action_layer") == "canonical"
         ]
         selected_actions = canonical_actions or replay.actions
+        start = int(replay.metadata["start_monotonic_ns"])
+        end = int(replay.metadata["end_monotonic_ns"])
+        if not replay.has_execution_receipt_table:
+            return ProcessedEpisode(
+                str(replay.metadata["episode_id"]),
+                str(replay.metadata["game_id"]),
+                end - start,
+                (),
+                EpisodeQualification.LEGACY,
+                0,
+                (("legacy_missing_receipts", len(selected_actions)),),
+            )
+        qualified_intervals: list[tuple[int, int]] = []
         for action in selected_actions:
-            observation = self._resolve_observation(action, observations, observation_by_id, times)
-            action_time = int(action["timestamp_ns"])
+            action_id = str(action["action_id"])
+            provenance = replay.provenance_for_action(action_id)
+            if provenance is None:
+                raise ContractViolation("processor encountered an action without provenance")
+            if bool(provenance["human_override"]) or action.get("category") == "raw_input":
+                self._exclude(exclusions, "human_override")
+                continue
+            receipts = self._receipts_for_training_action(replay, action, provenance)
+            if not receipts:
+                self._exclude(exclusions, "missing_receipt")
+                continue
+            if any(str(receipt["status"]) != "executed" for receipt in receipts):
+                self._exclude(exclusions, "not_fully_executed")
+                continue
+            latest_receipt = max(receipts, key=lambda row: int(str(row["at_ns"])))
+            execution_observation_id = latest_receipt.get("execution_observation_id")
+            if execution_observation_id is None:
+                self._exclude(exclusions, "missing_execution_observation")
+                continue
+            observation = observation_by_id[str(execution_observation_id)]
+            action_time = int(str(latest_receipt["at_ns"]))
             observation_time = int(str(observation["timestamp_ns"]))
-            delay = action_time - observation_time
+            delay = observation_time - action_time
             if delay < 0 or delay > self._max_alignment_delay_ns:
                 raise ContractViolation(
                     f"action {action['action_id']} has invalid observation delay {delay}ns"
                 )
-            provenance = replay.provenance_for_action(str(action["action_id"]))
-            if provenance is None:
-                raise ContractViolation("processor encountered an action without provenance")
+            inference_observation = self._resolve_observation(
+                action, observations, observation_by_id, times
+            )
             samples.append(
                 AlignedSample(
                     str(replay.metadata["episode_id"]),
                     str(replay.metadata["game_id"]),
                     str(observation["observation_id"]),
                     observation_time,
-                    str(action["action_id"]),
+                    action_id,
                     action_time,
                     delay,
                     str(observation["payload_json"]),
                     str(action["payload_json"]),
                     str(provenance["action_source"]),
                     bool(provenance["human_override"]),
+                    str(inference_observation["observation_id"]),
+                    int(str(inference_observation["timestamp_ns"])),
+                    str(inference_observation["payload_json"]),
+                    "executed",
                 )
             )
-        start = int(replay.metadata["start_monotonic_ns"])
-        end = int(replay.metadata["end_monotonic_ns"])
+            qualified_intervals.append(
+                (
+                    int(str(action["effective_from_ns"])),
+                    int(str(action["expires_at_ns"])),
+                )
+            )
+        qualified_duration = self._merged_duration(qualified_intervals)
+        qualification = (
+            EpisodeQualification.QUALIFIED
+            if samples and qualified_duration > 0
+            else EpisodeQualification.UNQUALIFIED
+        )
         return ProcessedEpisode(
             str(replay.metadata["episode_id"]),
             str(replay.metadata["game_id"]),
             end - start,
             tuple(samples),
+            qualification,
+            qualified_duration,
+            tuple(sorted(exclusions.items())),
         )
+
+    @staticmethod
+    def _receipts_for_training_action(
+        replay: ReplayEngine,
+        action: dict[str, object],
+        provenance: dict[str, object],
+    ) -> tuple[dict[str, object], ...]:
+        action_id = str(action["action_id"])
+        if action.get("action_layer") != "canonical":
+            return replay.receipts_for_action(action_id)
+        child_ids = {
+            str(row["action_id"])
+            for row in replay.provenance
+            if row.get("parent_action_id") == action_id
+        }
+        if not child_ids:
+            return ()
+        receipts = tuple(
+            receipt
+            for receipt in replay.execution_receipts
+            if str(receipt.get("action_id")) in child_ids
+        )
+        if len(receipts) != len(child_ids):
+            return ()
+        proposal_id = provenance.get("proposal_id")
+        if proposal_id is None or any(
+            receipt.get("proposal_id") != proposal_id for receipt in receipts
+        ):
+            return ()
+        return receipts
+
+    @staticmethod
+    def _exclude(counts: dict[str, int], reason: str) -> None:
+        counts[reason] = counts.get(reason, 0) + 1
+
+    @staticmethod
+    def _merged_duration(intervals: list[tuple[int, int]]) -> int:
+        if not intervals:
+            return 0
+        total = 0
+        start, end = sorted(intervals)[0]
+        for next_start, next_end in sorted(intervals)[1:]:
+            if next_start <= end:
+                end = max(end, next_end)
+            else:
+                total += max(0, end - start)
+                start, end = next_start, next_end
+        return total + max(0, end - start)
 
     @staticmethod
     def _resolve_observation(

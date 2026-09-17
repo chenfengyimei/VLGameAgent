@@ -115,11 +115,11 @@ class ActionChunkController:
         if lease.owner != ControlOwner.FAST_POLICY or lease.mode != ControlMode.PLAY_3D:
             raise ContractViolation("Fast Policy chunk requires a PLAY_3D Fast Policy lease")
         canonical = expand_action_chunk(chunk)
-        physical = tuple(
-            action
+        adapted = tuple(
+            (canonical_action, self._environment.adapt_action(canonical_action))
             for canonical_action in canonical
-            for action in self._environment.adapt_action(canonical_action)
         )
+        physical = tuple(action for _, actions in adapted for action in actions)
         if not physical:
             raise ContractViolation("action chunk produced no physical actions")
         proposal = ActionProposal(
@@ -152,25 +152,29 @@ class ActionChunkController:
                         chunk.confidence,
                         False,
                         canonical_action.lifetime,
+                        proposal.proposal_id,
                     ),
                 )
-            for physical_action in physical:
-                self._recorder.record_action(
-                    physical_action,
-                    ActionProvenance(
-                        physical_action.action_id,
-                        "FAST_POLICY",
-                        chunk.policy_version,
-                        None,
-                        chunk.observation_id,
-                        None,
-                        None,
-                        lease.mode.value,
-                        lease.lease_id,
-                        chunk.confidence,
-                        False,
-                        physical_action.lifetime,
-                    ),
-                )
+            for canonical_action, physical_actions in adapted:
+                for physical_action in physical_actions:
+                    self._recorder.record_action(
+                        physical_action,
+                        ActionProvenance(
+                            physical_action.action_id,
+                            "FAST_POLICY",
+                            chunk.policy_version,
+                            None,
+                            chunk.observation_id,
+                            None,
+                            None,
+                            lease.mode.value,
+                            lease.lease_id,
+                            chunk.confidence,
+                            False,
+                            physical_action.lifetime,
+                            proposal.proposal_id,
+                            canonical_action.action_id,
+                        ),
+                    )
         scheduled = self._scheduler.schedule(decision, target, lease)
         return ActionChunkSubmission(canonical, decision, scheduled)

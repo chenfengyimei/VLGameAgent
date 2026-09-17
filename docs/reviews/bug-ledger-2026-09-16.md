@@ -24,7 +24,7 @@
 | F09 | P1 | S+I | tests_passed(local) | 无 required_evidence 时两次高置信 DONE 即判成功 | `uga/agent/closed_loop.py::GoalVerifier._consider_snapshot`（屏幕证据强制+上下文守卫） | D05 |
 | F10 | P1 | S | tests_passed(local) | VisionRateLimitedError 未被新闭环统一捕获（只捕 BackendUnavailableError） | `uga/policy/vision_transport.py`（ProviderError 分类，BackendUnavailableError 子类——既有捕获边界全部兼容）；`uga/policy/vlm_planner.py`（fatal 传播） | D08 |
 | F11 | P1 | S+I | tests_passed(local) | 本地结构化校验比声明 Schema 宽松（float() 强转、混合坐标整体除 1000、confidence 无上界/类型检查） | `uga/policy/structured_output.py`（严格数字/置信度/坐标/文本）；`uga/policy/grounded_vlm.py::_parse/_parse_action`、GroundedOutcomeVerifier（接线） | D08、D09 |
-| F12 | P1 | S | tests_passed(local; 运行时部分) | 排队被当真实动作；观察关联过旧（推理前 observation_id；数据侧默认 1s） | `uga/control/execution_receipt.py`（新增回执模块）；`uga/control/scheduler.py`（逐原语发布）；`uga/agent/closed_loop.py`（执行证据门+回执记录）；`uga/core/agent_loop.py`（回执泵+提交接线）；`uga/dataset/processor.py`（数据侧归 D14） | D04、D10、D14 |
+| F12 | P1 | S | tests_passed(local) | 排队被当真实动作；观察关联过旧（推理前 observation_id；数据侧默认 1s） | `uga/recording/episode_writer.py`（版本化回执表+执行观察关联）；`uga/recording/replay.py`（兼容读取/校验）；`uga/dataset/processor.py`（仅产出可验证执行正样本）；`uga/training/motor_pipeline.py`（训练溯源复核） | D04、D10、D14 |
 | F13 | P2 | S | tests_passed(local) | 正常成功回复未更新 last_raw_reply，看板摘要空/陈旧 | `uga/policy/grounded_vlm.py::decide`（正常路径先写 last_raw_reply）；另补齐 4 个快路径出口漏打 _last_decision_source | D10 |
 | F14 | P2 | S+I | tests_passed(local) | 高分辨率恢复未真正提高有效分辨率（仅改裁剪 padding） | `uga/policy/grounded_vlm.py::_images`（总览宽度加倍至 1280 封顶+非升级标记） | D05、D09 |
 | F15 | P1 | S/R | tests_passed(local) | 会话持久化无作用域/原子替换/恢复后证据门槛 | `uga/agent/session_state.py`（schema/namespace/原子写/隔离/UNTRUSTED_RESTORED）；`apps/agent/run.py`（profile.game_id 绑定） | D07 |
@@ -34,7 +34,7 @@
 | R19 | P1 | R | tests_passed(local; 传输层) | 模型网络出口/秘密/隐私边界不显式 | `uga/policy/vision_transport.py`（HTTPS 强制回环例外/userinfo/凭据 query 拒绝、redact_error_detail 凭据脱敏）；`uga/policy/vlm_planner.py`（接线） | D08、D09、D10、D13 |
 | R20 | P1 | R | open | “确定/提交”类 OCR 快规则缺页面语境授权；协议勾选提案期置位 | `uga/policy/grounded_vlm.py`（快规则）；`uga/agent/session_state.py` | D03、D12 |
 | R21 | P1 | R | tests_passed(local; 可注入部分) | FFI init/响应/关闭缺外层 deadline（通道等待/线程 join） | `native/crates/uga-capture/src/ffi.rs`（响应 recv_timeout+初始化 deadline+poisoned 会话跳过 join；cargo test 验证）；`uga/capture/native_adapter.py` | D16 |
-| G22 | P1 | S | open | 正式训练/发布能力与证据未完成（CPU smoke≠五阶段真实训练） | `uga/training/behavior_cloning.py`、`uga/training/veomni.py`；`docs/status/uga-v1-status.md` | D14、D15、D18 |
+| G22 | P1 | S | open（D14 数据基线 tests_passed(local)；D15/D18 待） | 正式训练/发布能力与证据未完成（CPU smoke≠五阶段真实训练） | `uga/dataset/{processor,manifest,validator}.py`（资格数据基线）；`uga/training/behavior_cloning.py`、`uga/training/veomni.py`（正式训练仍待） | D14、D15、D18 |
 | C23 | P1 | D/S | open | GLM-5.3-Flash thinking.type 仅支持 enabled，与 --vlm-no-thinking 不兼容 | `scripts/run_mumu_autoplay.ps1`、`apps/agent/run.py`、`uga/policy/{grounded_vlm,vlm_planner}.py` | D09 |
 
 ## 条目明细
@@ -112,7 +112,8 @@
 - **触发条件：** 执行器最终拒绝/部分原语失败/慢推理超过 1s。
 - **预期行为：** ExecutionReceipt 逐原语回执；accepted≠executed；效果 pending 仅在收到执行证据后开始且 deadline 基于实际执行时刻；记录 execution_observation 供训练对齐，保留 inference_observation 追溯。
 - **修复提交：** `d3341c2`（2026-09-16，未推送）。落地内容：(1) 新增 `uga/control/execution_receipt.py`：ExecutionReceipt（action_id/proposal_id/primitive/status/at/target/lease 身份/failure_reason + to_envelope 版本化行）与 aggregate_receipts（executed/partial/主导失败状态；全执行才叫 executed，混合即 partial）；(2) ActionScheduler 逐原语发布终态回执（EXECUTED/REJECTED/EXPIRED/FLUSHED，含异常路径），带界环 1024 + drain_receipts()，并补上此前执行器拒绝原语不进任何计数器的守恒缺口（rejected+=1）；(3) ClosedLoopSupervisor.record_execution_receipts 按 submitted_action_ids 精确匹配、每原语恰记一次、首个 EXECUTED 回执锚定效果时钟；observe() 执行证据门：期望原语未全部执行（含部分执行 PARTIAL、全部拒绝、回执迟到超时）一律解析为 not_executed——绝不进效果成功路径、不喂游戏级无效动作阶梯；连续 3 次未执行 → 有界停下（防失焦无限重提案烧模型调用）；(4) start_action/start_recovery_action 增 submitted_action_ids+expected_primitives（默认空 → 旧行为不变），agent_loop 步首回执泵（record_execution_receipts(drain_receipts())）在 observe 之前喂数据；(5) not_executed_actions/consecutive_not_executed_actions 进 diagnostics。
-- **关闭证据：** 15 项新测试全绿：逐原语恰一条终态回执、守卫拒绝回执+计数守恒（scheduled=executed+rejected+expired+flushed+queued）、EXPIRED 回执、flush 逐项回执、环有界（1024 保留最新）、aggregate 四分类、监督器「全拒绝→无效果声明」「部分点击永不记完整」「效果时钟锚定实际执行时刻（50ms vs 450ms 判别）」「未证实等待→到期 fail-closed」「外来回执忽略」；集成级回执泵判别测试（ineffective=1 且 not_executed=0 证明泵接通）；全套件 544 passed + 1 opt-in skip + 103 subtests；ruff/mypy(179) 绿。**数据侧（execution_observation 供训练对齐、Episode 版本化回执表、旧 Episode legacy 标记）归 D14，未计入本条关闭。**
+- **D14 数据侧修复（本提交，2026-09-17，未推送）：** EpisodeWriter 新增 `execution_receipts.parquet`，动作 provenance 显式保存 proposal/父 canonical 身份；回执泵同时送在线监督和录制器，下一新观察绑定为 execution_observation，inference_observation 保留追溯。Replay 对旧无表 Episode 只读兼容并标 legacy；DatasetProcessor 仅保留「非人工覆盖、全部物理原语 EXECUTED、存在新执行观察」的正样本，rejected/expired/flushed/partial 均排除。正式训练时长改为已验证 canonical 有效区间并集，等待时间、仅改 duration、无动作 Episode 均不计资格时长。Manifest 复核 episode_id/game_id/duration/quality/回执有效时长/视频内容摘要，拒绝跨 split 重复内容；正式训练再次从 Episode 重建可用样本，不能靠导出 JSONL 伪造正标签。
+- **关闭证据：** 新增并通过 `test_rejected_and_partial_actions_excluded_from_positive_training_labels`、`test_fresh_execution_observation_round_trip`、`test_manifest_identity_duration_match_artifacts`、`test_cross_split_duplicate_episode_content_rejected`、`test_legacy_episode_cannot_satisfy_qualified_dataset_gate`。全套件 **622 passed + 1 opt-in skip + 103 subtests**；ruff 全仓绿；mypy strict **183 source files** 绿。F12 运行时与数据侧均完成本地门禁；CI/真实采集仍须推送或受监督运行后升级证据级别。
 
 ### F13 正常成功回复未及时更新 last_raw_reply（P2 · S）
 - **触发条件：** 正常有效模型回复，尤其紧随修复/规则快路径。
@@ -170,7 +171,8 @@
 ### G22 训练/发布的正式能力与证据尚未完成（P1 · S）
 - **触发条件：** 把 smoke checkpoint/接口 Protocol/历史报告当正式训练或 V1 完成。
 - **预期行为：** 保留 CPU 基线并明确标签；五阶段真实 GPU 训练独立实现；缺项保持 blocked。
-- **修复提交：** 待 D14/D15/D18。 **关闭证据：** 各阶段真实 artifact 与独立评估报告。
+- **D14 进展（本提交，2026-09-17，未推送）：** 已完成训练数据执行语义、legacy/unqualified 门、有效动作时长、manifest 实物身份复核及跨 split 重复内容拒绝；五项指定回归及全量本地门禁通过。**未生成或声称 5 小时正式语料，未执行真实 GPU 五阶段训练。**
+- **剩余：** D15 五阶段真实 GPU 训练与独立评估、D18 正式资格证据/发布门仍为 open；各阶段必须提供真实 artifact，CPU smoke 不升级为正式训练证据。
 
 ### C23 直接把运行时换成 GLM-5.3-Flash 会遇到思考参数不兼容（P1 · D/S）
 - **触发条件：** 仅当用户选择运行时迁移到 glm-5.3-flash；当前默认 glm-4.6v 不构成缺陷。

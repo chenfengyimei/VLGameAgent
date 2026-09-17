@@ -16,8 +16,9 @@ from uga.dataset.manifest import (
     DatasetEpisode,
     DatasetLicense,
     DatasetManifest,
+    episode_content_digest,
 )
-from uga.dataset.processor import DatasetSplit
+from uga.dataset.processor import DatasetProcessor, DatasetSplit, EpisodeQualification
 from uga.dataset.validator import DatasetValidator, QualityStatus
 from uga.recording.replay import ReplayEngine
 
@@ -97,6 +98,11 @@ def _build_episode(
         raise ContractViolation(
             f"dataset Episode requires accepted quality: {quality.episode_id} ({quality.status})"
         )
+    processed = DatasetProcessor(limits=limits).process(candidate)
+    if processed.qualification != EpisodeQualification.QUALIFIED:
+        raise ContractViolation(
+            f"dataset Episode lacks verified executed training labels: {quality.episode_id}"
+        )
     checksum = candidate / "checksum.json"
     start = int(replay.metadata["start_monotonic_ns"])
     end = int(replay.metadata["end_monotonic_ns"])
@@ -119,6 +125,9 @@ def _build_episode(
         ),
         _strict_bool(item.get("instruction_labeled", False), "instruction_labeled"),
         _strict_bool(item.get("reasoning_labeled", False), "reasoning_labeled"),
+        True,
+        processed.qualified_duration_ns,
+        episode_content_digest(candidate, limits=limits),
     )
 
 

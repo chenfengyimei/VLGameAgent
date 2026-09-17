@@ -281,13 +281,14 @@ class RealtimeAgentLoop:
         )
         if self._recorder is not None and not source_records_frames:
             self._recorder.record_frame(pending.frame)
+        # D04/D14: drain exactly once, then feed both online supervision and
+        # the immutable Episode record.  The observation built below becomes
+        # the fresh execution observation associated with these outcomes.
+        execution_receipts = self._scheduler.drain_receipts()
+        if self._recorder is not None:
+            self._recorder.record_execution_receipts(execution_receipts)
         if self._closed_loop is not None:
-            # D04: terminal receipts published since the last step (by this
-            # loop's own tick or the scheduler task) feed execution evidence
-            # before effect verification runs.
-            self._closed_loop.record_execution_receipts(
-                self._scheduler.drain_receipts()
-            )
+            self._closed_loop.record_execution_receipts(execution_receipts)
 
         history_items = tuple(
             value for value in self._frames.snapshot() if value.sequence <= pending.sequence

@@ -255,7 +255,7 @@ def build_qualification_preflight(
                 )
             if not item.commercial_allowed:
                 blockers.append(f"dataset license does not allow commercial use: {item.license_id}")
-        if dataset.hours() < 5.0:
+        if dataset.qualified_hours() < 5.0:
             blockers.append("dataset contains less than the required 5 hours")
         train_games = {
             episode.game_id for episode in dataset.episodes if episode.split == DatasetSplit.TRAIN
@@ -322,7 +322,7 @@ def build_qualification_preflight(
             )
         ),
         None if resolved_dataset_root is None else str(resolved_dataset_root),
-        0.0 if dataset is None else dataset.hours(),
+        0.0 if dataset is None else dataset.qualified_hours(),
         train_games_tuple,
         () if dataset is None else dataset.locked_test_games,
         statuses,
