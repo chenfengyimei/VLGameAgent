@@ -9,7 +9,7 @@ import uuid
 from collections.abc import Callable, Sequence
 from dataclasses import replace
 from pathlib import Path
-from threading import Lock, Thread
+from threading import Event, Lock, Thread
 from typing import Any
 
 from uga.capture.frame import Frame
@@ -154,6 +154,8 @@ class EpisodeWriter:
         self._lock = Lock()
         self._video_lock = Lock()
         self._video_failed = False
+        self._video_closed = False
+        self._publication_forbidden = Event()
 
     @property
     def staging_path(self) -> Path:
@@ -166,8 +168,8 @@ class EpisodeWriter:
     def attach_video(self, video: VideoSink) -> None:
         with self._lock:
             self._ensure_open()
-            if self._video is not None:
-                raise ContractViolation("episode already has a video sink")
+            if self._video is not None or self._video_closed:
+                raise ContractViolation("episode video sink is already attached or closed")
             self._video = video
 
     def set_terminal_context(
@@ -190,6 +192,8 @@ class EpisodeWriter:
         with self._video_lock:
             with self._lock:
                 self._ensure_open()
+                if self._video_closed:
+                    raise ContractViolation("cannot append frames after video close")
                 self._validate_timestamp(frame.capture_timestamp)
                 if self._video is None and self._require_video:
                     raise ContractViolation("attach a video sink before recording frames")
@@ -447,9 +451,30 @@ class EpisodeWriter:
             self._metrics_bytes = metrics_bytes
             self._metrics = dict(metrics)
 
+    def forbid_publication(self) -> None:
+        """Nonblocking cancellation of a finalizer, retaining diagnostic staging."""
+        self._publication_forbidden.set()
+
+    def close_video(self) -> None:
+        """Call after frame-queue drain; codec close never holds metadata lock."""
+        with self._video_lock:
+            with self._lock:
+                self._ensure_open()
+                if self._video_closed:
+                    return
+                self._video_closed = True
+                video = self._video
+            if video is not None:
+                try:
+                    video.close()
+                except BaseException:
+                    self._video_failed = True
+                    raise
+
     def finalize(self, result: EpisodeResult, end: UGATime | None = None) -> Path:
         if result == EpisodeResult.IN_PROGRESS:
             raise ContractViolation("a finalized episode cannot remain in progress")
+        self.close_video()
         with self._video_lock, self._lock:
             self._ensure_open()
             if self._video_failed:
@@ -458,8 +483,6 @@ class EpisodeWriter:
             if ending.value_ns < self._latest_timestamp_ns:
                 raise ContractViolation("Episode end precedes recorded evidence")
             self._validate_timestamp(ending)
-            if self._video is not None:
-                self._video.close()
             if self._require_video and not self.video_path.is_file():
                 raise ContractViolation("required episode video was not produced")
             self._write_tables()
@@ -472,6 +495,7 @@ class EpisodeWriter:
     def _publish_staging(self) -> None:
         """Atomically publish after bounded retries for transient Windows locks."""
         for attempt in range(_PUBLISH_RETRY_ATTEMPTS):
+            self._ensure_open()
             try:
                 os.replace(self._staging_path, self._final_path)
                 return
@@ -680,6 +704,8 @@ class EpisodeWriter:
         return {"algorithm": "sha256", "files": files}
 
     def _ensure_open(self) -> None:
+        if self._publication_forbidden.is_set():
+            raise ContractViolation("Episode finalization abandoned; publication forbidden")
         if self._closed:
             raise ContractViolation("episode writer is already finalized")
 

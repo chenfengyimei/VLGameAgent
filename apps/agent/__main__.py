@@ -4,9 +4,8 @@ import argparse
 import asyncio
 import json
 import sys
-from pathlib import Path
 
-from uga.core.errors import ContractViolation
+from uga.core.errors import ContractViolation, FatalRuntimeError
 from uga.core.runtime import AgentRuntime
 from uga.policy.vision_transport import ProviderError
 
@@ -34,6 +33,8 @@ def _run(args: argparse.Namespace) -> int:
 
 
 def _has_fatal_provider_error(error: BaseException) -> bool:
+    if isinstance(error, FatalRuntimeError):
+        return True
     if isinstance(error, ProviderError):
         return error.fatal
     if isinstance(error, BaseExceptionGroup):
@@ -52,189 +53,21 @@ def _run_safely(args: argparse.Namespace) -> int:
             raise
         # TaskGroup wraps worker failures. Keep the non-retryable outcome
         # visible to the process supervisor without echoing provider bodies.
-        print("uga-agent: fatal provider failure; manual intervention required", file=sys.stderr)
+        print("uga-agent: non-retryable failure; manual intervention required", file=sys.stderr)
         return 78
 
 
-def _client_fraction(value: str) -> float:
-    fraction = float(value)
-    if not 0.0 <= fraction <= 1.0:
-        raise argparse.ArgumentTypeError("client fraction must be within [0, 1]")
-    return fraction
-
-
 def cli() -> None:
-    """Synchronous console-script entry point."""
+    """Console and direct entry share one parser, including every safety flag."""
+    from apps.agent.run import build_parser
+
     parser = argparse.ArgumentParser(description="UGA agent runtime")
     subparsers = parser.add_subparsers(dest="command")
     subparsers.add_parser("smoke", help="run the deterministic lifecycle smoke test")
-    run_parser = subparsers.add_parser(
-        "run",
-        help="run the realtime agent loop against a live window from a game profile",
+    subparsers.add_parser(
+        "run", parents=[build_parser(add_help=False)],
+        help="run the realtime agent against an explicitly selected window profile",
     )
-    run_parser.add_argument("--profile", required=True, help="game profile YAML path")
-    run_parser.add_argument("--goal", default="Interact with the target")
-    run_parser.add_argument(
-        "--goal-evidence",
-        action="append",
-        default=[],
-        help=(
-            "text that must be present in fresh OCR before DONE can be accepted; "
-            "repeat for multiple required facts"
-        ),
-    )
-    run_parser.add_argument(
-        "--goal-action-target",
-        help="preferred visible label for the next single-step navigation action",
-    )
-    run_parser.add_argument(
-        "--policy",
-        choices=["scripted", "vlm"],
-        default="scripted",
-        help="decision source: a scripted tap timeline or a vision-language planner",
-    )
-    run_parser.add_argument(
-        "--duration-seconds",
-        type=float,
-        default=30.0,
-        help="0 = run until stopped (Ctrl+C or the Ctrl+Shift+F12 emergency hotkey)",
-    )
-    run_parser.add_argument(
-        "--continuous",
-        action="store_true",
-        help=(
-            "keep one VLM process alive by retrying transient planner failures and "
-            "starting a fresh closed-loop cycle after blocked or completed states"
-        ),
-    )
-    run_parser.add_argument(
-        "--tap-delay", type=float, default=2.0, help="seconds before the scripted tap"
-    )
-    run_parser.add_argument(
-        "--tap-interval-seconds",
-        type=float,
-        default=0.0,
-        help="repeat the tap timeline every N seconds (0 = tap once)",
-    )
-    run_parser.add_argument(
-        "--tap-x-fraction",
-        type=_client_fraction,
-        default=0.5,
-        help="tap point as a horizontal fraction of the client area",
-    )
-    run_parser.add_argument(
-        "--tap-y-fraction",
-        type=_client_fraction,
-        default=0.79,
-        help="tap point as a vertical fraction of the client area",
-    )
-    run_parser.add_argument("--observation-hz", type=float, default=2.0)
-    run_parser.add_argument(
-        "--capture-hz",
-        type=float,
-        default=10.0,
-        help="maximum continuous capture frequency",
-    )
-    run_parser.add_argument("--record", help="optional episode recording root directory")
-    run_parser.add_argument(
-        "--qualification-project-root",
-        type=Path,
-        help="require a clean Git checkout and bind recorded evidence to its full HEAD",
-    )
-    run_parser.add_argument(
-        "--vlm-base-url",
-        default="http://127.0.0.1:1234/v1",
-        help="OpenAI-compatible vision endpoint (LM Studio or any cloud vision API)",
-    )
-    run_parser.add_argument(
-        "--vlm-model",
-        default="qwen3-vl-4b-instruct",
-        help="vision model name exposed at the endpoint",
-    )
-    run_parser.add_argument(
-        "--vlm-api-key-env",
-        default="UGA_VLM_API_KEY",
-        help="environment variable that holds the vision API key (empty for local servers)",
-    )
-    run_parser.add_argument(
-        "--vlm-decision-interval",
-        type=float,
-        default=6.0,
-        help="seconds between vision planner decisions",
-    )
-    run_parser.add_argument(
-        "--vlm-timeout-seconds",
-        type=float,
-        default=30.0,
-        help="vision request timeout",
-    )
-    run_parser.add_argument(
-        "--vlm-max-output-tokens",
-        type=int,
-        default=768,
-        help="maximum generated tokens for one structured vision decision",
-    )
-    run_parser.add_argument(
-        "--vlm-temporal-frames",
-        type=int,
-        choices=range(1, 4),
-        default=3,
-        metavar="{1,2,3}",
-        help="number of recent overview frames sent per decision",
-    )
-    run_parser.add_argument(
-        "--vlm-image-width",
-        type=int,
-        default=1280,
-        help="maximum overview image width sent to the vision model",
-    )
-    run_parser.add_argument(
-        "--vlm-target-crops",
-        type=int,
-        choices=range(0, 3),
-        default=2,
-        metavar="{0,1,2}",
-        help="additional OCR target crops attached after overview images",
-    )
-    run_parser.add_argument(
-        "--vlm-compact-output",
-        action="store_true",
-        help="request only the minimal action fields for small local models",
-    )
-    run_parser.add_argument(
-        "--vlm-ocr-task-fallback",
-        action="store_true",
-        help="replace WAIT or unrelated actions with a high-confidence OCR task-panel click",
-    )
-    run_parser.add_argument(
-        "--vlm-no-thinking",
-        action="store_true",
-        help="ask thinking-style models (GLM-4.xV) to answer without a reasoning pass",
-    )
-    run_parser.add_argument(
-        "--vlm-json-object",
-        action="store_true",
-        help="use provider JSON-object mode instead of a JSON Schema response format",
-    )
-    run_parser.add_argument(
-        "--vlm-extra-body",
-        help="JSON object merged into the vision request body (e.g. "
-        '\'{"enable_thinking": false}\' for DashScope Qwen3 models)',
-    )
-    run_parser.add_argument(
-        "--dashboard-port",
-        type=int,
-        default=8787,
-        help="port for the live decision dashboard at http://127.0.0.1:<port> (0 = disabled)",
-    )
-    run_parser.add_argument(
-        "--vision-mode", choices=["auto", "local", "hybrid"], default="auto"
-    )
-    run_parser.add_argument("--ocr", choices=["auto", "off"], default="auto")
-    run_parser.add_argument("--max-recoveries", type=int, default=2)
-    run_parser.add_argument("--verifier-base-url")
-    run_parser.add_argument("--verifier-model")
-    run_parser.add_argument("--verifier-api-key-env", default="UGA_VERIFIER_API_KEY")
     args = parser.parse_args()
     if args.command is None or args.command == "smoke":
         _smoke()
