@@ -1,0 +1,30 @@
+name: Export pinned training source
+on:
+  push:
+    branches: [automation/neural-training-20260917]
+    paths: [.github/workflows/training-source.yml]
+permissions:
+  contents: read
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: f279eea822b3f04f96fbca5dc3f5d6234607c3da
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Export exact history without executing repository code
+        run: |
+          test "$(git rev-parse HEAD)" = f279eea822b3f04f96fbca5dc3f5d6234607c3da
+          git branch training-source HEAD
+          git bundle create "$RUNNER_TEMP/training-source.bundle" training-source
+          git bundle verify "$RUNNER_TEMP/training-source.bundle"
+          sha256sum "$RUNNER_TEMP/training-source.bundle"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: training-source
+          path: ${{ runner.temp }}/training-source.bundle
+          retention-days: 1
+          if-no-files-found: error
