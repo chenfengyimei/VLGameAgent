@@ -314,7 +314,7 @@ class RealtimeAgentLoop:
 
     def _execution_is_current(
         self, stamp: RunStamp | None, validated: Frame, task_generation: int,
-        *, visual_stability: bool = False,
+        *, visual_stability: bool = False, target_box: NormalizedBox | None = None,
     ) -> bool:
         if not self._run_live(stamp):
             return False
@@ -332,7 +332,7 @@ class RealtimeAgentLoop:
             if not supervisor.validate_execution_context(validated, current.frame)[0]:
                 return False
             return not visual_stability or not ActionValidator._target_changed(
-                NormalizedBox(0, 0, 1, 1), validated, current.frame
+                target_box or NormalizedBox(0, 0, 1, 1), validated, current.frame
             )
         age = self._clock.now().value_ns - current.frame.capture_timestamp.value_ns
         return (
@@ -811,7 +811,11 @@ class RealtimeAgentLoop:
                     pre_action_observation_id=pre_action.observation_id,
                     pre_action_capture_ns=pre_action.latest_frame.capture_timestamp.value_ns,
                     execution_guard=lambda: self._execution_is_current(
-                        stamp, execution_item.frame, outcome.task_generation, visual_stability=True
+                        stamp, execution_item.frame, outcome.task_generation,
+                        visual_stability=True,
+                        target_box=(
+                            outcome.action.target_box if outcome.action is not None else None
+                        ),
                     ),
                 )
                 if gui_submission.decision is not None:

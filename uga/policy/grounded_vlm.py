@@ -249,6 +249,14 @@ COMPACT_GROUNDING_RESPONSE_FORMAT: dict[str, Any] = {
 # remain readable, but their free-text expected_effect is never treated as proof.
 for _format in (GROUNDING_RESPONSE_FORMAT, COMPACT_GROUNDING_RESPONSE_FORMAT):
     _action_schema = _format["json_schema"]["schema"]["properties"]["action"]["anyOf"][1]
+    _action_schema["properties"]["kind"]["enum"] = [
+        "click", "double_click", "right_click", "long_click", "scroll", "key", "hotkey"
+    ]
+    _action_schema["required"].append("scroll_delta")
+    _action_schema["properties"]["scroll_delta"] = {
+        "anyOf": [{"type": "null"}, {"type": "integer", "minimum": -480,
+                    "maximum": 480, "multipleOf": 120}]
+    }
     _action_schema["required"].append("effect")
     _action_schema["properties"]["effect"] = {"anyOf": [
         {"type": "null"},
@@ -596,7 +604,8 @@ class GroundedVlmPlanner:
             self._last_decision_source != "model"
             or action is None
             or action.target_box is None
-            or action.kind not in {GuiActionKind.CLICK, GuiActionKind.LONG_CLICK}
+            or action.kind not in {GuiActionKind.CLICK, GuiActionKind.LONG_CLICK,
+                                   GuiActionKind.DOUBLE_CLICK, GuiActionKind.RIGHT_CLICK}
         ):
             return outcome
         target = normalize_visible_text(action.target_label)
@@ -1484,8 +1493,9 @@ class GroundedVlmPlanner:
         if not compact:
             fields |= {"expected_effect", "risk"}
         try:
-            require_fields(value, fields, optional={"effect"})
-            if value["kind"] not in {"click", "key", "hotkey"}:
+            require_fields(value, fields, optional={"effect", "scroll_delta"})
+            if value["kind"] not in {"click", "double_click", "right_click",
+                                      "long_click", "scroll", "key", "hotkey"}:
                 raise ValueError("unsupported grounded GUI operation")
         except (TypeError, ValueError) as exc:
             raise PlannerReplyError(f"invalid grounded action: {exc}") from exc
@@ -1509,6 +1519,9 @@ class GroundedVlmPlanner:
                 # never silently rescaled.
                 coordinates = box_coordinates(box_raw, coordinate_space)
                 box = NormalizedBox(*coordinates)
+                if (value["kind"] != "scroll"
+                        and (box.right - box.left) * (box.bottom - box.top) > 0.25):
+                    raise ValueError("click target covers a panel, not a specific control")
             except (TypeError, ValueError, ContractViolation) as exc:
                 raise PlannerReplyError(f"target_bbox is invalid: {exc}") from exc
         try:
@@ -1534,6 +1547,7 @@ class GroundedVlmPlanner:
                     key_raw, max_chars=32, field="key"
                 ),
                 effect=effect,
+                scroll_delta=0 if value.get("scroll_delta") is None else value["scroll_delta"],
             )
         except (KeyError, TypeError, ValueError, ContractViolation) as exc:
             raise PlannerReplyError(f"invalid grounded action: {exc}") from exc
@@ -1602,7 +1616,7 @@ class GroundedOutcomeVerifier:
             "kind": action.kind.value, "label": action.target_label[:80],
             "target_bbox": None if box is None else [box.left, box.top, box.right, box.bottom],
             "click_point": None if point is None else [point.x, point.y],
-            "key": action.key, "risk": action.risk.value,
+            "key": action.key, "risk": action.risk.value, "scroll_delta": action.scroll_delta,
             "expected_effect": action.expected_effect[:160],
         }
         instruction = (

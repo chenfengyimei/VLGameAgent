@@ -393,7 +393,9 @@ class ActionValidator:
                 grounding == "missing"
                 and grounding_decided == "missing"
                 and action.confidence >= _VISUAL_CLICK_MIN_CONFIDENCE
-                and action.kind == GuiActionKind.CLICK
+                and action.kind in {GuiActionKind.CLICK, GuiActionKind.DOUBLE_CLICK,
+                                    GuiActionKind.RIGHT_CLICK, GuiActionKind.LONG_CLICK,
+                                    GuiActionKind.SCROLL}
             )
             # A high-confidence icon is not exempt from visual freshness.
             if (self._target_changed(action.target_box, decided_frame, fresh_frame)
@@ -1812,6 +1814,7 @@ class ClosedLoopSupervisor:
             x=min(1.0, max(0.0, center.x + action.pointer_offset_x)),
             y=min(1.0, max(0.0, center.y + action.pointer_offset_y)),
             confidence=min(outcome.confidence, action.confidence),
+            scroll_delta=action.scroll_delta,
         )
 
     def fail(self, reason: str) -> None:
@@ -2108,12 +2111,12 @@ class ClosedLoopSupervisor:
         box = action.target_box
         location = "none" if box is None else f"{box.center.x:.2f},{box.center.y:.2f}"
         label = re.sub(r"\W+", "", action.target_label.casefold())
-        return f"{action.kind.value}:{label}:{location}"
+        return f"{action.kind.value}:{label}:{location}:{action.scroll_delta}"
 
     @staticmethod
     def _semantic_action_key(action: GroundedAction) -> str:
         label = re.sub(r"\W+", "", normalize_visible_text(action.target_label))
-        return f"{action.kind.value}:{label}:{action.key or ''}"
+        return f"{action.kind.value}:{label}:{action.key or ''}:{action.scroll_delta}"
 
     def _should_escape_repeated_action(self, action: GroundedAction) -> bool:
         if (

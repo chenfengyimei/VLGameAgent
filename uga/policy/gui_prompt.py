@@ -105,16 +105,30 @@ def gui_instruction(
             goal_status="in_progress",
             explanation="Wait for the overlay to disappear",
         )
+    act_example: dict[str, Any] = dict(decision)
+    act_example.update(kind="act", wait_reason=None, action={
+        "kind": "click", "target_label": "visible control",
+        "target_bbox": [round(value * scale) if scale == 1000 else value
+                        for value in (0.2, 0.3, 0.4, 0.4)],
+        "confidence": 0.9, "key": None, "scroll_delta": None,
+        "effect": {"kind": "text_appears", "text": "new page title"},
+    })
+    if not compact:
+        act_example["scene_summary"] = "The requested enabled control is visible"
+        act_example["explanation"] = "Open the goal-relevant page"
+        act_example["action"].update(expected_effect="New page title appears", risk="normal")
     protocol = (
         "Return exactly ONE JSON object, no markdown, no thought process, no tool calls. "
         "Top fields: kind, confidence, action, wait_reason. "
-        "ACT action fields: kind, target_label (<=48 chars), target_bbox, confidence, key, effect. "
+        "ACT action fields: kind, target_label (<=48 chars), target_bbox, "
+        "confidence, key, effect, scroll_delta. "
         if compact
         else "Return exactly ONE JSON object, no markdown, no thought process, no tool calls. "
         "Top fields: kind, scene_summary (<=160 chars), visible_text (<=16 strings, each <=80), "
         "goal_status, confidence, action, wait_reason, explanation (<=240 chars). "
         "ACT action fields: kind, target_label (<=80 chars), target_bbox, expected_effect "
-        "(<=160 chars, concrete observable next-state change), confidence, risk, key, effect. "
+        "(<=160 chars, concrete observable next-state change), confidence, risk, key, "
+        "effect, scroll_delta. "
         "risk: low/normal/critical. goal_status: unknown/in_progress/succeeded/failed. "
     )
     goal_rule = (
@@ -153,8 +167,14 @@ def gui_instruction(
         + protocol
         + "\n"
         'ACT: kind="act", action is one object, wait_reason=null. '
-        "Supported operations: click/key/hotkey ONLY. click: target_bbox required, key=null "
+        "Supported operations: click/double_click/right_click/long_click/scroll/key/hotkey. "
+        "Pointer operations require target_bbox and key=null "
         '(including visible Back/Return arrows; never key="return_button" or key="back"). '
+        "scroll_delta is null for non-scroll operations. For scroll use a signed integer "
+        "multiple of 120 with magnitude 120..480; negative scrolls DOWN, positive UP. "
+        "Scroll one small step at a clearly scrollable item/panel, then inspect the result. "
+        "long_click holds for 700ms; use it only when the UI explicitly asks for a hold. "
+        "Do not invent drag/type operations. "
         "key/hotkey: target_bbox=null, key is a confirmed semantic binding, <=32 chars. "
         'WAIT: kind="wait", action=null, wait_reason=loading/animation/no_safe_action. '
         'ABSTAIN: kind="abstain", action=null, wait_reason=null. '
@@ -176,6 +196,8 @@ def gui_instruction(
             if repair_error
             else ""
         )
+        + "ACT shape example (do not copy its invented labels/coordinates): "
+        + json.dumps(act_example, ensure_ascii=False) + "\n"
         + "SCENE_DATA_JSON:\n"
         + json.dumps(state, ensure_ascii=False, separators=(",", ":"))
     )
