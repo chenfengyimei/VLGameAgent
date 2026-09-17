@@ -16,6 +16,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+neural = ["torch==2.10.0"]
 vision = [
   "antlr4-python3-runtime==4.9.3",
   "omegaconf==2.3.0",

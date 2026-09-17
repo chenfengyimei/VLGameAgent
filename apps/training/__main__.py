@@ -4,7 +4,7 @@ import argparse
 import json
 from pathlib import Path
 
-from uga.core.errors import ContractViolation
+from uga.core.errors import BackendUnavailableError, ContractViolation
 from uga.release.model_qualification import (
     MODEL_STAGES,
     build_model_qualification_report,
@@ -92,6 +92,63 @@ def _qualification_report(args: argparse.Namespace) -> None:
     )
 
 
+def _neural_motor(args: argparse.Namespace) -> None:
+    from uga.training.neural_pipeline import train_neural_motor
+
+    revision = require_clean_source_revision(args.project_root)
+    artifact = train_neural_motor(
+        train_path=args.train_samples,
+        validation_path=args.validation_samples,
+        dataset_manifest_path=args.dataset_manifest,
+        dataset_root=args.dataset_root,
+        config_path=args.config,
+        output_directory=args.output,
+        policy_version=args.policy_version,
+        encoder_version=args.encoder_version,
+        encoder_license=args.encoder_license,
+        source_revision=revision,
+    )
+    print(
+        json.dumps(
+            {"artifact": str(artifact), "source_revision": revision, "release_qualified": False},
+            indent=2,
+        )
+    )
+
+
+def _neural_verify(args: argparse.Namespace) -> None:
+    from uga.training.neural_pipeline import verify_neural_artifact
+
+    record = verify_neural_artifact(args.artifact, expected_sha256=args.expected_sha256)
+    print(
+        json.dumps(
+            {
+                "artifact": str(args.artifact.resolve()),
+                "policy_version": record["policy_version"],
+                "integrity_verified": True,
+                "externally_pinned": args.expected_sha256 is not None,
+                "release_qualified": False,
+            },
+            indent=2,
+        )
+    )
+
+
+def _neural_evaluate(args: argparse.Namespace) -> None:
+    from uga.dataset.processor import DatasetSplit
+    from uga.training.neural_pipeline import evaluate_neural_artifact
+
+    print(
+        evaluate_neural_artifact(
+            artifact_path=args.artifact,
+            samples_path=args.samples,
+            dataset_root=args.dataset_root,
+            split=DatasetSplit(args.split),
+            output_path=args.output,
+        )
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run UGA training stages")
     subparsers = parser.add_subparsers(required=True)
@@ -140,8 +197,40 @@ def main() -> None:
     qualification.add_argument("--project-root", type=Path, default=Path("."))
     qualification.add_argument("--output", type=Path, required=True)
     qualification.set_defaults(handler=_qualification_report)
+    neural = subparsers.add_parser(
+        "neural-motor", help="fit optional PyTorch motor BC, not V1 qualification"
+    )
+    neural.add_argument("--train-samples", type=Path, required=True)
+    neural.add_argument("--validation-samples", type=Path, required=True)
+    neural.add_argument("--dataset-manifest", type=Path, required=True)
+    neural.add_argument("--dataset-root", type=Path, required=True)
+    neural.add_argument("--config", type=Path, required=True)
+    neural.add_argument("--output", type=Path, required=True)
+    neural.add_argument("--policy-version", required=True)
+    neural.add_argument("--encoder-version", required=True)
+    neural.add_argument("--encoder-license", required=True)
+    neural.add_argument("--project-root", type=Path, default=Path("."))
+    neural.set_defaults(handler=_neural_motor)
+    neural_verify = subparsers.add_parser(
+        "neural-verify", help="verify numerical model and input snapshots"
+    )
+    neural_verify.add_argument("artifact", type=Path)
+    neural_verify.add_argument("--expected-sha256")
+    neural_verify.set_defaults(handler=_neural_verify)
+    evaluate = subparsers.add_parser(
+        "neural-evaluate", help="evaluate an explicit held-out split without fitting"
+    )
+    evaluate.add_argument("artifact", type=Path)
+    evaluate.add_argument("--samples", type=Path, required=True)
+    evaluate.add_argument("--dataset-root", type=Path, required=True)
+    evaluate.add_argument("--split", choices=("validation", "test"), required=True)
+    evaluate.add_argument("--output", type=Path, required=True)
+    evaluate.set_defaults(handler=_neural_evaluate)
     args = parser.parse_args()
-    args.handler(args)
+    try:
+        args.handler(args)
+    except (ContractViolation, BackendUnavailableError) as exc:
+        parser.exit(2, f"uga-train: {exc}\n")
 
 
 if __name__ == "__main__":
