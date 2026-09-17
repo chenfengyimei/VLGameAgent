@@ -35,6 +35,7 @@ from uga.policy.action_chunk import ActionButton, ActionChunk
 from uga.policy.call_budget import checkpoint, request_timeout
 from uga.policy.decision_journal import DecisionJournal, DecisionRecord, NullJournal
 from uga.policy.fast_policy import FastPolicyOutput, PolicyContext
+from uga.policy.model_policy import request_policy, validated_extensions
 from uga.policy.vision_transport import (
     ProviderError,
     ProviderErrorKind,
@@ -205,7 +206,10 @@ class OpenAICompatibleVisionClient:
         self._max_output_tokens = max_output_tokens
         self._disable_thinking = disable_thinking
         self._json_object_mode = json_object_mode
-        self._extra_body = dict(extra_body) if extra_body else None
+        self._extra_body = validated_extensions(
+            model, disable_thinking=disable_thinking,
+            max_output_tokens=max_output_tokens, extra_body=extra_body,
+        )
 
     def decide(
         self,
@@ -215,8 +219,8 @@ class OpenAICompatibleVisionClient:
         response_format: dict[str, Any] | None = None,
     ) -> str:
         """Send one or more frames (oldest first) plus the instruction."""
-        if not images:
-            raise ContractViolation("vision client requires at least one image")
+        if not images or len(images) > request_policy(self._model).max_images:
+            raise ContractViolation("vision client requires a bounded, non-empty image list")
         content: list[dict[str, Any]] = [
             {
                 "type": "image_url",

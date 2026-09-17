@@ -6,7 +6,10 @@ param(
     [int]$DashboardPort = 8787,
     [int]$RestartDelaySeconds = 15,
     [int]$ModelContextLength = 8192,
-    [int]$VisionTimeoutSeconds = 60
+    [int]$VisionTimeoutSeconds = 60,
+    [int]$DecisionTimeoutSeconds = 60,
+    [int]$MaxOutputTokens = 0,
+    [int]$MaxRestarts = 10
 )
 
 $ErrorActionPreference = "Stop"
@@ -22,6 +25,20 @@ if ($ModelContextLength -lt 2048) {
 }
 if ($VisionTimeoutSeconds -lt 30) {
     throw "VisionTimeoutSeconds must be at least 30"
+}
+
+if ($DecisionTimeoutSeconds -lt 1 -or $MaxRestarts -lt 0) {
+    throw "DecisionTimeoutSeconds must be positive and MaxRestarts non-negative"
+}
+$requiresThinking = $Model -ieq "glm-5.3-flash"
+if ($MaxOutputTokens -eq 0) {
+    $MaxOutputTokens = if ($requiresThinking) { 4096 } else { 256 }
+}
+if ($MaxOutputTokens -lt 64 -or $MaxOutputTokens -gt 16384) {
+    throw "MaxOutputTokens must be within [64, 16384]"
+}
+if ($requiresThinking -and $MaxOutputTokens -lt 1024) {
+    throw "GLM request policy requires an output budget of at least 1024"
 }
 
 $projectRoot = Split-Path -Parent $PSScriptRoot
@@ -161,10 +178,10 @@ $agentArgs = @(
     "--goal", $goal,
     "--vlm-base-url", $BaseUrl,
     "--vlm-model", $Model,
-    "--vlm-no-thinking",
     "--vlm-decision-interval", "3",
     "--vlm-timeout-seconds", "$VisionTimeoutSeconds",
-    "--vlm-max-output-tokens", "256",
+    "--vlm-max-output-tokens", "$MaxOutputTokens",
+    "--decision-timeout-seconds", "$DecisionTimeoutSeconds",
     "--vlm-temporal-frames", "1",
     "--vlm-image-width", "640",
     "--vlm-target-crops", "0",
@@ -179,6 +196,9 @@ $agentArgs = @(
     "--capture-hz", "2",
     "--dashboard-port", "$DashboardPort"
 )
+if (-not $requiresThinking) {
+    $agentArgs += "--vlm-no-thinking"
+}
 if (-not $useLocalModel) {
     $agentArgs += "--vlm-json-object"
 }
@@ -189,8 +209,7 @@ Write-SupervisorLog "Starting supervisor loop (crash-restart + window rediscover
 # the launcher on the first stderr line. Relax it around the agent pipe.
 $ErrorActionPreference = "Continue"
 # F06: crash restarts are bounded — exponential backoff with jitter, a hard
-# attempt cap, and the budget only resets after a long healthy run.
-$maxRestarts = 10
+# attempt cap, and a process-lifetime attempt cap.
 $restartCount = 0
 $delaySeconds = $RestartDelaySeconds
 while ($true) {
@@ -198,8 +217,7 @@ while ($true) {
     $startedAt = Get-Date
     & $resolvedPython @agentArgs 2>&1 | ForEach-Object {
         $agentLine = "$_"
-        Add-Content -LiteralPath $supervisorLog -Value $agentLine -Encoding utf8
-        Write-Host $agentLine
+        Write-SupervisorLog $agentLine
     }
     $agentExitCode = $LASTEXITCODE
     $ranSeconds = [int]((Get-Date) - $startedAt).TotalSeconds
@@ -216,9 +234,9 @@ while ($true) {
         # A crash after a long healthy run is a fresh failure, not part of
         # the previous crash loop: reset the restart budget.
         if ($restartCount -gt 0) {
-            Write-SupervisorLog "Agent ran ${ranSeconds}s before crashing; restarting the crash budget"
+            Write-SupervisorLog "Agent ran ${ranSeconds}s before crashing; resetting restart delay (total attempt budget retained)"
         }
-        $restartCount = 0
+        # Reset delay only, never the total restart budget.
         $delaySeconds = $RestartDelaySeconds
     }
     $restartCount += 1
