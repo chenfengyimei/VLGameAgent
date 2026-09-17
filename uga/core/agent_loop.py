@@ -6,6 +6,7 @@ import math
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, replace
+from functools import partial
 from typing import Protocol, runtime_checkable
 
 from uga.agent.closed_loop import (
@@ -37,6 +38,7 @@ from uga.observation.builder import ObservationBuilder
 from uga.observation.schema import Observation
 from uga.perception.builder import PerceptionBuilder
 from uga.perception.schema import DecisionKind, PerceptionSnapshot, PlannerOutcome
+from uga.policy.call_budget import CallBudget, DeadlineWorker
 from uga.policy.chunk_controller import ActionChunkController, ActionChunkSubmission
 from uga.policy.fast_policy import FastPolicy, FastPolicyOutput, PolicyContext
 from uga.policy.vision_transport import ProviderError, ProviderErrorKind
@@ -131,6 +133,8 @@ class RealtimeAgentLoop:
         recovery_budget: RecoveryBudget | None = None,
         max_continuous_rebuilds: int = 100,
         max_planner_failures: int = 5,
+        decision_timeout_s: float = 60.0,
+        perception_timeout_s: float = 10.0,
     ) -> None:
         grounded_parts = (
             grounded_planner,
@@ -153,6 +157,14 @@ class RealtimeAgentLoop:
             item is not None for item in grounded_parts
         ):
             raise ContractViolation("grounded loop components must be configured together")
+        for timeout_s in (decision_timeout_s, perception_timeout_s):
+            if not math.isfinite(timeout_s) or timeout_s <= 0:
+                raise ContractViolation("worker deadlines must be finite and positive")
+        self._decision_timeout_s = decision_timeout_s
+        self._perception_timeout_s = perception_timeout_s
+        self._model_worker = DeadlineWorker("uga-model")
+        self._perception_worker = DeadlineWorker("uga-perception")
+        self._supervision_worker = DeadlineWorker("uga-supervision")
         self._clock = clock
         self._capture = capture
         self._frames = frames
@@ -353,13 +365,13 @@ class RealtimeAgentLoop:
         effect_pending = False
         if self._perception_builder is not None:
             geometry_generation = self._update_geometry_generation(pending.frame)
-            perception = await asyncio.to_thread(
+            perception = await self._perception_worker.call(partial(
                 self._perception_builder.build,
                 pending,
                 self._mode_router.current,
                 geometry_generation=geometry_generation,
                 task_generation=self._task_generation,
-            )
+            ), CallBudget(self._perception_timeout_s))
             assert self._closed_loop is not None
             effect_pending = self._closed_loop.observe(perception, pending.frame).pending
             # observe() may commit a new task. Stamp the request AFTER that
@@ -446,12 +458,13 @@ class RealtimeAgentLoop:
             # Stamp the request generation: a stop or supervisor rebuild that
             # lands while the model thinks must kill this result on arrival.
             stamp = self._run_context.stamp() if self._run_context is not None else None
+            budget = CallBudget(self._decision_timeout_s)
             try:
                 session = closed_loop.session
                 restored_unverified = (
                     session is not None and session.restored_task_unverified
                 )
-                outcome = await asyncio.to_thread(
+                outcome = await self._model_worker.call(partial(
                     grounded_planner.decide,
                     snapshot=perception,
                     frames=history[-3:],
@@ -475,7 +488,7 @@ class RealtimeAgentLoop:
                         or restored_unverified
                         else session.latest_main_task.raw_text
                     ),
-                )
+                ), budget)
             except BackendUnavailableError as exc:
                 self._planner_failure_count += 1
                 self._consecutive_planner_failures += 1
@@ -555,13 +568,13 @@ class RealtimeAgentLoop:
                 geometry_generation = self._update_geometry_generation(
                     latest_after_inference.frame
                 )
-                fresh_perception = await asyncio.to_thread(
+                fresh_perception = await self._perception_worker.call(partial(
                     self._perception_builder.build,
                     latest_after_inference,
                     self._mode_router.current,
                     geometry_generation=geometry_generation,
                     task_generation=self._task_generation,
-                )
+                ), budget)
             if closed_loop.session is not None:
                 # A task can change while the model thinks. Incorporate the
                 # fresh screen before comparing with the original request.
@@ -572,7 +585,7 @@ class RealtimeAgentLoop:
                 fresh_perception = replace(
                     fresh_perception, task_generation=self._task_generation
                 )
-            supervised = await asyncio.to_thread(
+            supervised = await self._supervision_worker.call(partial(
                 closed_loop.assess,
                 outcome,
                 perception,
@@ -581,7 +594,7 @@ class RealtimeAgentLoop:
                 latest_after_inference.frame,
                 observation.user_goal,
                 decision_source=getattr(grounded_planner, "last_decision_source", None),
-            )
+            ), budget)
             if not self._run_live(stamp):
                 await self._discard_stale_result(
                     observation, policy="grounded_vlm", phase="supervision was in flight"
@@ -907,7 +920,9 @@ class RealtimeAgentLoop:
                 observation.user_goal,
             )
             stamp = self._run_context.stamp() if self._run_context is not None else None
-            output = await asyncio.to_thread(self._policy.infer, context)
+            output = await self._model_worker.call(
+                partial(self._policy.infer, context), CallBudget(self._decision_timeout_s)
+            )
             await self._events.publish(
                 EventType.POLICY_INFERENCE_COMPLETED,
                 "agent.loop",
@@ -1070,7 +1085,14 @@ class RealtimeAgentLoop:
                         stop, frequency_hz=scheduler_hz, heartbeat=self._control_heartbeat
                     )
                 )
-                tasks.create_task(observe())
+                observation_task = tasks.create_task(observe())
+
+                async def cancel_on_stop() -> None:
+                    await stop.wait()
+                    if not observation_task.done():
+                        observation_task.cancel()
+
+                tasks.create_task(cancel_on_stop())
         finally:
             self._leases.revoke_all(notify=False)
             try:

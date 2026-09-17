@@ -40,6 +40,7 @@ from uga.perception.schema import (
     TextRegion,
     WaitReason,
 )
+from uga.policy.call_budget import checkpoint, decision_budget
 from uga.policy.decision_journal import DecisionJournal, DecisionRecord, NullJournal
 from uga.policy.structured_output import (
     strict_bounded_text,
@@ -419,7 +420,31 @@ class GroundedVlmPlanner:
         quest_target_level: int | None = None,
         quest_text: str | None = None,
     ) -> PlannerOutcome:
+        with decision_budget():
+            return self._decide(
+                snapshot=snapshot, frames=frames, goal=goal,
+                high_resolution_retry=high_resolution_retry,
+                preferred_action_available=preferred_action_available,
+                session_context=session_context, quest_target_level=quest_target_level,
+                quest_text=quest_text,
+            )
+
+    def _decide(
+        self,
+        *,
+        snapshot: PerceptionSnapshot,
+        frames: Sequence[Frame],
+        goal: str,
+        high_resolution_retry: bool = False,
+        preferred_action_available: bool = True,
+        session_context: str | None = None,
+        quest_target_level: int | None = None,
+        quest_text: str | None = None,
+    ) -> PlannerOutcome:
         started = time.monotonic()
+        self.last_raw_reply = None
+        self.last_schema_valid = False
+        self._last_decision_source = "model"
         if not frames or frames[-1].frame_id != snapshot.frame_id:
             raise ContractViolation("grounded planner frames must end at the snapshot frame")
         fast_outcome = self._ocr_fast_path(
@@ -478,6 +503,7 @@ class GroundedVlmPlanner:
             else None
         )
         try:
+            checkpoint()
             reply = self._client.decide(
                 images=images,
                 instruction=instruction,
@@ -492,10 +518,12 @@ class GroundedVlmPlanner:
             ):
                 raise
             self._schema_supported = False
+            checkpoint()
             reply = self._client.decide(images=images, instruction=instruction)
         # F13: every response updates the CURRENT request's raw reply before
         # parsing — a previous request's summary (or its repair text) must
         # never leak into this decision's journal rows.
+        checkpoint()
         self.last_raw_reply = reply
         try:
             outcome = self._parse(reply, snapshot, compact=self._compact_output)
@@ -504,6 +532,7 @@ class GroundedVlmPlanner:
             )
             outcome = self._snap_model_action_to_ocr(outcome, snapshot)
         except PlannerReplyError as exc:
+            checkpoint()
             repair = self._client.decide(
                 images=images,
                 instruction=(
@@ -539,6 +568,7 @@ class GroundedVlmPlanner:
                     else None
                 ),
             )
+            checkpoint()
             self.last_raw_reply = repair
             try:
                 outcome = self._parse(repair, snapshot, compact=self._compact_output)
@@ -1014,6 +1044,7 @@ class GroundedVlmPlanner:
         )
 
     def _record(self, outcome: PlannerOutcome, latency_s: float) -> None:
+        checkpoint()
         action = outcome.action
         action_label = outcome.kind.value
         if action is not None:
@@ -1644,11 +1675,13 @@ class GroundedOutcomeVerifier:
             f"预期效果：{None if action is None else action.expected_effect}"
         )
         try:
+            checkpoint()
             reply = self._client.decide(
                 images=[encode_frame_png(frame, max_width=1280)],
                 instruction=instruction,
                 response_format=VERIFIER_RESPONSE_FORMAT,
             )
+            checkpoint()
             payload = json.loads(reply)
             if not isinstance(payload, dict):
                 return False

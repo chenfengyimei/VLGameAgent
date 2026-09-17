@@ -192,6 +192,10 @@ async def _run(args: argparse.Namespace) -> int:
         or args.watchdog_timeout_seconds <= 0
     ):
         raise SystemExit("--watchdog-timeout-seconds must be positive")
+    for name, default in (("decision_timeout_seconds", 60.0), ("perception_timeout_seconds", 10.0)):
+        timeout_s = float(getattr(args, name, default))
+        if not math.isfinite(timeout_s) or timeout_s <= 0:
+            raise SystemExit(f"--{name.replace('_', '-')} must be finite and positive")
     if not math.isfinite(args.tap_delay) or args.tap_delay < 0:
         raise SystemExit("--tap-delay must be >= 0")
     if not math.isfinite(args.tap_interval_seconds) or args.tap_interval_seconds < 0:
@@ -597,6 +601,8 @@ async def _run(args: argparse.Namespace) -> int:
         run_context=run_context,
         control_heartbeat=watchdog.heartbeat,
         recovery_budget=recovery_budget,
+        decision_timeout_s=float(getattr(args, "decision_timeout_seconds", 60.0)),
+        perception_timeout_s=float(getattr(args, "perception_timeout_seconds", 10.0)),
     )
 
     if journal is not None and args.dashboard_port > 0:
@@ -1042,6 +1048,14 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=0,
         help="serve the read-only VLM decision dashboard on loopback (0 = disabled)",
+    )
+    parser.add_argument(
+        "--decision-timeout-seconds", type=float, default=60.0,
+        help="total deadline for inference, schema fallback, repair and verification",
+    )
+    parser.add_argument(
+        "--perception-timeout-seconds", type=float, default=10.0,
+        help="bounded OCR/perception worker deadline",
     )
     parser.add_argument(
         "--watchdog-timeout-seconds",

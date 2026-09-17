@@ -32,6 +32,7 @@ from typing import Any
 from uga.capture.frame import BufferHandle, BufferKind, Frame, PixelFormat
 from uga.core.errors import BackendUnavailableError, ContractViolation
 from uga.policy.action_chunk import ActionButton, ActionChunk
+from uga.policy.call_budget import checkpoint, request_timeout
 from uga.policy.decision_journal import DecisionJournal, DecisionRecord, NullJournal
 from uga.policy.fast_policy import FastPolicyOutput, PolicyContext
 from uga.policy.vision_transport import (
@@ -263,10 +264,11 @@ class OpenAICompatibleVisionClient:
             method="POST",
         )
         try:
-            with open_vision_request(request, timeout=self._timeout_s) as response:
+            with open_vision_request(request, timeout=request_timeout(self._timeout_s)) as response:
                 raw = response.read(MAX_VISION_RESPONSE_BYTES + 1)
                 if len(raw) > MAX_VISION_RESPONSE_BYTES:
                     raise BackendUnavailableError("vision endpoint response is too large")
+                checkpoint()
                 body = json.loads(raw.decode("utf-8"))
         except urllib.error.HTTPError as exc:
             detail = ""
