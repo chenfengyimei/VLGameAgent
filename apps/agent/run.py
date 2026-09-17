@@ -855,6 +855,7 @@ async def _run(args: argparse.Namespace) -> int:
 
         cleanup(watchdog_monitor.close)
         cleanup(scheduler.neutralize)
+        cleanup(loop.drain_execution_receipts)
         cleanup(lambda: leases.revoke_all(notify=False))
         if sampler_backend is not None:
             cleanup(sampler_backend.stop)

@@ -195,7 +195,7 @@ class ClientFailureClassificationTests(unittest.TestCase):
         client = self._client()
         payload = json.dumps({"error": {"message": "invalid api key"}}).encode()
         with patch(
-            "uga.policy.vlm_planner.urllib.request.urlopen",
+            "uga.policy.vlm_planner.open_vision_request",
             side_effect=self._FakeHTTPError(401, payload),
         ), self.assertRaises(ProviderError) as caught:
             client.decide(images=[b"png"], instruction="go")
@@ -210,7 +210,7 @@ class ClientFailureClassificationTests(unittest.TestCase):
         error = self._FakeHTTPError(429, payload)
         error.headers = {"Content-Type": "application/json", "Retry-After": "7"}
         with patch(
-            "uga.policy.vlm_planner.urllib.request.urlopen",
+            "uga.policy.vlm_planner.open_vision_request",
             side_effect=error,
         ), self.assertRaises(VisionRateLimitedError) as caught:
             client.decide(images=[b"png"], instruction="go")

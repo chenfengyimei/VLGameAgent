@@ -8,6 +8,7 @@ from pathlib import Path
 
 from uga.core.errors import ContractViolation
 from uga.core.runtime import AgentRuntime
+from uga.policy.vision_transport import ProviderError
 
 
 async def main() -> None:
@@ -32,12 +33,27 @@ def _run(args: argparse.Namespace) -> int:
     return int(run_module.main(args))
 
 
+def _has_fatal_provider_error(error: BaseException) -> bool:
+    if isinstance(error, ProviderError):
+        return error.fatal
+    if isinstance(error, BaseExceptionGroup):
+        return any(_has_fatal_provider_error(child) for child in error.exceptions)
+    return False
+
+
 def _run_safely(args: argparse.Namespace) -> int:
     try:
         return _run(args)
     except ContractViolation as error:
         print(f"uga-agent: {error}", file=sys.stderr)
         return 2
+    except Exception as error:
+        if not _has_fatal_provider_error(error):
+            raise
+        # TaskGroup wraps worker failures. Keep the non-retryable outcome
+        # visible to the process supervisor without echoing provider bodies.
+        print("uga-agent: fatal provider failure; manual intervention required", file=sys.stderr)
+        return 78
 
 
 def _client_fraction(value: str) -> float:

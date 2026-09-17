@@ -325,7 +325,7 @@ class OpenAICompatibleVisionClientTests(unittest.TestCase):
             api_key="secret",
         )
         with mock.patch(
-            "urllib.request.urlopen", return_value=_Response()
+            "uga.policy.vlm_planner.open_vision_request", return_value=_Response()
         ) as urlopen:
             reply = client.decide(images=[b"\x89PNGfake"], instruction="决定")
 
@@ -366,7 +366,9 @@ class OpenAICompatibleVisionClientTests(unittest.TestCase):
             model="qwen3-vl-4b-instruct",
             max_output_tokens=512,
         )
-        with mock.patch("urllib.request.urlopen", return_value=_Response()) as urlopen:
+        with mock.patch(
+            "uga.policy.vlm_planner.open_vision_request", return_value=_Response()
+        ) as urlopen:
             client.decide(images=[b"x"], instruction="go")
 
         payload = json.loads(urlopen.call_args.args[0].data.decode("utf-8"))
@@ -399,7 +401,9 @@ class OpenAICompatibleVisionClientTests(unittest.TestCase):
             base_url="http://127.0.0.1:1234/v1", model="qwen3-vl-4b-instruct"
         )
         response_format = {"type": "json_schema", "json_schema": {"name": "decision"}}
-        with mock.patch("urllib.request.urlopen", return_value=_Response()) as urlopen:
+        with mock.patch(
+            "uga.policy.vlm_planner.open_vision_request", return_value=_Response()
+        ) as urlopen:
             client.decide(
                 images=[b"x"], instruction="go", response_format=response_format
             )
@@ -428,7 +432,9 @@ class OpenAICompatibleVisionClientTests(unittest.TestCase):
             json_object_mode=True,
         )
         schema = {"type": "json_schema", "json_schema": {"name": "decision"}}
-        with mock.patch("urllib.request.urlopen", return_value=_Response()) as urlopen:
+        with mock.patch(
+            "uga.policy.vlm_planner.open_vision_request", return_value=_Response()
+        ) as urlopen:
             client.decide(images=[b"x"], instruction="go", response_format=schema)
 
         payload = json.loads(urlopen.call_args.args[0].data.decode("utf-8"))
@@ -463,7 +469,9 @@ class OpenAICompatibleVisionClientTests(unittest.TestCase):
             model="qwen3.8-flash",
             extra_body={"enable_thinking": False},
         )
-        with mock.patch("urllib.request.urlopen", return_value=_Response()) as urlopen:
+        with mock.patch(
+            "uga.policy.vlm_planner.open_vision_request", return_value=_Response()
+        ) as urlopen:
             client.decide(images=[b"x"], instruction="go")
 
         payload = json.loads(urlopen.call_args.args[0].data.decode("utf-8"))
@@ -489,7 +497,9 @@ class OpenAICompatibleVisionClientTests(unittest.TestCase):
             model="glm-4.6v-flash",
             disable_thinking=True,
         )
-        with mock.patch("urllib.request.urlopen", return_value=_Response()) as urlopen:
+        with mock.patch(
+            "uga.policy.vlm_planner.open_vision_request", return_value=_Response()
+        ) as urlopen:
             client.decide(images=[b"x"], instruction="go")
 
         payload = json.loads(urlopen.call_args.args[0].data.decode("utf-8"))
@@ -500,7 +510,7 @@ class OpenAICompatibleVisionClientTests(unittest.TestCase):
             base_url="http://127.0.0.1:1234/v1", model="m"
         )
         with mock.patch(
-            "urllib.request.urlopen",
+            "uga.policy.vlm_planner.open_vision_request",
             side_effect=urllib.error.HTTPError(
                 "url", 500, "boom", None, io.BytesIO(b"")  # type: ignore[arg-type]
             ),
@@ -521,8 +531,9 @@ class OpenAICompatibleVisionClientTests(unittest.TestCase):
         client = OpenAICompatibleVisionClient(
             base_url="http://127.0.0.1:1234/v1", model="m"
         )
-        with mock.patch("urllib.request.urlopen", return_value=_Response()), self.assertRaisesRegex(
-            BackendUnavailableError, "response is too large"
+        with (
+            mock.patch("uga.policy.vlm_planner.open_vision_request", return_value=_Response()),
+            self.assertRaisesRegex(BackendUnavailableError, "response is too large"),
         ):
             client.decide(images=[b"x"], instruction="go")
 

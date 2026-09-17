@@ -136,6 +136,10 @@ def make_episode(root: Path) -> Path:
             canonical.action_id,
         ),
     )
+    writer.record_observation(
+        "obs-execution-1", UGATime(120),
+        {"frame": "frame-1", "features": [1.0, -0.5]},
+    )
     writer.record_execution_receipts(
         (
             ExecutionReceipt(
@@ -147,13 +151,15 @@ def make_episode(root: Path) -> Path:
                 identity(),
                 "lease",
                 1,
+                pre_action_observation_id="obs-execution-1",
+                pre_action_capture_ns=120,
             ),
         )
     )
     writer.record_observation(
-        "obs-execution-1",
+        "obs-effect-1",
         UGATime(140),
-        {"frame": "frame-1", "features": [1.0, -0.5]},
+        {"frame": "frame-1", "features": [999.0, 999.0]},
     )
     return writer.finalize(EpisodeResult.SUCCESS, UGATime(1_000_000_100))
 
@@ -162,6 +168,8 @@ def make_outcome_episode(
     root: Path,
     episode_id: str,
     statuses: tuple[ExecutionPrimitiveStatus, ...],
+    *,
+    causal: bool = True,
 ) -> Path:
     writer = EpisodeWriter(
         root,
@@ -181,6 +189,7 @@ def make_outcome_episode(
         require_video=False,
     )
     writer.record_observation("inference", UGATime(110), {"features": [1.0]})
+    writer.record_observation("execution", UGATime(120), {"features": [2.0]})
     lifetime = ActionLifetime(UGATime(120), UGATime(120), UGATime(200))
     canonical = CanonicalAction(f"{episode_id}:canonical", lifetime, move_x=1.0)
     proposal_id = f"proposal:{episode_id}"
@@ -235,10 +244,12 @@ def make_outcome_episode(
                 "lease",
                 1,
                 None if status == ExecutionPrimitiveStatus.EXECUTED else status.value,
+                pre_action_observation_id="execution" if causal else None,
+                pre_action_capture_ns=120 if causal else None,
             )
         )
     writer.record_execution_receipts(tuple(receipts))
-    writer.record_observation("execution", UGATime(150), {"features": [2.0]})
+    writer.record_observation("effect", UGATime(150), {"features": [999.0]})
     return writer.finalize(EpisodeResult.FAILURE, UGATime(300))
 
 
@@ -300,8 +311,8 @@ class ChunkEnvironment:
 
 
 class ChunkScheduler:
-    def schedule(self, decision, target, lease):  # type: ignore[no-untyped-def]
-        del target, lease
+    def schedule(self, decision, target, lease, **kwargs):  # type: ignore[no-untyped-def]
+        del target, lease, kwargs
         return len(decision.proposal.actions) if decision.accepted else 0
 
 

@@ -201,6 +201,11 @@ class GoalVerifier:
         *,
         decision_confidence: float,
     ) -> bool:
+        # A nonempty screen is not a goal predicate. Completion must be
+        # bound to caller-provided evidence, never to incidental OCR overlap.
+        if not self._required_evidence:
+            self._candidate = None
+            return False
         observed_values = tuple(
             normalize_visible_text(value)
             for value in snapshot.text
@@ -496,6 +501,7 @@ class ClosedLoopSupervisor:
         max_failed_back_recoveries: int = 2,
         max_stuck_waits: int = 10,
         on_exit_executed: Callable[[], None] | None = None,
+        max_execution_frame_age_ns: int = 1_000_000_000,
     ) -> None:
         if not 0 <= max_recoveries <= 2:
             raise ContractViolation("closed-loop recoveries must be within [0, 2]")
@@ -524,6 +530,9 @@ class ClosedLoopSupervisor:
             raise ContractViolation("failed back recovery bound must be within [1, 8]")
         if not 2 <= max_stuck_waits <= 100:
             raise ContractViolation("stuck-wait bound must be within [2, 100]")
+        if type(max_execution_frame_age_ns) is not int or max_execution_frame_age_ns <= 0:
+            raise ContractViolation("execution frame age budget must be a positive integer")
+        self._max_execution_frame_age_ns = max_execution_frame_age_ns
         self._clock = clock
         self._profile = profile
         self._verifier = verifier
@@ -961,6 +970,12 @@ class ClosedLoopSupervisor:
                 "real-name registration gate: standing by for the owner",
                 outcome,
             )
+        consistent, _ = generations_consistent(outcome, decided_snapshot, fresh_snapshot)
+        if not consistent:
+            self._stale_results_discarded += 1
+            return SupervisedDecision(
+                DecisionDisposition.REOBSERVE, "decision generation became stale", outcome
+            )
         recovery = self._pending_recovery
         recovering_high_resolution = recovery == RecoveryDirective.HIGH_RESOLUTION
         if recovering_high_resolution:
@@ -973,6 +988,10 @@ class ClosedLoopSupervisor:
             self._no_safe_state_signature = None
             self._no_safe_state_repeats = 0
         if outcome.kind == DecisionKind.DONE:
+            if not self._goal.required_evidence:
+                return self._block(
+                    outcome, "goal verification is unconfigured; provide explicit goal evidence"
+                )
             if self._goal.consider(outcome, fresh_snapshot):
                 evidence_confidence = self._goal.last_evidence_confidence
                 self.status = TerminalStatus.SUCCEEDED
@@ -1142,14 +1161,13 @@ class ClosedLoopSupervisor:
         if not recovering_high_resolution and self._should_escape_repeated_action(
             outcome.action
         ):
+            # Repeated-action escape is a recovery, not a budget-free
+            # navigation shortcut. The common path consumes the shared budget.
             self._last_started_action_semantic_key = None
             self._consecutive_same_started_action = 0
-            self._recovery_in_progress = RecoveryDirective.BACK
-            return SupervisedDecision(
-                DecisionDisposition.RECOVER,
-                "same non-progress control was executed twice; leaving the panel to re-observe",
+            return self._advance_loop_recovery(
                 outcome,
-                RecoveryDirective.BACK,
+                "same non-progress control was executed twice; leaving the panel to re-observe",
             )
         if (
             self._goal_action_target is not None
@@ -1462,6 +1480,14 @@ class ClosedLoopSupervisor:
         ):
             self._stale_results_discarded += 1
             return False, "execution frame generation or geometry changed"
+        now_ns = self._clock.now().value_ns
+        ages_ns = (
+            now_ns - validated_frame.capture_timestamp.value_ns,
+            now_ns - execution_frame.capture_timestamp.value_ns,
+        )
+        if any(age < 0 or age > self._max_execution_frame_age_ns for age in ages_ns):
+            self._stale_results_discarded += 1
+            return False, "execution frame exceeds the freshness budget"
         return True, "execution frame matches the validated window"
 
     def validate_execution_frame(
@@ -1942,6 +1968,13 @@ class ClosedLoopSupervisor:
             # Exit/promote controls must never trigger another exit escape;
             # their own failure bound lives in the back recovery streak.
             return False
+        label = normalize_visible_text(action.target_label)
+        if any(term in label for term in ("继续", "确定", "提交", "下一步", "跳过", "领取")):
+            return False
+        if action.target_box is not None:
+            center = action.target_box.center
+            if center.x <= 0.28 and 0.20 <= center.y <= 0.38:
+                return False
         key = self._semantic_action_key(action)
         expiry = self._escaped_action_keys.get(key)
         now = time.monotonic()
@@ -1955,13 +1988,6 @@ class ClosedLoopSupervisor:
         if self._consecutive_same_started_action < 2:
             return False
         self._escaped_action_keys[key] = now + 60.0
-        label = normalize_visible_text(action.target_label)
-        if any(term in label for term in ("继续", "确定", "提交", "下一步", "跳过", "领取")):
-            return False
-        if action.target_box is not None:
-            center = action.target_box.center
-            if center.x <= 0.28 and 0.20 <= center.y <= 0.38:
-                return False
         return True
 
 

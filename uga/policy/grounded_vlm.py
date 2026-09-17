@@ -47,6 +47,7 @@ from uga.policy.structured_output import (
     strict_coordinates,
     strict_unit_interval_number,
 )
+from uga.policy.vision_transport import ProviderError
 from uga.policy.vlm_planner import PlannerReplyError, encode_frame_png
 
 GROUNDING_RESPONSE_FORMAT: dict[str, Any] = {
@@ -1649,6 +1650,8 @@ class GroundedOutcomeVerifier:
                 response_format=VERIFIER_RESPONSE_FORMAT,
             )
             payload = json.loads(reply)
+            if not isinstance(payload, dict):
+                return False
             # F11: bool/str/NaN confidences never masquerade as a pass.
             confidence = strict_confidence_value(payload.get("confidence"))
             return (
@@ -1658,5 +1661,9 @@ class GroundedOutcomeVerifier:
                 and confidence >= self._threshold
                 and isinstance(payload.get("reason"), str)
             )
+        except ProviderError as exc:
+            if exc.fatal:
+                raise
+            return False
         except (BackendUnavailableError, TypeError, ValueError, json.JSONDecodeError):
             return False

@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import math
 import uuid
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Protocol, runtime_checkable
 
 from uga.agent.closed_loop import (
@@ -38,6 +39,7 @@ from uga.perception.builder import PerceptionBuilder
 from uga.perception.schema import DecisionKind, PerceptionSnapshot, PlannerOutcome
 from uga.policy.chunk_controller import ActionChunkController, ActionChunkSubmission
 from uga.policy.fast_policy import FastPolicy, FastPolicyOutput, PolicyContext
+from uga.policy.vision_transport import ProviderError, ProviderErrorKind
 from uga.recording.episode_writer import EpisodeWriter
 from uga.time.clock import ClockBackend
 from uga.windows.coordinates import CoordinateTransform, Rect
@@ -128,6 +130,7 @@ class RealtimeAgentLoop:
         control_heartbeat: Callable[[], object] | None = None,
         recovery_budget: RecoveryBudget | None = None,
         max_continuous_rebuilds: int = 100,
+        max_planner_failures: int = 5,
     ) -> None:
         grounded_parts = (
             grounded_planner,
@@ -186,6 +189,10 @@ class RealtimeAgentLoop:
         self._grounded_failure_backoff_ns = max(
             self._grounded_decision_interval_ns, 15_000_000_000
         )
+        if type(max_planner_failures) is not int or max_planner_failures < 1:
+            raise ContractViolation("planner failure budget must be a positive integer")
+        self._max_planner_failures = max_planner_failures
+        self._consecutive_planner_failures = 0
         self._planner_failure_count = 0
         self._safety_discards = 0
         self._last_planner_error: str | None = None
@@ -267,6 +274,53 @@ class RealtimeAgentLoop:
             },
         )
 
+    def drain_execution_receipts(self) -> None:
+        """One receipt pump for observation, error teardown and finalization."""
+        receipts = self._scheduler.drain_receipts()
+        if self._recorder is not None:
+            self._recorder.record_execution_receipts(receipts)
+        if self._closed_loop is not None:
+            self._closed_loop.record_execution_receipts(receipts)
+
+    def _pre_action_observation(self, item: SequencedFrame) -> Observation:
+        history = tuple(
+            value.frame for value in self._frames.snapshot() if value.sequence <= item.sequence
+        )
+        if not history or history[-1] != item.frame:
+            history = (item.frame,)
+        observed = self._environment.enrich_observation(self._observation_builder.build(
+            item.frame, history, self._mode_router.current, self._leases.current()
+        ))
+        if self._recorder is not None:
+            self._recorder.record_observation(
+                observed.observation_id, observed.created_at, observed.to_envelope()
+            )
+        return observed
+
+    def _execution_is_current(
+        self, stamp: RunStamp | None, validated: Frame, task_generation: int
+    ) -> bool:
+        if not self._run_live(stamp):
+            return False
+        supervisor = self._closed_loop
+        if (
+            supervisor is not None
+            and supervisor.session is not None
+            and supervisor.session.task_generation != task_generation
+        ):
+            return False
+        current = self._frames.latest()
+        if current is None:
+            return False
+        if supervisor is not None:
+            return supervisor.validate_execution_context(validated, current.frame)[0]
+        age = self._clock.now().value_ns - current.frame.capture_timestamp.value_ns
+        return (
+            0 <= age <= 1_000_000_000
+            and current.frame.window_identity == validated.window_identity
+            and current.frame.physical_rect == validated.physical_rect
+        )
+
     async def step(self) -> AgentLoopStep:
         item = await self._capture.capture_once()
         latest_item = self._frames.latest()
@@ -281,14 +335,9 @@ class RealtimeAgentLoop:
         )
         if self._recorder is not None and not source_records_frames:
             self._recorder.record_frame(pending.frame)
-        # D04/D14: drain exactly once, then feed both online supervision and
-        # the immutable Episode record.  The observation built below becomes
-        # the fresh execution observation associated with these outcomes.
-        execution_receipts = self._scheduler.drain_receipts()
-        if self._recorder is not None:
-            self._recorder.record_execution_receipts(execution_receipts)
-        if self._closed_loop is not None:
-            self._closed_loop.record_execution_receipts(execution_receipts)
+        # Drain exactly once into supervision and recording. The observation
+        # built below is post-action effect evidence, not a policy input.
+        self.drain_execution_receipts()
 
         history_items = tuple(
             value for value in self._frames.snapshot() if value.sequence <= pending.sequence
@@ -299,10 +348,7 @@ class RealtimeAgentLoop:
             # F08: the session's task generation is the single source of
             # truth — a quest identity change advances it and every request
             # or outcome stamped with the old generation is stale on arrival.
-            self._task_generation = max(
-                self._task_generation,
-                self._closed_loop.session.task_generation,
-            )
+            self._task_generation = self._closed_loop.session.task_generation
         perception: PerceptionSnapshot | None = None
         effect_pending = False
         if self._perception_builder is not None:
@@ -316,6 +362,11 @@ class RealtimeAgentLoop:
             )
             assert self._closed_loop is not None
             effect_pending = self._closed_loop.observe(perception, pending.frame).pending
+            # observe() may commit a new task. Stamp the request AFTER that
+            # update rather than one iteration late.
+            if self._closed_loop.session is not None:
+                self._task_generation = self._closed_loop.session.task_generation
+                perception = replace(perception, task_generation=self._task_generation)
         observation = self._observation_builder.build(
             pending.frame,
             history,
@@ -427,10 +478,30 @@ class RealtimeAgentLoop:
                 )
             except BackendUnavailableError as exc:
                 self._planner_failure_count += 1
+                self._consecutive_planner_failures += 1
                 self._last_planner_error = str(exc)
-                self._next_grounded_inference_ns = (
-                    self._clock.now().value_ns + self._grounded_failure_backoff_ns
-                )
+                if isinstance(exc, ProviderError) and exc.fatal:
+                    self._leases.revoke_all()
+                    self._scheduler.neutralize()
+                    raise
+                if self._consecutive_planner_failures >= self._max_planner_failures:
+                    self._leases.revoke_all()
+                    self._scheduler.neutralize()
+                    raise ProviderError(
+                        ProviderErrorKind.UNREACHABLE,
+                        "planner retry budget exhausted", fatal=True,
+                    ) from exc
+                retry_ns = self._grounded_failure_backoff_ns
+                if isinstance(exc, ProviderError) and exc.retry_after_s is not None:
+                    delay = exc.retry_after_s
+                    if math.isfinite(delay) and delay > 300.0:
+                        raise ProviderError(
+                            ProviderErrorKind.RATE_LIMIT,
+                            "provider retry delay exceeds the run retry budget", fatal=True,
+                        ) from exc
+                    if math.isfinite(delay) and delay > 0.0:
+                        retry_ns = max(retry_ns, round(delay * 1_000_000_000))
+                self._next_grounded_inference_ns = self._clock.now().value_ns + retry_ns
                 await self._events.publish(
                     EventType.POLICY_INFERENCE_COMPLETED,
                     "agent.loop",
@@ -439,7 +510,7 @@ class RealtimeAgentLoop:
                         "policy": "grounded_vlm",
                         "disposition": "retry",
                         "reason": self._last_planner_error,
-                        "retry_after_ns": self._grounded_failure_backoff_ns,
+                        "retry_after_ns": retry_ns,
                     },
                 )
                 stats = self._scheduler.tick()
@@ -464,6 +535,7 @@ class RealtimeAgentLoop:
                     perception,
                 )
             self._last_planner_error = None
+            self._consecutive_planner_failures = 0
             planner_outcome = outcome
             dialogue_cadence = (
                 outcome.kind == DecisionKind.ACT
@@ -489,6 +561,16 @@ class RealtimeAgentLoop:
                     self._mode_router.current,
                     geometry_generation=geometry_generation,
                     task_generation=self._task_generation,
+                )
+            if closed_loop.session is not None:
+                # A task can change while the model thinks. Incorporate the
+                # fresh screen before comparing with the original request.
+                closed_loop.session.observe_snapshot(
+                    fresh_perception, fresh_perception.captured_at.value_ns
+                )
+                self._task_generation = closed_loop.session.task_generation
+                fresh_perception = replace(
+                    fresh_perception, task_generation=self._task_generation
                 )
             supervised = await asyncio.to_thread(
                 closed_loop.assess,
@@ -649,6 +731,7 @@ class RealtimeAgentLoop:
                     )
                 assert self._gui_controller is not None
                 assert self._key_resolver is not None
+                pre_action = self._pre_action_observation(execution_item)
                 gui_action = closed_loop.to_gui_action(outcome, self._key_resolver)
                 now = self._clock.now()
                 gui_lease = self._leases.grant(
@@ -666,6 +749,11 @@ class RealtimeAgentLoop:
                     gui_lease,
                     observation_id=observation.observation_id,
                     policy_version=grounded_planner.policy_version,
+                    pre_action_observation_id=pre_action.observation_id,
+                    pre_action_capture_ns=pre_action.latest_frame.capture_timestamp.value_ns,
+                    execution_guard=lambda: self._execution_is_current(
+                        stamp, execution_item.frame, outcome.task_generation
+                    ),
                 )
                 if gui_submission.decision is not None:
                     await self._publish_decision(gui_submission.decision)
@@ -743,6 +831,7 @@ class RealtimeAgentLoop:
                         gui_submission,
                         supervision,
                     )
+                pre_action = self._pre_action_observation(recovery_item)
                 recovery_action = closed_loop.to_recovery_gui_action(
                     supervised.recovery, self._key_resolver
                 )
@@ -761,6 +850,11 @@ class RealtimeAgentLoop:
                     recovery_lease,
                     observation_id=observation.observation_id,
                     policy_version="closed-loop-recovery-1.0.0",
+                    pre_action_observation_id=pre_action.observation_id,
+                    pre_action_capture_ns=pre_action.latest_frame.capture_timestamp.value_ns,
+                    execution_guard=lambda: self._execution_is_current(
+                        stamp, recovery_item.frame, fresh_perception.task_generation
+                    ),
                 )
                 if gui_submission.decision is not None:
                     await self._publish_decision(gui_submission.decision)
@@ -874,7 +968,15 @@ class RealtimeAgentLoop:
                 "agent.loop",
                 {"chunk_id": output.chunk.chunk_id, "horizon": output.chunk.horizon},
             )
-            submission = self._controller.submit(output.chunk, pending.frame.window_identity, lease)
+            pre_action = self._pre_action_observation(pending)
+            submission = self._controller.submit(
+                output.chunk, pending.frame.window_identity, lease,
+                pre_action_observation_id=pre_action.observation_id,
+                pre_action_capture_ns=pre_action.latest_frame.capture_timestamp.value_ns,
+                execution_guard=lambda: self._execution_is_current(
+                    stamp, pending.frame, self._task_generation
+                ),
+            )
             await self._publish_decision(submission.decision)
 
         stats = self._scheduler.tick()
@@ -915,6 +1017,11 @@ class RealtimeAgentLoop:
                         stop.set()
                         break
                     previous = self._closed_loop
+                    if previous.status is TerminalStatus.BLOCKED:
+                        # A terminal refusal is not permission to rebuild a
+                        # supervisor and try the forbidden operation again.
+                        stop.set()
+                        break
                     if (
                         self._recovery_budget is not None
                         and self._recovery_budget.exhausted
@@ -935,7 +1042,8 @@ class RealtimeAgentLoop:
                     # the old generation; they must not adopt the new one.
                     if self._run_context is not None:
                         self._run_context.advance_generation()
-                    self._task_generation += 1
+                    # RunContext owns cycle invalidation. Task identity is
+                    # exclusively owned by GameSessionState, not by rebuilds.
                     self._continuous_cycle_count += 1
                     self._next_grounded_inference_ns = (
                         self._clock.now().value_ns + self._grounded_failure_backoff_ns
@@ -965,6 +1073,10 @@ class RealtimeAgentLoop:
                 tasks.create_task(observe())
         finally:
             self._leases.revoke_all(notify=False)
+            try:
+                self._scheduler.neutralize()
+            finally:
+                self.drain_execution_receipts()
 
     def _update_geometry_generation(self, frame: Frame) -> int:
         key = (

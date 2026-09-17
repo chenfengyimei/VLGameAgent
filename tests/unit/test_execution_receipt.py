@@ -27,6 +27,7 @@ from uga.control.lease_manager import ControlLeaseManager
 from uga.control.lifetime import ActionLifetime
 from uga.control.physical import KeyboardAction
 from uga.control.scheduler import ActionScheduler
+from uga.core.errors import ContractViolation
 from uga.environment.profile import PerceptionProfile
 from uga.safety.focus_guard import AgentEnableState, FocusGuard
 from uga.time.clock import ManualClock, UGATime
@@ -172,13 +173,18 @@ class SchedulerReceiptTests(unittest.TestCase):
         self.assertEqual(receipts[0].status, ExecutionPrimitiveStatus.FLUSHED)
 
     def test_receipt_ring_is_bounded(self) -> None:
-        for index in range(1200):
+        for index in range(1024):
             self._schedule(f"key-{index}", 100, 300)
+        with self.assertRaisesRegex(ContractViolation, "receipt capacity"):
+            self._schedule("cannot-fit", 100, 300)
         self.scheduler.flush()
         receipts = self.scheduler.drain_receipts()
         self.assertEqual(len(receipts), 1024)
-        # The newest receipts survive; the oldest are dropped first.
-        self.assertEqual(receipts[-1].action_id, "key-1199")
+        self.assertEqual({r.action_id for r in receipts}, {f"key-{i}" for i in range(1024)})
+        # Draining frees reservations; no shutdown receipt was overwritten.
+        self._schedule("after-drain", 100, 300)
+        self.scheduler.tick()
+        self.assertEqual(self.scheduler.drain_receipts()[0].action_id, "after-drain")
 
 
 class SupervisorExecutionEvidenceTests(unittest.TestCase):

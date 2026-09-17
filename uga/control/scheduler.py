@@ -10,7 +10,7 @@ from threading import Lock
 
 from uga.control.arbiter import ArbiterDecision
 from uga.control.execution_receipt import ExecutionPrimitiveStatus, ExecutionReceipt
-from uga.control.executor import ExecutionReason, InputExecutor
+from uga.control.executor import ExecutionReason, ExecutionResult, InputExecutor
 from uga.control.lease import ControlLease
 from uga.control.lease_manager import ControlLeaseManager
 from uga.control.physical import PhysicalAction
@@ -35,6 +35,9 @@ class _ScheduledAction:
     target: WindowIdentity
     lease: ControlLease
     proposal_id: str
+    pre_action_observation_id: str | None = None
+    pre_action_capture_ns: int | None = None
+    execution_guard: Callable[[], bool] | None = None
 
 
 class ActionScheduler:
@@ -62,6 +65,9 @@ class ActionScheduler:
         self._heap: list[tuple[int, int, _ScheduledAction]] = []
         self._action_ids: set[str] = set()
         self._sequence = 0
+        # Reserve one receipt slot at admission, including work popped by a
+        # concurrent tick. Shutdown can always publish without blocking or loss.
+        self._reserved_receipts = 0
         self._scheduled = 0
         self._executed = 0
         self._expired = 0
@@ -76,6 +82,10 @@ class ActionScheduler:
         decision: ArbiterDecision,
         target: WindowIdentity,
         lease: ControlLease,
+        *,
+        pre_action_observation_id: str | None = None,
+        pre_action_capture_ns: int | None = None,
+        execution_guard: Callable[[], bool] | None = None,
     ) -> int:
         proposal = decision.proposal
         if not decision.accepted:
@@ -90,14 +100,27 @@ class ActionScheduler:
         ):
             raise ContractViolation("scheduler lease does not match accepted proposal")
 
+        if (pre_action_observation_id is None) != (pre_action_capture_ns is None):
+            raise ContractViolation(
+                "pre-action observation identity and capture time must be paired"
+            )
         added = 0
         with self._lock:
+            needed = len({a.action_id for a in proposal.actions} - self._action_ids)
+            if len(self._receipts) + self._reserved_receipts + needed > self._RECEIPT_RING:
+                raise ContractViolation(
+                    "execution receipt capacity exhausted; drain before scheduling"
+                )
             for action in proposal.actions:
                 if action.action_id in self._action_ids:
                     self._rejected += 1
                     continue
                 self._sequence += 1
-                item = _ScheduledAction(action, target, lease, proposal.proposal_id)
+                item = _ScheduledAction(
+                    action, target, lease, proposal.proposal_id,
+                    pre_action_observation_id, pre_action_capture_ns, execution_guard,
+                )
+                self._reserved_receipts += 1
                 heapq.heappush(
                     self._heap,
                     (action.lifetime.effective_from.value_ns, self._sequence, item),
@@ -119,7 +142,21 @@ class ActionScheduler:
 
         for index, item in enumerate(due):
             try:
-                result = self._executor.execute(item.action, item.target, item.lease)
+                try:
+                    context_live = item.execution_guard is None or item.execution_guard()
+                except BaseException:
+                    # A callback failure happens before InputExecutor's own
+                    # exception cleanup, so this boundary owns neutralization.
+                    with contextlib.suppress(Exception):
+                        self._executor.release_all()
+                    raise
+                if not context_live:
+                    self._executor.release_all()
+                    result = ExecutionResult(
+                        False, ExecutionReason.CONTEXT_STALE, self._clock.now()
+                    )
+                else:
+                    result = self._executor.execute(item.action, item.target, item.lease)
             except BaseException as exc:
                 with self._lock:
                     self._rejected += 1
@@ -225,6 +262,7 @@ class ActionScheduler:
         *,
         failure_reason: str | None = None,
     ) -> None:
+        self._reserved_receipts -= 1
         self._receipts.append(
             ExecutionReceipt(
                 action_id=item.action.action_id,
@@ -236,6 +274,8 @@ class ActionScheduler:
                 lease_id=item.lease.lease_id,
                 lease_generation=item.lease.generation,
                 failure_reason=failure_reason,
+                pre_action_observation_id=item.pre_action_observation_id,
+                pre_action_capture_ns=item.pre_action_capture_ns,
             )
         )
 

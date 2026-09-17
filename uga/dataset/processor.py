@@ -106,14 +106,25 @@ class DatasetProcessor:
                 self._exclude(exclusions, "not_fully_executed")
                 continue
             latest_receipt = max(receipts, key=lambda row: int(str(row["at_ns"])))
-            execution_observation_id = latest_receipt.get("execution_observation_id")
+            execution_observation_id = latest_receipt.get("pre_action_observation_id")
             if execution_observation_id is None:
-                self._exclude(exclusions, "missing_execution_observation")
+                self._exclude(exclusions, "missing_pre_action_observation")
                 continue
             observation = observation_by_id[str(execution_observation_id)]
-            action_time = int(str(latest_receipt["at_ns"]))
-            observation_time = int(str(observation["timestamp_ns"]))
-            delay = observation_time - action_time
+            # Train on information available BEFORE the first primitive,
+            # never on the effect frame produced after that action.
+            if any(
+                r.get("pre_action_observation_id") != execution_observation_id for r in receipts
+            ):
+                self._exclude(exclusions, "inconsistent_pre_action_observation")
+                continue
+            action_time = min(int(str(r["at_ns"])) for r in receipts)
+            capture_ns = latest_receipt.get("pre_action_capture_ns")
+            if type(capture_ns) is not int:
+                self._exclude(exclusions, "missing_pre_action_capture_time")
+                continue
+            observation_time = capture_ns
+            delay = action_time - observation_time
             if delay < 0 or delay > self._max_alignment_delay_ns:
                 raise ContractViolation(
                     f"action {action['action_id']} has invalid observation delay {delay}ns"
@@ -170,6 +181,16 @@ class DatasetProcessor:
     ) -> tuple[dict[str, object], ...]:
         action_id = str(action["action_id"])
         if action.get("action_layer") != "canonical":
+            proposal_id = provenance.get("proposal_id")
+            if provenance.get("action_source") == "GUI_AGENT" and proposal_id is not None:
+                children = {
+                    str(row["action_id"]) for row in replay.provenance
+                    if row.get("proposal_id") == proposal_id
+                }
+                receipts = replay.receipts_for_proposal(str(proposal_id))
+                if {str(row["action_id"]) for row in receipts} != children:
+                    return ()
+                return receipts
             return replay.receipts_for_action(action_id)
         child_ids = {
             str(row["action_id"])

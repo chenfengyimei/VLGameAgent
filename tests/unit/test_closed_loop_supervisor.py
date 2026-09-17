@@ -172,7 +172,9 @@ class RegionDigestTests(unittest.TestCase):
 
 class GoalVerifierTests(unittest.TestCase):
     def test_done_requires_two_fresh_frames_separated_by_stability_window(self) -> None:
-        verifier = GoalVerifier(confirmation_ns=500_000_000)
+        verifier = GoalVerifier(
+            confirmation_ns=500_000_000, required_evidence=("任务完成",)
+        )
 
         self.assertFalse(
             verifier.consider(
@@ -197,7 +199,9 @@ class GoalVerifierTests(unittest.TestCase):
         # EX02 regression: two high-confidence DONE replies on an OCR-empty
         # screen used to confirm the goal.  The screen itself must carry the
         # evidence — a model claim is never proof.
-        verifier = GoalVerifier(confirmation_ns=500_000_000)
+        verifier = GoalVerifier(
+            confirmation_ns=500_000_000, required_evidence=("任务完成",)
+        )
         for number, timestamp in ((1, 0), (2, 600_000_000), (3, 1_200_000_000)):
             self.assertFalse(
                 verifier.consider(
@@ -209,7 +213,9 @@ class GoalVerifierTests(unittest.TestCase):
         # outcome().visible_text is the model's own claim; with the screen
         # OCR-empty, confirmation must never happen no matter how confident
         # the reply is.
-        verifier = GoalVerifier(confirmation_ns=500_000_000)
+        verifier = GoalVerifier(
+            confirmation_ns=500_000_000, required_evidence=("任务完成",)
+        )
         for number, timestamp in ((1, 0), (2, 600_000_000)):
             self.assertFalse(
                 verifier.consider(
@@ -220,7 +226,9 @@ class GoalVerifierTests(unittest.TestCase):
     def test_goal_evidence_cannot_span_window_or_task_context(self) -> None:
         # T14 regression: completion evidence must not be spliced across a
         # window recreation — the new context re-establishes the candidate.
-        verifier = GoalVerifier(confirmation_ns=500_000_000)
+        verifier = GoalVerifier(
+            confirmation_ns=500_000_000, required_evidence=("任务完成",)
+        )
         self.assertFalse(
             verifier.consider(
                 outcome(1, kind=DecisionKind.DONE),
@@ -245,7 +253,9 @@ class GoalVerifierTests(unittest.TestCase):
         )
 
     def test_non_done_resets_goal_confirmation(self) -> None:
-        verifier = GoalVerifier(confirmation_ns=500_000_000)
+        verifier = GoalVerifier(
+            confirmation_ns=500_000_000, required_evidence=("任务完成",)
+        )
         self.assertFalse(verifier.consider(outcome(1, kind=DecisionKind.DONE), snapshot(1, 0)))
         self.assertFalse(verifier.consider(outcome(2, kind=DecisionKind.WAIT), snapshot(2, 1)))
         self.assertFalse(
@@ -540,6 +550,7 @@ class ClosedLoopSupervisorTests(unittest.TestCase):
         self.assertEqual(valid.disposition, DecisionDisposition.EXECUTE)
 
     def test_target_is_rechecked_on_the_last_frame_before_execution(self) -> None:
+        self.clock.set(2)  # Both captured frames precede execution.
         proposal = outcome(1)
         validated = frame(1, 0)
         unchanged = replace(
@@ -561,6 +572,7 @@ class ClosedLoopSupervisorTests(unittest.TestCase):
         self.assertEqual(self.supervisor.diagnostics()["stale_results_discarded"], 1)
 
     def test_ocr_grounded_dynamic_target_can_execute_on_the_next_frame(self) -> None:
+        self.clock.set(2)
         proposal = outcome(1)
         validated = frame(1, 0)
 
@@ -933,6 +945,9 @@ class ClosedLoopSupervisorTests(unittest.TestCase):
         self.assertFalse(effect.effect_observed)
 
     def test_done_transitions_to_success_only_after_confirmation(self) -> None:
+        self.supervisor = ClosedLoopSupervisor(
+            self.clock, PerceptionProfile(), goal_evidence=("设置",)
+        )
         # F09: the confirmation evidence is the SCREEN OCR on both frames;
         # a model-claimed DONE alone no longer completes the goal.
         first = snapshot(1, 0, visible_text=("设置",))
@@ -959,7 +974,10 @@ class ClosedLoopSupervisorTests(unittest.TestCase):
         self.assertEqual(self.supervisor.status, TerminalStatus.SUCCEEDED)
 
     def test_low_confidence_done_reobserves_once_then_blocks(self) -> None:
-        current = snapshot(1, 0)
+        self.supervisor = ClosedLoopSupervisor(
+            self.clock, PerceptionProfile(), goal_evidence=("settings",)
+        )
+        current = snapshot(1, 0, visible_text=("settings",))
         proposal = outcome(1, kind=DecisionKind.DONE, confidence=0.8)
 
         first = self.supervisor.assess(
