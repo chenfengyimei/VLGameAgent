@@ -102,6 +102,12 @@ def run_fixture_corpus(
         if scenario in _TRAIN_SCENARIOS
     )
     samples_path = export_motor_samples(train_episode_paths, root / "motor-samples.jsonl")
+    verified_train_hours = sum(
+        item.qualified_duration_ns for item in manifest.episodes if item.split.value == "train"
+    ) / 3_600_000_000_000
+    raw_train_hours = sum(
+        item.duration_ns for item in manifest.episodes if item.split.value == "train"
+    ) / 3_600_000_000_000
     summary = {
         "schema": "uga.fixture_corpus",
         "schema_version": "1.1",
@@ -109,10 +115,9 @@ def run_fixture_corpus(
         "dataset_manifest": str(manifest_path),
         "motor_samples": str(samples_path),
         "hours": manifest.qualified_hours(),
-        "train_hours": sum(
-            item.duration_ns for item in manifest.episodes if item.split.value == "train"
-        )
-        / 3_600_000_000_000,
+        "train_hours": verified_train_hours,
+        "raw_train_wallclock_hours": raw_train_hours,
+        "release_volume_qualified": verified_train_hours >= 5.0,
         "episodes": [
             {"scenario": scenario.value, "episode": episode, "report": report}
             for scenario, episode, report in collected
@@ -120,6 +125,11 @@ def run_fixture_corpus(
     }
     summary_path = root / "corpus-report.json"
     summary_path.write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
+    if require_release_volume and verified_train_hours < 5.0:
+        raise ContractViolation(
+            f"collected evidence covers {verified_train_hours:.4f} train hours, not five; "
+            f"diagnostic report retained at {summary_path}"
+        )
     return summary_path
 
 

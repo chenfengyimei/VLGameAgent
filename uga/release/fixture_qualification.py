@@ -19,7 +19,6 @@ from uga.capture.frame import BufferKind, Frame, PixelFormat
 from uga.capture.registry import CaptureBackendRegistry
 from uga.capture.windows_graphics_capture import WindowsGraphicsCaptureBackend
 from uga.control.arbiter import ActionArbiter
-from uga.control.canonical import CanonicalAction
 from uga.control.executor import InputExecutor
 from uga.control.lease import ControlLease, ControlMode, ControlOwner
 from uga.control.lease_manager import ControlLeaseManager
@@ -40,8 +39,9 @@ from uga.core.errors import BackendUnavailableError, CaptureTimeoutError, Contra
 from uga.dataset.validator import DatasetValidator
 from uga.environment.fixture_world import FixtureScenario, FixtureWorld, fixture_policy_features
 from uga.recording.episode_writer import EpisodeWriter
+from uga.recording.fixture_evidence import FixtureEvidenceRecorder
 from uga.recording.replay import ReplayEngine
-from uga.recording.schema import ActionProvenance, EpisodeMetadata, EpisodeResult
+from uga.recording.schema import EpisodeMetadata, EpisodeResult
 from uga.recording.video import PyAvVideoRecorder
 from uga.release.fixture_process import launch_owned_python_gui
 from uga.release.revision import validate_source_revision
@@ -344,54 +344,6 @@ def _owned_focus_sink(windows: Win32WindowBackend) -> Iterator[WindowSnapshot]:
             except subprocess.TimeoutExpired:
                 process.kill()
                 process.wait(timeout=5.0)
-
-
-def _provenance(
-    action: PhysicalAction,
-    lease_id: str,
-    observation_id: str,
-    proposal_id: str,
-    parent_action_id: str,
-) -> ActionProvenance:
-    return ActionProvenance(
-        action.action_id,
-        "fixture-qualification",
-        "fixture-script-v1",
-        None,
-        observation_id,
-        "fixture-navigation",
-        "fixture-complete-task",
-        ControlMode.PLAY_3D.value,
-        lease_id,
-        1.0,
-        False,
-        action.lifetime,
-        proposal_id,
-        parent_action_id,
-    )
-
-
-def _canonical_provenance(
-    action: CanonicalAction,
-    lease_id: str,
-    observation_id: str,
-    proposal_id: str,
-) -> ActionProvenance:
-    return ActionProvenance(
-        action.action_id,
-        "fixture-qualification",
-        "fixture-script-v1",
-        None,
-        observation_id,
-        "fixture-navigation",
-        "fixture-complete-task",
-        ControlMode.PLAY_3D.value,
-        lease_id,
-        1.0,
-        False,
-        action.lifetime,
-        proposal_id,
-    )
 
 
 def _exercise_focus_loss(
@@ -755,7 +707,9 @@ def run_fixture_qualification(
     final_frame: Frame | None = None
     success_seen = False
     pending_checks: list[int] = []
-    pending_observations: list[tuple[int, int, str, int, str]] = []
+    evidence_recorder = FixtureEvidenceRecorder(writer)
+    pre_observation_id = "fixture-initial"
+    pre_capture_at = UGATime(metadata.start_monotonic_ns)
     episode_path: Path | None = None
     capture_started = clock.now()
     capture_ended = capture_started
@@ -763,7 +717,6 @@ def run_fixture_qualification(
     cycle_count = max(1, math.floor((duration_seconds - 4.45) / 5.0) + 1)
     next_cycle = 0
     scheduled = 0
-    canonical_recorded = 0
     accepted_proposals = 0
     observed_flushes = 0
     cycle_rebases = 0
@@ -783,6 +736,14 @@ def run_fixture_qualification(
             (capture_after.value_ns - capture_before.value_ns) / 1_000_000,
         )
         writer.record_frame(first_frame)
+        initial_visual = analyze_fixture_frame(first_frame)
+        pre_capture_at = first_frame.capture_timestamp
+        writer.record_observation(pre_observation_id, pre_capture_at, {
+            "source": "captured-pre-action-screen", "frame_id": first_frame.frame_id,
+            "features": _visual_features(initial_visual, first_frame.width,
+                                         first_frame.height, scenario),
+            "visual": asdict(initial_visual),
+        })
         frame_count = 1
         initial_frame = first_frame
         final_frame = first_frame
@@ -833,7 +794,7 @@ def run_fixture_qualification(
                     confidence=1.0,
                     reason=f"developer-owned fixture cycle {next_cycle}",
                 )
-                observation_id = f"fixture-observation-{next_cycle:04d}"
+                observation_id = pre_observation_id
                 proposal = ActionProposal(
                     uuid.uuid4().hex,
                     "fixture-qualification",
@@ -854,34 +815,21 @@ def run_fixture_qualification(
                 added = scheduler.schedule(decision, target.identity, lease)
                 if not decision.accepted or added != len(actions):
                     raise ContractViolation("fixture cycle proposal was not fully scheduled")
-                for action in actions:
-                    writer.record_action(
-                        action,
-                        _provenance(
-                            action,
-                            lease.lease_id,
-                            observation_id,
-                            proposal.proposal_id,
-                            f"fixture-{next_cycle:04d}-canonical",
-                        ),
-                    )
+                evidence_recorder.register_cycle(
+                    actions, next_cycle, fixture_world, lease_id=lease.lease_id,
+                    proposal_id=proposal.proposal_id, observation_id=observation_id,
+                )
                 accepted_proposals += 1
                 scheduled += added
                 pending_checks.append(success_check)
-                pending_observations.append(
-                    (
-                        base_ns + 250_000_000,
-                        next_cycle,
-                        lease.lease_id,
-                        base_ns,
-                        proposal.proposal_id,
-                    )
-                )
                 next_cycle += 1
             if loop_before.value_ns >= next_scheduler_ns:
                 before_stats = scheduler.stats()
                 after_stats = scheduler.tick()
-                writer.record_execution_receipts(scheduler.drain_receipts())
+                evidence_recorder.record(
+                    scheduler.drain_receipts(), observation_id=pre_observation_id,
+                    captured_at=pre_capture_at,
+                )
                 if after_stats.flushed > before_stats.flushed:
                     observed_flushes += after_stats.flushed - before_stats.flushed
                     writer.record_event(
@@ -905,8 +853,10 @@ def run_fixture_qualification(
                 frame_count += 1
                 final_frame = frame
                 visual = analyze_fixture_frame(frame)
+                pre_observation_id = f"fixture-execution-frame-{frame_count:08d}"
+                pre_capture_at = frame.capture_timestamp
                 writer.record_observation(
-                    f"fixture-execution-frame-{frame_count:08d}",
+                    pre_observation_id,
                     frame.capture_timestamp,
                     {
                         "task": metadata.task,
@@ -920,54 +870,6 @@ def run_fixture_qualification(
                         "visual": asdict(visual),
                     },
                 )
-                while (
-                    pending_observations
-                    and frame.capture_timestamp.value_ns >= pending_observations[0][0]
-                ):
-                    (
-                        _,
-                        observation_cycle,
-                        lease_id,
-                        observation_base_ns,
-                        proposal_id,
-                    ) = pending_observations.pop(0)
-                    observation_id = f"fixture-observation-{observation_cycle:04d}"
-                    writer.record_observation(
-                        observation_id,
-                        frame.capture_timestamp,
-                        {
-                            "task": metadata.task,
-                            "cycle": observation_cycle,
-                            "source": "captured-screen",
-                            "features": _visual_features(
-                                visual,
-                                frame.width,
-                                frame.height,
-                                scenario,
-                            ),
-                            "visual": asdict(visual),
-                        },
-                    )
-                    move_x, move_y = fixture_world.canonical_movement
-                    canonical = CanonicalAction(
-                        f"fixture-{observation_cycle:04d}-canonical",
-                        ActionLifetime(
-                            frame.capture_timestamp,
-                            UGATime(observation_base_ns + 1_000_000_000),
-                            UGATime(observation_base_ns + 4_950_000_000),
-                        ),
-                        move_x=move_x,
-                        move_y=move_y,
-                        look_x=0.05,
-                        interact=True,
-                    )
-                    writer.record_canonical_action(
-                        canonical,
-                        _canonical_provenance(
-                            canonical, lease_id, observation_id, proposal_id
-                        ),
-                    )
-                    canonical_recorded += 1
                 while pending_checks and frame.capture_timestamp.value_ns >= pending_checks[0]:
                     success_seen = success_seen or _success_pixel_count(frame) >= 20
                     pending_checks.pop(0)
@@ -1071,7 +973,7 @@ def run_fixture_qualification(
         execution_ratio = stats.executed / scheduled if scheduled else 0.0
         control_passed = (
             next_cycle == cycle_count
-            and canonical_recorded == cycle_count
+            and evidence_recorder.completed_groups == evidence_recorder.expected_groups
             and stats.expired == 0
             and stats.rejected == 0
             and execution_ratio >= 0.95
@@ -1104,9 +1006,19 @@ def run_fixture_qualification(
         episode_result = (
             EpisodeResult.SUCCESS if success_seen and control_passed else EpisodeResult.FAILURE
         )
-        episode_path = writer.finalize(episode_result, ended)
+        shutdown.trip(ShutdownCause.NORMAL_STOP)
+        evidence_recorder.record(
+            scheduler.drain_receipts(), observation_id=pre_observation_id,
+            captured_at=pre_capture_at,
+        )
+        episode_path = writer.finalize(episode_result, clock.now())
     except BaseException:
         with contextlib.suppress(Exception):
+            shutdown.trip(ShutdownCause.RUNTIME_FAILURE)
+            evidence_recorder.record(
+                scheduler.drain_receipts(), observation_id=pre_observation_id,
+                captured_at=pre_capture_at,
+            )
             writer.finalize(EpisodeResult.ABORTED, clock.now())
         raise
     finally:
@@ -1123,6 +1035,7 @@ def run_fixture_qualification(
     initial_visual = analyze_fixture_frame(initial_frame)
     final_visual = analyze_fixture_frame(final_frame)
     success_seen = success_seen or final_visual.success_visible
+    canonical_recorded = evidence_recorder.completed_groups
     replay = ReplayEngine(episode_path).validation()
     quality = DatasetValidator().validate(episode_path)
     stats = scheduler.stats()
