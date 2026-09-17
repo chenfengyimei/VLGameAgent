@@ -1,0 +1,43 @@
+name: Runtime final validation evidence
+on:
+  push:
+    branches: [automation/runtime-completion-20260917]
+    paths: [.github/workflows/runtime-final-evidence.yml]
+permissions:
+  actions: read
+  contents: read
+jobs:
+  evidence:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Wait for the pinned validation job and copy its log
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for attempt in $(seq 1 48); do
+            status=$(gh api repos/chenfengyimei/VLGameAgent/actions/jobs/105143424245 --jq .status)
+            if [ "$status" = completed ]; then break; fi
+            sleep 5
+          done
+          test "$status" = completed
+          gh api --allow-escape-sequences repos/chenfengyimei/VLGameAgent/actions/jobs/105143424245/logs > validation.log
+          gh api repos/chenfengyimei/VLGameAgent/actions/jobs/105143424245 > job.json
+      - name: Produce a compact acceptance summary
+        shell: python
+        run: |
+          from pathlib import Path
+          import json, re
+          lines = re.sub(r'\x1b\[[0-9;]*m', '', Path('validation.log').read_text(encoding='utf-8-sig')).splitlines()
+          selected = [line for line in lines if any(s in line for s in [' passed', 'SKIPPED [', 'FAILED ', 'Success: no issues', 'All checks passed', 'Successfully built', 'VERIFIED_FINAL_TREE'])]
+          summary = {'job': json.loads(Path('job.json').read_text()), 'summary': selected}
+          Path('acceptance.json').write_text(json.dumps(summary, indent=2))
+          print('\n'.join(selected))
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: runtime-final-validation-evidence
+          path: |
+            acceptance.json
+            validation.log
+          retention-days: 7
+          if-no-files-found: error
