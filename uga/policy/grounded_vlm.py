@@ -42,10 +42,16 @@ from uga.perception.schema import (
 )
 from uga.policy.call_budget import checkpoint, decision_budget
 from uga.policy.decision_journal import DecisionJournal, DecisionRecord, NullJournal
+from uga.policy.gui_protocol import (
+    COORDINATE_SPACES,
+    box_coordinates,
+    coordinate_format,
+    reply_object,
+    require_fields,
+)
 from uga.policy.structured_output import (
     strict_bounded_text,
     strict_confidence_value,
-    strict_coordinates,
     strict_unit_interval_number,
 )
 from uga.policy.vision_transport import ProviderError
@@ -320,7 +326,11 @@ class GroundedVlmPlanner:
         close_hotspot: tuple[float, float] | None = None,
         promote_hotspot: tuple[float, float] | None = None,
         strategy_registry: StrategyRegistry | None = None,
+        coordinate_space: str = "unit",
     ) -> None:
+        if coordinate_space not in COORDINATE_SPACES:
+            raise ContractViolation("unsupported GUI coordinate space")
+        self._coordinate_space = coordinate_space
         if max_image_width < 320:
             raise ContractViolation("grounded planner image width must be at least 320")
         if not 1 <= max_temporal_frames <= 3:
@@ -495,9 +505,10 @@ class GroundedVlmPlanner:
         )
         response_format = (
             (
-                COMPACT_GROUNDING_RESPONSE_FORMAT
-                if self._compact_output
-                else GROUNDING_RESPONSE_FORMAT
+                coordinate_format(
+                    COMPACT_GROUNDING_RESPONSE_FORMAT if self._compact_output
+                    else GROUNDING_RESPONSE_FORMAT, self._coordinate_space
+                )
             )
             if self._structured_output and self._schema_supported is not False
             else None
@@ -526,7 +537,8 @@ class GroundedVlmPlanner:
         checkpoint()
         self.last_raw_reply = reply
         try:
-            outcome = self._parse(reply, snapshot, compact=self._compact_output)
+            outcome = self._parse(reply, snapshot, compact=self._compact_output,
+                                  coordinate_space=self._coordinate_space)
             outcome = self._apply_task_panel_fallback(
                 outcome, snapshot, quest_text=quest_text
             )
@@ -560,9 +572,10 @@ class GroundedVlmPlanner:
                 ),
                 response_format=(
                     (
-                        COMPACT_GROUNDING_RESPONSE_FORMAT
-                        if self._compact_output
-                        else GROUNDING_RESPONSE_FORMAT
+                        coordinate_format(
+                            COMPACT_GROUNDING_RESPONSE_FORMAT if self._compact_output
+                            else GROUNDING_RESPONSE_FORMAT, self._coordinate_space
+                        )
                     )
                     if self._schema_supported is True
                     else None
@@ -571,7 +584,8 @@ class GroundedVlmPlanner:
             checkpoint()
             self.last_raw_reply = repair
             try:
-                outcome = self._parse(repair, snapshot, compact=self._compact_output)
+                outcome = self._parse(repair, snapshot, compact=self._compact_output,
+                                      coordinate_space=self._coordinate_space)
                 outcome = self._apply_task_panel_fallback(
                     outcome, snapshot, quest_text=quest_text
                 )
@@ -1476,28 +1490,23 @@ class GroundedVlmPlanner:
         snapshot: PerceptionSnapshot,
         *,
         compact: bool = False,
+        coordinate_space: str = "unit",
     ) -> PlannerOutcome:
-        text = reply.strip()
-        if text.startswith("```"):
-            lines = text.splitlines()
-            if len(lines) >= 3 and lines[-1].strip() == "```":
-                text = "\n".join(lines[1:-1])
         try:
-            payload = json.loads(text)
-        except json.JSONDecodeError as exc:
-            raise PlannerReplyError("grounded reply is not one JSON object") from exc
-        if not isinstance(payload, dict):
-            raise PlannerReplyError("grounded reply JSON must be an object")
-        if "kind" not in payload and isinstance(payload.get("answer"), str):
-            try:
-                wrapped = json.loads(payload["answer"])
-            except json.JSONDecodeError as exc:
-                raise PlannerReplyError("grounded answer wrapper is not valid JSON") from exc
-            if not isinstance(wrapped, dict):
-                raise PlannerReplyError("grounded answer wrapper must contain an object")
-            payload = wrapped
+            payload = reply_object(reply)
+            fields = {"kind", "confidence", "action", "wait_reason"}
+            # An exact full reply is a supported information superset even when
+            # a small model was asked for compact output. Validate every field.
+            full_fields = fields | {"scene_summary", "visible_text", "goal_status", "explanation"}
+            if compact and set(payload) == full_fields:
+                compact = False
+            if not compact:
+                fields |= {"scene_summary", "visible_text", "goal_status", "explanation"}
+            require_fields(payload, fields)
+        except ValueError as exc:
+            raise PlannerReplyError(f"invalid grounded reply: {exc}") from exc
         try:
-            kind = DecisionKind(str(payload["kind"]))
+            kind = DecisionKind(payload["kind"])
             # F11: booleans, strings, NaN/Infinity and out-of-range values are
             # rejected instead of coerced through float().
             confidence = strict_unit_interval_number(payload["confidence"])
@@ -1519,21 +1528,25 @@ class GroundedVlmPlanner:
                 )
                 explanation = f"compact decision: {kind.value} {label}".strip()
             else:
-                goal_status = GoalStatus(str(payload["goal_status"]))
-                scene_summary = str(payload["scene_summary"])
+                goal_status = GoalStatus(payload["goal_status"])
+                scene_summary = strict_bounded_text(
+                    payload["scene_summary"], max_chars=160, field="scene_summary"
+                )
                 visible_raw = payload["visible_text"]
-                explanation = str(payload["explanation"])
+                explanation = strict_bounded_text(
+                    payload["explanation"], max_chars=240, field="explanation"
+                )
         except (KeyError, TypeError, ValueError) as exc:
             raise PlannerReplyError("grounded reply lacks required decision fields") from exc
-        if not isinstance(visible_raw, list) or any(
-            not isinstance(item, str) for item in visible_raw
-        ):
+        if (not isinstance(visible_raw, list) or len(visible_raw) > 16 or any(
+            not isinstance(item, str) or len(item) > 80 for item in visible_raw
+        )):
             raise PlannerReplyError("grounded visible_text must be an array of strings")
         wait_raw = payload.get("wait_reason")
         try:
-            wait_reason = None if wait_raw is None else WaitReason(str(wait_raw))
+            wait_reason = None if wait_raw is None else WaitReason(wait_raw)
             action = GroundedVlmPlanner._parse_action(
-                payload.get("action"), compact=compact
+                payload["action"], compact=compact, coordinate_space=coordinate_space
             )
             return PlannerOutcome(
                 uuid.uuid4().hex,
@@ -1559,12 +1572,22 @@ class GroundedVlmPlanner:
         value: object,
         *,
         compact: bool = False,
+        coordinate_space: str = "unit",
     ) -> GroundedAction | None:
         if value is None:
             return None
         if not isinstance(value, dict):
             raise PlannerReplyError("grounded action must be an object or null")
-        box_raw = value.get("target_bbox")
+        fields = {"kind", "target_label", "target_bbox", "confidence", "key"}
+        if not compact:
+            fields |= {"expected_effect", "risk"}
+        try:
+            require_fields(value, fields)
+            if value["kind"] not in {"click", "key", "hotkey"}:
+                raise ValueError("unsupported grounded GUI operation")
+        except (TypeError, ValueError) as exc:
+            raise PlannerReplyError(f"invalid grounded action: {exc}") from exc
+        box_raw = value["target_bbox"]
         box: NormalizedBox | None = None
         if box_raw is not None:
             try:
@@ -1572,16 +1595,16 @@ class GroundedVlmPlanner:
                 # no NaN/Inf) and ONE consistent coordinate space per frame —
                 # a unit fraction next to a 0-1000 pixel value is rejected,
                 # never silently rescaled.
-                coordinates = strict_coordinates(box_raw)
+                coordinates = box_coordinates(box_raw, coordinate_space)
                 box = NormalizedBox(*coordinates)
             except (TypeError, ValueError, ContractViolation) as exc:
                 raise PlannerReplyError(f"target_bbox is invalid: {exc}") from exc
         try:
             key_raw = value.get("key")
             return GroundedAction(
-                GuiActionKind(str(value["kind"])),
+                GuiActionKind(value["kind"]),
                 strict_bounded_text(
-                    value["target_label"], max_chars=120, field="target_label"
+                    value["target_label"], max_chars=48 if compact else 80, field="target_label"
                 ),
                 box,
                 (
@@ -1589,13 +1612,15 @@ class GroundedVlmPlanner:
                     if compact
                     else strict_bounded_text(
                         value["expected_effect"],
-                        max_chars=300,
+                        max_chars=160,
                         field="expected_effect",
                     )
                 ),
                 strict_unit_interval_number(value["confidence"]),
-                ActionRisk.LOW if compact else ActionRisk(str(value["risk"])),
-                None if key_raw is None else str(key_raw),
+                ActionRisk.NORMAL if compact else ActionRisk(value["risk"]),
+                None if key_raw is None else strict_bounded_text(
+                    key_raw, max_chars=32, field="key"
+                ),
             )
         except (KeyError, TypeError, ValueError, ContractViolation) as exc:
             raise PlannerReplyError(f"invalid grounded action: {exc}") from exc

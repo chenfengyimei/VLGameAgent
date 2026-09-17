@@ -1195,7 +1195,7 @@ class GroundedVlmTests(unittest.TestCase):
 
         self.assertEqual(outcome.kind, DecisionKind.ACT)
         self.assertEqual(outcome.action.target_label, "主线任务")  # type: ignore[union-attr]
-        self.assertEqual(outcome.action.risk.value, "low")  # type: ignore[union-attr]
+        self.assertEqual(outcome.action.risk.value, "normal")  # type: ignore[union-attr]
         self.assertEqual(
             client.calls[0]["response_format"], COMPACT_GROUNDING_RESPONSE_FORMAT
         )
@@ -1226,6 +1226,7 @@ class GroundedVlmTests(unittest.TestCase):
             max_temporal_frames=1,
             max_target_crops=0,
             compact_output=True,
+            coordinate_space="normalized_1000",
         ).decide(
             snapshot=_snapshot(),
             frames=(_large_frame(100),),
