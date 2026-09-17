@@ -94,26 +94,22 @@ class OpenCuaExporter:
 
     def export(self, episode_path: str | Path) -> OpenCuaTrajectory:
         replay = ReplayEngine(episode_path)
-        processed = DatasetProcessor().process(episode_path)
-        qualified_ids = {sample.action_id for sample in processed.samples}
-        eligible: dict[str, str] = {}
-        for action in replay.actions:
-            if str(action["action_id"]) not in qualified_ids:
-                continue
-            provenance = replay.provenance_for_action(str(action["action_id"]))
-            assert provenance is not None
-            for receipt in DatasetProcessor._receipts_for_training_action(
-                replay, action, provenance
-            ):
-                eligible[str(receipt["action_id"])] = str(receipt["pre_action_observation_id"])
         action_order = {
             str(row["reference_id"]): int(row["sequence"])
             for row in replay.timeline
             if row["kind"] in {"action", "raw_input"}
         }
+        qualified = DatasetProcessor().process(episode_path)
+        allowed: dict[str, str] = {}
+        for sample in qualified.samples:
+            if sample.action_layer == "physical":
+                allowed[sample.action_id] = sample.observation_id
+            elif sample.action_layer == "gui":
+                for child in replay.child_action_ids(sample.action_id):
+                    allowed[child] = sample.observation_id
         actions_by_observation: dict[str, list[dict[str, object]]] = {}
         for action in replay.actions:
-            observation_id = eligible.get(str(action["action_id"]))
+            observation_id = allowed.get(str(action["action_id"]))
             if observation_id is None or action.get("action_layer") != "physical":
                 continue
             actions_by_observation.setdefault(str(observation_id), []).append(action)

@@ -116,7 +116,8 @@ class FixtureWorld:
     @property
     def canonical_movement(self) -> tuple[float, float]:
         horizontal = float(("d" in self.movement_keys) - ("a" in self.movement_keys))
-        vertical = float(("s" in self.movement_keys) - ("w" in self.movement_keys))
+        # Canonical +Y is forward/W; screen pixel +Y instead points down.
+        vertical = float(("w" in self.movement_keys) - ("s" in self.movement_keys))
         magnitude = max(1.0, math.hypot(horizontal, vertical))
         return horizontal / magnitude, vertical / magnitude
 

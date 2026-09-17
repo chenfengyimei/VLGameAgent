@@ -54,7 +54,7 @@ from uga.safety.action_gate import (
     point_is_clickable,
     resolved_click_point,
 )
-from uga.safety.sensitive_page import inspect_sensitive_page
+from uga.safety.semantic_gate import sensitive_action_reason, sensitive_page_reason
 from uga.time.clock import ClockBackend, UGATime
 from uga.windows.coordinates import Point
 from uga.windows.window_identity import WindowIdentity
@@ -120,9 +120,6 @@ class _PendingAction:
     executed_at: UGATime | None = None
     execution_status: str | None = None
     execution_frame_id: str | None = None
-    window_identity: WindowIdentity | None = None
-    geometry_generation: int = 0
-    task_generation: int = 0
 
 
 OutcomeVerifier = Callable[[PlannerOutcome, PerceptionSnapshot, Frame, str], bool]
@@ -150,6 +147,11 @@ class GoalVerifier:
         ] | None = None
         self.last_missing_evidence: tuple[str, ...] = ()
         self.last_evidence_confidence: float | None = None
+
+    def reset(self) -> None:
+        self._candidate = None
+        self.last_missing_evidence = ()
+        self.last_evidence_confidence = None
 
     @property
     def required_evidence(self) -> tuple[str, ...]:
@@ -326,9 +328,13 @@ class ActionValidator:
         action = outcome.action
         if action is None:
             return False, "ACT decision did not include an action"
-        sensitive = inspect_sensitive_page(fresh_snapshot.visible_text, action)
-        if sensitive.requires_owner:
-            return False, sensitive.reason
+        sensitive = (
+            sensitive_page_reason(fresh_snapshot.visible_text)
+            or sensitive_page_reason(decided_snapshot.visible_text)
+            or sensitive_action_reason(action)
+        )
+        if sensitive is not None:
+            return False, sensitive
         consistent, generation_reason = generations_consistent(
             outcome, decided_snapshot, fresh_snapshot
         )
@@ -666,10 +672,6 @@ class ClosedLoopSupervisor:
     def preferred_action_available(self) -> bool:
         return not self._preferred_action_consumed
 
-    @property
-    def no_click_regions(self) -> tuple[tuple[float, float, float, float], ...]:
-        return self._profile.no_click_regions
-
     def diagnostics(self) -> dict[str, object]:
         return {
             "status": self.status.value,
@@ -739,21 +741,6 @@ class ClosedLoopSupervisor:
         pending = self._pending
         if pending is None:
             return EffectObservation(False, None, "no action awaiting verification")
-        live_task = (
-            snapshot.task_generation if self._session is None else self._session.task_generation
-        )
-        if (
-            snapshot.window_identity != pending.window_identity
-            or snapshot.geometry_generation != pending.geometry_generation
-            or live_task != pending.task_generation
-        ):
-            self._pending = None
-            self.last_effect_observed = None
-            detail = "effect context changed; no causal effect claim"
-            self._finish_trace(pending, "invalidated", detail)
-            self._journal_effect(pending, "invalidated", detail)
-            return EffectObservation(False, None, detail)
-        observed_now_ns = max(snapshot.captured_at.value_ns, self._clock.now().value_ns)
         minimum_ns = 250_000_000
         timeout_ns = self._profile.action_effect_timeout_ms * 1_000_000
         # D04: queued/accepted never substitutes for executed.  A click whose
@@ -769,7 +756,7 @@ class ClosedLoopSupervisor:
             all_terminal = len(pending.receipts) >= pending.expected_primitives
             if not all_terminal:
                 unproven_elapsed = (
-                    observed_now_ns - pending.issued_at.value_ns
+                    snapshot.captured_at.value_ns - pending.issued_at.value_ns
                 )
                 if unproven_elapsed < timeout_ns:
                     return EffectObservation(
@@ -794,7 +781,7 @@ class ClosedLoopSupervisor:
                     f"{self._consecutive_not_executed} actions in a row"
                 )
             return EffectObservation(False, False, "action execution was never confirmed")
-        elapsed_ns = observed_now_ns - (
+        elapsed_ns = snapshot.captured_at.value_ns - (
             pending.executed_at.value_ns
             if pending.executed_at is not None
             else pending.issued_at.value_ns
@@ -807,17 +794,10 @@ class ClosedLoopSupervisor:
             for element in snapshot.ui_elements
         )
         semantic_state = self._progress.state(snapshot)
-        has_new_evidence = (
-            snapshot.frame_id != pending.execution_frame_id
-            and snapshot.captured_at.value_ns > (
-                pending.executed_at.value_ns if pending.executed_at is not None
-                else pending.issued_at.value_ns
-            )
-        )
         semantic_text_changed = _meaningful_text_change(
             pending.visible_text, semantic_text
         )
-        semantic_changed = has_new_evidence and (
+        semantic_changed = (
             snapshot.mode != pending.mode
             or semantic_text_changed
             or snapshot.goal_facts != pending.goal_facts
@@ -825,7 +805,7 @@ class ClosedLoopSupervisor:
         )
         target_changed = False
         current_digest = b""
-        if has_new_evidence and pending.action.target_box is not None:
+        if pending.action.target_box is not None:
             current_digest = region_digest(frame, pending.action.target_box)
             target_changed = _digest_difference(pending.target_digest, current_digest) > 0.1
         if elapsed_ns < minimum_ns:
@@ -839,7 +819,7 @@ class ClosedLoopSupervisor:
         # transition signal; confirm a flip across two observations so a single
         # OCR miss cannot fake a page change.
         current_anchors = page_anchor_signature(snapshot.visible_text)
-        anchor_flip = has_new_evidence and current_anchors != pending.anchors
+        anchor_flip = current_anchors != pending.anchors
         anchor_confirmed = False
         if anchor_flip and not semantic_changed and not target_changed:
             if pending.anchor_candidate != current_anchors:
@@ -892,9 +872,9 @@ class ClosedLoopSupervisor:
                     # persistence window cannot be extended past the deadline,
                     # so an already-stable change resolves as persistent.
                     persistent_target_change = (
-                        stable_ns >= minimum_ns
+                        stable_ns >= minimum_ns or deadline_expired
                     )
-                    if not persistent_target_change and not deadline_expired:
+                    if not persistent_target_change:
                         return EffectObservation(
                             True, None, "waiting for target pixel change to persist"
                         )
@@ -1003,17 +983,20 @@ class ClosedLoopSupervisor:
                 "real-name registration gate: standing by for the owner",
                 outcome,
             )
+        sensitive = (
+            sensitive_page_reason(fresh_snapshot.visible_text)
+            or sensitive_page_reason(decided_snapshot.visible_text)
+            or sensitive_action_reason(outcome.action)
+        )
+        if sensitive is not None:
+            self._goal.reset()
+            return SupervisedDecision(DecisionDisposition.WAIT, sensitive, outcome)
         consistent, _ = generations_consistent(outcome, decided_snapshot, fresh_snapshot)
         if not consistent:
             self._stale_results_discarded += 1
             return SupervisedDecision(
                 DecisionDisposition.REOBSERVE, "decision generation became stale", outcome
             )
-        sensitive = inspect_sensitive_page(fresh_snapshot.visible_text, outcome.action)
-        if sensitive.requires_owner:
-            # Source tags and goals cannot authorize sensitive pages.
-            # WAIT here never escalates to an automatic recovery click.
-            return SupervisedDecision(DecisionDisposition.WAIT, sensitive.reason, outcome)
         recovery = self._pending_recovery
         recovering_high_resolution = recovery == RecoveryDirective.HIGH_RESOLUTION
         if recovering_high_resolution:
@@ -1556,8 +1539,7 @@ class ClosedLoopSupervisor:
         return True, "target remained stable through the execution frame"
 
     def to_recovery_gui_action(
-        self, directive: RecoveryDirective, key_resolver: KeyResolver,
-        *, snapshot: PerceptionSnapshot | None = None,
+        self, directive: RecoveryDirective, key_resolver: KeyResolver
     ) -> GuiAction:
         if directive != RecoveryDirective.BACK:
             raise ContractViolation("only back is a physical recovery directive")
@@ -1567,7 +1549,6 @@ class ClosedLoopSupervisor:
             verdict = point_is_clickable(
                 Point(hotspot[0], hotspot[1]),
                 no_click_regions=self._profile.no_click_regions,
-                fresh_text=() if snapshot is None else snapshot.visible_text,
             )
             if verdict.allowed:
                 # The calibrated visual exit controls are mouse clicks (top-left
@@ -1838,9 +1819,6 @@ class ClosedLoopSupervisor:
             submitted_action_ids=submitted_action_ids,
             expected_primitives=expected_primitives,
             execution_frame_id=snapshot.frame_id,
-            window_identity=snapshot.window_identity,
-            geometry_generation=snapshot.geometry_generation,
-            task_generation=snapshot.task_generation,
         )
 
     def _stop_blocked(self, reason: str) -> None:

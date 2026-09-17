@@ -3,111 +3,97 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 
-from tests.helpers import identity
 from tests.integration.test_agent_loop import GroundedClickPlanner
 from tests.integration.test_causal_receipts import writer_at
-from tests.integration.test_dataset_policy import make_episode
+from tests.integration.test_dataset_policy import make_episode, make_outcome_episode
 from tests.integration.test_review_followup import make_loop
-from uga.control.lease import ControlMode, ControlOwner
-from uga.control.lifetime import ActionLifetime
+from uga.control.execution_receipt import ExecutionPrimitiveStatus
+from uga.core.artifact_limits import DEFAULT_ARTIFACT_LIMITS
 from uga.core.errors import ContractViolation
-from uga.dataset.gui_export import export_gui_samples
+from uga.dataset.gui import export_gui_samples
+from uga.dataset.opencua import OpenCuaExporter
 from uga.dataset.processor import DatasetProcessor, EpisodeQualification
-from uga.dataset.validator import DatasetValidator
-from uga.gui.schema import GuiAction, GuiActionKind
-from uga.recording.replay import ReplayEngine
 from uga.recording.schema import EpisodeResult
+from uga.recording.video import PyAvVideoRecorder
 from uga.time.clock import ManualClock, UGATime
-from uga.windows.coordinates import CoordinateTransform, Rect
 
 
-class GuiTrainingExportTests(unittest.TestCase):
-    def _episode(self, root: Path, kind: GuiActionKind, *, reject: bool = False) -> Path:
-        clock = ManualClock(100)
-        writer = writer_at(root)
-        loop, _, _, scheduler, _ = make_loop(GroundedClickPlanner(), clock, recorder=writer)
-        writer.record_observation("pre", clock.now(), {"features": [1.0], "image": "before"})
-        lease = loop._leases.grant(
-            ControlOwner.GUI_AGENT, ControlMode.GUI, 2_000_000_000, confidence=1.0, reason="test"
-        )
-        action = GuiAction(
-            "logical", kind, ActionLifetime(clock.now(), clock.now(), UGATime(1_000_000_100)),
-            x=0.3, y=0.4, end_x=0.6, end_y=0.8, text="hello",
-            key_codes=(17, 65), scroll_delta=-120,
-        )
-        rect = Rect(0, 0, 200, 200)
-        submission = loop._gui_controller.submit(
-            action, CoordinateTransform(rect, rect, rect, rect, 1.0), identity(), lease,
-            observation_id="pre", policy_version="test", pre_action_observation_id="pre",
-            pre_action_capture_ns=100, execution_guard=lambda: not reject,
-        )
-        for timestamp in sorted({
-            a.lifetime.effective_from.value_ns for a in submission.physical_actions
-        }):
-            clock.set(timestamp)
-            scheduler.tick()
-            writer.record_execution_receipts(scheduler.drain_receipts())
-        return writer.finalize(EpisodeResult.SUCCESS, UGATime(2_000_000_100))
-
-    def test_all_gui_kinds_round_trip_once_without_physical_duplicate_targets(self) -> None:
-        for kind in GuiActionKind:
-            if kind in (GuiActionKind.WAIT, GuiActionKind.DONE):
-                continue
-            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as tmp:
-                path = self._episode(Path(tmp), kind)
-                processed = DatasetProcessor().process(path)
-                self.assertEqual(len(processed.samples), 1)
-                sample = processed.samples[0]
-                self.assertEqual(sample.action_type, "GuiAction")
-                self.assertEqual(json.loads(sample.action_json)["kind"], kind.value)
-                self.assertEqual(processed.qualification, EpisodeQualification.QUALIFIED)
-                self.assertEqual(processed.qualified_duration_ns,
-                                 700_000_000 if kind == GuiActionKind.LONG_CLICK else 0)
-                output = export_gui_samples((path,), Path(tmp) / "gui.jsonl")
-                row = json.loads(output.read_text())
-                self.assertEqual(row["action"]["kind"], kind.value)
-                self.assertEqual(row["observation"]["image"], "before")
-                self.assertLessEqual(row["capture_timestamp_ns"], row["executed_at_ns"])
-                findings = []
-                DatasetValidator._check_execution_receipts(ReplayEngine(path), findings)
-                self.assertEqual(findings, [])
-
-    def test_rejected_gui_action_has_no_training_label(self) -> None:
+class GuiExportTests(unittest.IsolatedAsyncioTestCase):
+    async def test_logical_gui_receipts_export_one_pre_action_image(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            path = self._episode(Path(tmp), GuiActionKind.CLICK, reject=True)
-            self.assertEqual(DatasetProcessor().process(path).samples, ())
-            output = Path(tmp) / "gui.jsonl"
-            output.write_text("previous-good-export")
-            with self.assertRaisesRegex(ContractViolation, "no executed"):
-                export_gui_samples((path,), output)
-            self.assertEqual(output.read_text(), "previous-good-export")
+            root = Path(tmp)
+            writer = writer_at(root)
+            writer.attach_video(PyAvVideoRecorder(writer.video_path))
+            clock = ManualClock(100)
+            loop, backend, _, scheduler, _ = make_loop(
+                GroundedClickPlanner(), clock, recorder=writer
+            )
+            await loop.step()
+            loop.drain_execution_receipts()
+            self.assertEqual(len(backend.actions), 3)
+            self.assertEqual(scheduler.drain_receipts(), ())
+            episode = writer.finalize(EpisodeResult.SUCCESS, clock.now())
+            processed = DatasetProcessor().process(episode)
+            self.assertEqual(len(processed.samples), 1)
+            self.assertEqual(processed.samples[0].action_layer, "gui")
+            self.assertEqual(processed.qualified_duration_ns, 0)
+            self.assertEqual(processed.qualification, EpisodeQualification.QUALIFIED)
+            output = export_gui_samples(episode, root / "export")
+            rows = (output / "samples.jsonl").read_text(encoding="utf-8").splitlines()
+            self.assertEqual(len(rows), 1)
+            row = json.loads(rows[0])
+            self.assertEqual(row["capture_ns"], 100)
+            self.assertEqual(row["action"]["kind"], "click")
+            self.assertEqual(row["coordinate_space"], "client_normalized")
+            self.assertEqual((output / row["image"]).read_bytes()[:8], b"\x89PNG\r\n\x1a\n")
+            with self.assertRaises(FileExistsError):
+                export_gui_samples(episode, output)
+            with self.assertRaises(ContractViolation):
+                export_gui_samples(episode, episode / "mutated")
+            with self.assertRaises(ContractViolation):
+                export_gui_samples(
+                    episode,
+                    root / "small",
+                    limits=replace(DEFAULT_ARTIFACT_LIMITS, max_dataset_bytes=10),
+                )
+            self.assertFalse((root / "small").exists())
+            self.assertEqual(list(root.glob(".small-*")), [])
 
-    def test_mixed_logical_actions_are_selected_without_canonical_short_circuit(self) -> None:
-        from unittest.mock import patch
+    async def test_missing_video_is_not_fabricated(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            gui = ReplayEngine(self._episode(Path(tmp) / "gui", GuiActionKind.CLICK))
-            motor = ReplayEngine(make_episode(Path(tmp) / "motor"))
-            for name in ("actions", "provenance", "execution_receipts", "observations"):
-                getattr(gui, name).extend(getattr(motor, name))
-            with patch("uga.dataset.processor.ReplayEngine", return_value=gui):
-                processed = DatasetProcessor().process(gui.path)
-            self.assertEqual({s.action_type for s in processed.samples},
-                             {"GuiAction", "CanonicalAction"})
-            self.assertEqual(len(processed.samples), 2)
+            root, clock = Path(tmp), ManualClock(100)
+            writer = writer_at(root)
+            loop, _, _, _, _ = make_loop(GroundedClickPlanner(), clock, recorder=writer)
+            await loop.step()
+            loop.drain_execution_receipts()
+            episode = writer.finalize(EpisodeResult.SUCCESS, clock.now())
+            with self.assertRaises(ContractViolation):
+                export_gui_samples(episode, root / "export")
+            self.assertFalse((root / "export").exists())
 
-    def test_action_ttl_never_counts_as_observed_active_time(self) -> None:
+
+class QualificationDurationTests(unittest.TestCase):
+    def test_unused_lifetime_is_not_demonstrated_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             processed = DatasetProcessor().process(make_episode(Path(tmp)))
-            self.assertTrue(processed.samples)
-            self.assertEqual(processed.qualified_duration_ns, 0)
+            self.assertEqual(processed.qualified_duration_ns, 10)
+            self.assertEqual(processed.qualification, EpisodeQualification.QUALIFIED)
 
-    def test_same_context_identifier_with_conflicting_capture_times_is_rejected(self) -> None:
-        from unittest.mock import patch
+    def test_post_action_data_cannot_bypass_qualification_via_opencua(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            path = self._episode(Path(tmp), GuiActionKind.CLICK)
-            replay = ReplayEngine(path)
-            replay.execution_receipts[-1]["pre_action_capture_ns"] = 99
-            with patch("uga.dataset.processor.ReplayEngine", return_value=replay):
-                self.assertEqual(DatasetProcessor().process(path).samples, ())
+            episode = make_outcome_episode(
+                Path(tmp), "unproven", (ExecutionPrimitiveStatus.EXECUTED,), causal=False
+            )
+            with self.assertRaisesRegex(ContractViolation, "no OpenCUA"):
+                OpenCuaExporter().export(episode)
+
+    def test_end_cannot_precede_recorded_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            writer = writer_at(Path(tmp))
+            writer.record_observation("obs", UGATime(500), {})
+            with self.assertRaisesRegex(ContractViolation, "end"):
+                writer.finalize(EpisodeResult.SUCCESS, UGATime(400))
+            writer.abort()

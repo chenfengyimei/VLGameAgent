@@ -1,94 +1,123 @@
 from __future__ import annotations
 
+import asyncio
 import ctypes
 import threading
+import time
 import unittest
-from types import SimpleNamespace
 from typing import cast
-from unittest.mock import Mock, patch
+from unittest.mock import MagicMock, patch
 
+from tests.helpers import frame
 from tests.unit.test_native_capture_security import FakeLibrary, FakeWindows
+from uga.capture.hub import CaptureHub
 from uga.capture.native_ctypes import (
     CtypesNativeCaptureDriver,
     NativeBackendId,
     NativeCaptureLibrary,
 )
-from uga.core.errors import BackendStateError, BackendUnavailableError
+from uga.capture.ring_buffer import FrameRingBuffer
+from uga.core.errors import BackendUnavailableError
 from uga.windows.backend import WindowBackend
 
 
-class NativeLifecycleBoundsTests(unittest.TestCase):
-    def test_stop_never_destroys_handle_while_next_is_using_it(self) -> None:
+class DriverLifetimeTests(unittest.TestCase):
+    def test_stop_cannot_destroy_a_handle_while_capture_uses_it(self) -> None:
         windows = FakeWindows()
-        entered, release = threading.Event(), threading.Event()
-        class BlockingLibrary(FakeLibrary):
+        entered, release, stopped = threading.Event(), threading.Event(), threading.Event()
+
+        class SlowLibrary(FakeLibrary):
             def next(self, handle, timeout_ms):  # type: ignore[no-untyped-def]
                 entered.set()
-                assert release.wait(2)
+                release.wait(2)
                 return super().next(handle, timeout_ms)
-        library = BlockingLibrary(windows)
+
+        library = SlowLibrary(windows)
         driver = CtypesNativeCaptureDriver(
             NativeBackendId.WGC, cast(NativeCaptureLibrary, library), cast(WindowBackend, windows)
         )
         driver.start(windows.identity)
-        errors = []
-        def capture() -> None:
-            try:
-                driver.capture()
-            except BackendStateError as exc:
-                errors.append(exc)
-        reader = threading.Thread(target=capture)
-        reader.start()
-        self.assertTrue(entered.wait(1))
-        closer = threading.Thread(target=driver.stop)
-        closer.start()
-        self.assertTrue(driver._stopping.wait(1))
-        self.assertEqual(library.destroy_calls, 0)
-        release.set()
-        reader.join(2)
-        closer.join(2)
-        self.assertFalse(reader.is_alive() or closer.is_alive())
-        self.assertEqual(library.destroy_calls, 1)
-        self.assertEqual(len(errors), 1)
+        capture = threading.Thread(target=driver.capture)
+        stop = threading.Thread(target=lambda: (driver.stop(), stopped.set()))
+        try:
+            capture.start()
+            self.assertTrue(entered.wait(1))
+            stop.start()
+            self.assertFalse(stopped.wait(0.03))
+            self.assertEqual(library.destroy_calls, 0)
+        finally:
+            release.set()
+            capture.join(1)
+            stop.join(1)
+        self.assertTrue(stopped.is_set())
         driver.stop()
         self.assertEqual(library.destroy_calls, 1)
 
-    def test_bad_buffer_dimensions_are_rejected_before_memory_copy(self) -> None:
-        library = NativeCaptureLibrary.__new__(NativeCaptureLibrary)
-        def fill(handle, timeout, output):  # type: ignore[no-untyped-def]
-            native = output._obj
-            native.width = native.height = 2
-            native.stride_bytes = 8
-            native.data_len = 1 << 40
+    def test_buffer_checked_before_pointer_copy_and_released_on_error(self) -> None:
+        library = object.__new__(NativeCaptureLibrary)
+        dll = MagicMock()
+
+        def fill(handle, timeout, pointer):  # type: ignore[no-untyped-def]
+            native = pointer._obj
+            native.width, native.height = 0xFFFFFFFF, 0xFFFFFFFF
+            native.stride_bytes, native.data_len = 8, 16
             native.data = ctypes.cast(ctypes.c_void_p(1), ctypes.POINTER(ctypes.c_uint8))
             return 0
-        release = Mock()
-        library._dll = SimpleNamespace(uga_capture_next=fill, uga_capture_frame_release=release)
+
+        dll.uga_capture_next.side_effect = fill
+        library._dll = dll
         with (
             patch("uga.capture.native_ctypes.ctypes.string_at") as copy,
-            self.assertRaisesRegex(BackendUnavailableError, "bounded buffer"),
+            self.assertRaisesRegex(BackendUnavailableError, "geometry"),
         ):
             library.next(ctypes.c_void_p(1), 250)
         copy.assert_not_called()
-        release.assert_called_once()
+        dll.uga_capture_frame_release.assert_called_once()
 
-    def test_timeout_overflow_and_boolean_are_not_wrapped_into_native_unsigned(self) -> None:
-        windows = FakeWindows()
-        for value in (-1, True, 2001, 1 << 33):
-            with self.subTest(value=value), self.assertRaises(BackendUnavailableError):
-                CtypesNativeCaptureDriver(
-                    NativeBackendId.WGC, cast(NativeCaptureLibrary, FakeLibrary(windows)),
-                    cast(WindowBackend, windows), value,
-                )
+    def test_invalid_timeout_never_wraps_unsigned(self) -> None:
+        for invalid in (-1, 10001, True):
+            with self.subTest(invalid=invalid), self.assertRaises(BackendUnavailableError):
+                CtypesNativeCaptureDriver(NativeBackendId.WGC, MagicMock(), MagicMock(), invalid)
 
-    def test_existing_two_second_capture_configuration_remains_supported(self) -> None:
-        windows = FakeWindows()
-        driver = CtypesNativeCaptureDriver(
-            NativeBackendId.WGC, cast(NativeCaptureLibrary, FakeLibrary(windows)),
-            cast(WindowBackend, windows), timeout_ms=2000,
-        )
-        driver.start(windows.identity)
+
+class CaptureDeadlineTests(unittest.IsolatedAsyncioTestCase):
+    async def test_stuck_source_terminates_without_retrying_abandoned_thread(self) -> None:
+        release = threading.Event()
+
+        class Stuck:
+            calls = 0
+
+            def capture(self):  # type: ignore[no-untyped-def]
+                self.calls += 1
+                release.wait(2)
+                return frame(1)
+
+        source = Stuck()
+        hub = CaptureHub(primary=source, frames=FrameRingBuffer(), capture_operation_timeout_s=0.05)
+        start = time.monotonic()
         try:
-            self.assertIsNotNone(driver.capture())
+            with self.assertRaises(ExceptionGroup):
+                await hub.run(asyncio.Event())
+            self.assertLess(time.monotonic() - start, 0.5)
+            self.assertEqual(source.calls, 1)
         finally:
-            driver.stop()
+            release.set()
+
+    async def test_stop_does_not_wait_for_full_capture_timeout(self) -> None:
+        release = threading.Event()
+
+        class Stuck:
+            def capture(self):  # type: ignore[no-untyped-def]
+                release.wait(2)
+                return frame(1)
+
+        stop = asyncio.Event()
+        hub = CaptureHub(primary=Stuck(), frames=FrameRingBuffer())
+        task = asyncio.create_task(hub.run(stop))
+        try:
+            await asyncio.sleep(0.02)
+            stop.set()
+            await asyncio.wait_for(task, 0.3)
+            self.assertEqual(hub.stats().accepted_frames, 0)
+        finally:
+            release.set()

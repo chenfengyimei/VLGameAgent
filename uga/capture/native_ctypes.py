@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import atexit
-import contextlib
 import ctypes
 import hashlib
 import hmac
@@ -10,15 +9,13 @@ import re
 import shutil
 import tempfile
 import uuid
-from collections.abc import Iterator
 from enum import IntEnum
 from pathlib import Path
-from threading import Event, RLock
+from threading import RLock
 
 from uga.capture.base import CaptureCapability, GraphicsAPI, WindowMode
 from uga.capture.frame import BufferHandle, BufferKind, PixelFormat
 from uga.capture.native_adapter import NativeCapturedFrame, NativeCaptureDriver
-from uga.core.artifact_limits import DEFAULT_ARTIFACT_LIMITS
 from uga.core.errors import (
     BackendStateError,
     BackendUnavailableError,
@@ -33,8 +30,6 @@ from uga.windows.window_identity import WindowIdentity
 _EXPECTED_ABI = 0x0001_0001
 _SHA256 = re.compile(r"[0-9a-f]{64}")
 _SAFE_DLL_SEARCH = 0x00000100 | 0x00000800
-# Preserve the existing WGC/DXGI 2s startup capture contract.
-_MAX_CAPTURE_TIMEOUT_MS = 2_000
 
 
 class NativeBackendId(IntEnum):
@@ -144,6 +139,8 @@ class NativeCaptureLibrary:
 
     def last_error(self) -> str:
         required = int(self._dll.uga_capture_last_error(None, 0))
+        if not 0 <= required <= 65_536:
+            return "native error detail exceeded the bounded buffer"
         buffer = ctypes.create_string_buffer(required + 1)
         self._dll.uga_capture_last_error(buffer, len(buffer))
         return buffer.value.decode("utf-8", errors="replace")
@@ -156,25 +153,19 @@ class NativeCaptureLibrary:
         return handle
 
     def next(self, handle: ctypes.c_void_p, timeout_ms: int) -> NativeCapturedFrame:
-        if type(timeout_ms) is not int or not 0 <= timeout_ms <= _MAX_CAPTURE_TIMEOUT_MS:
-            raise BackendUnavailableError("capture timeout must be an integer in [0, 2000] ms")
         native = _NativeFrame()
         status = int(self._dll.uga_capture_next(handle, timeout_ms, ctypes.byref(native)))
         if status != 0:
             self.raise_status(status)
         try:
-            limits = DEFAULT_ARTIFACT_LIMITS
+            width, height, stride = int(native.width), int(native.height), int(native.stride_bytes)
             if (
-                not native.data
-                or not 0 < native.width <= limits.max_video_dimension
-                or not 0 < native.height <= limits.max_video_dimension
-                or native.width * native.height > limits.max_video_pixels
-                or native.stride_bytes < native.width * 4
-                or native.data_len < native.stride_bytes * native.height
-                or native.data_len > limits.max_video_pixels * 4
+                not native.data or not 1 <= width <= 8192 or not 1 <= height <= 8192
+                or width * height > 33_554_432 or stride < width * 4
+                or not stride * height <= int(native.data_len) <= 256 * 1024 * 1024
             ):
-                raise BackendUnavailableError("native frame has invalid bounded buffer geometry")
-            payload = ctypes.string_at(native.data, native.stride_bytes * native.height)
+                raise BackendUnavailableError("native frame buffer geometry is invalid")
+            payload = ctypes.string_at(native.data, native.data_len)
             frame_id = uuid.uuid4().hex
             return NativeCapturedFrame(
                 frame_id=frame_id,
@@ -202,6 +193,9 @@ class NativeCaptureLibrary:
 
     def destroy(self, handle: ctypes.c_void_p) -> None:
         self._dll.uga_capture_destroy(handle)
+        detail = self.last_error()
+        if detail:
+            raise BackendUnavailableError(detail)
 
     def raise_status(self, status: int) -> None:
         detail = self.last_error() or f"native capture status {status}"
@@ -222,10 +216,12 @@ class CtypesNativeCaptureDriver(NativeCaptureDriver):
         windows: WindowBackend,
         timeout_ms: int = 250,
     ) -> None:
-        if type(timeout_ms) is not int or not 0 <= timeout_ms <= _MAX_CAPTURE_TIMEOUT_MS:
-            raise BackendUnavailableError("capture timeout must be an integer in [0, 2000] ms")
-        self._session_lock = RLock()
-        self._stopping = Event()
+        if (
+            isinstance(timeout_ms, bool) or not isinstance(timeout_ms, int)
+            or not 1 <= timeout_ms <= 10_000
+        ):
+            raise BackendUnavailableError("native timeout must be within [1, 10000] ms")
+        self._lock = RLock()
         self._backend = backend
         self._library = library
         self._windows = windows
@@ -234,78 +230,52 @@ class CtypesNativeCaptureDriver(NativeCaptureDriver):
         self._target: WindowIdentity | None = None
 
     def probe(self, target: WindowIdentity) -> tuple[bool, str, CaptureCapability]:
-        capability = _capability(self._backend)
-        try:
-            self._verify_target(target)
-            handle = self._library.create(self._backend, target.hwnd)
-            self._verify_target(target)
-        except BackendUnavailableError as error:
-            return False, str(error), capability
-        finally:
-            if "handle" in locals():
-                self._library.destroy(handle)
-        return True, f"native ABI {_EXPECTED_ABI:#x} available", capability
-
-    @contextlib.contextmanager
-    def _exclusive(self) -> Iterator[None]:
-        # ctypes releases the GIL: mutable raw handles need explicit ownership.
-        if not self._session_lock.acquire(timeout=12.0):
-            raise BackendUnavailableError("native session did not release its ownership lock")
-        try:
-            yield
-        finally:
-            self._session_lock.release()
+        with self._lock:
+            capability = _capability(self._backend)
+            try:
+                self._verify_target(target)
+                handle = self._library.create(self._backend, target.hwnd)
+                self._verify_target(target)
+            except BackendUnavailableError as error:
+                return False, str(error), capability
+            finally:
+                if "handle" in locals():
+                    self._library.destroy(handle)
+            return True, f"native ABI {_EXPECTED_ABI:#x} available", capability
 
     def start(self, target: WindowIdentity) -> None:
-        with self._exclusive():
-            self._stopping.clear()
-            self._start(target)
-
-    def _start(self, target: WindowIdentity) -> None:
-        if self._handle is not None:
-            raise BackendStateError("native capture driver is already started")
-        self._verify_target(target)
-        handle = self._library.create(self._backend, target.hwnd)
-        try:
+        with self._lock:
+            if self._handle is not None:
+                raise BackendStateError("native capture driver is already started")
             self._verify_target(target)
-        except BaseException:
-            self._library.destroy(handle)
-            raise
-        self._target = target
-        self._handle = handle
+            handle = self._library.create(self._backend, target.hwnd)
+            try:
+                self._verify_target(target)
+            except BaseException:
+                self._library.destroy(handle)
+                raise
+            self._target = target
+            self._handle = handle
 
     def capture(self) -> NativeCapturedFrame:
-        with self._exclusive():
-            if self._stopping.is_set():
-                raise BackendStateError("native capture session is stopping")
+        with self._lock:
+            if self._handle is None or self._target is None:
+                raise BackendStateError("native capture driver is not started")
             try:
-                result = self._capture()
-                if self._stopping.is_set():
-                    raise BackendStateError("native capture stopped before the frame returned")
-                return result
-            finally:
-                if self._stopping.is_set():
-                    self._invalidate_session()
-
-    def _capture(self) -> NativeCapturedFrame:
-        if self._handle is None or self._target is None:
-            raise BackendStateError("native capture driver is not started")
-        try:
-            self._verify_target(self._target)
-        except BaseException:
-            self._invalidate_session()
-            raise
-        frame = self._library.next(self._handle, self._timeout_ms)
-        try:
-            self._verify_target(self._target)
-        except BaseException:
-            self._invalidate_session()
-            raise
-        return frame
+                self._verify_target(self._target)
+            except BaseException:
+                self._invalidate_session()
+                raise
+            frame = self._library.next(self._handle, self._timeout_ms)
+            try:
+                self._verify_target(self._target)
+            except BaseException:
+                self._invalidate_session()
+                raise
+            return frame
 
     def stop(self) -> None:
-        self._stopping.set()
-        with self._exclusive():
+        with self._lock:
             self._invalidate_session()
 
     def _invalidate_session(self) -> None:

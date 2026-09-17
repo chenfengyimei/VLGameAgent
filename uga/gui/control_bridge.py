@@ -77,7 +77,10 @@ class GuiControlBridge:
             )
         if action.kind == GuiActionKind.LONG_CLICK:
             release_at = UGATime(
-                action.lifetime.effective_from.value_ns + 700_000_000
+                min(
+                    action.lifetime.expires_at.value_ns,
+                    action.lifetime.effective_from.value_ns + 700_000_000,
+                )
             )
             release_lifetime = ActionLifetime(
                 action.lifetime.created_at,
