@@ -1,0 +1,33 @@
+name: Extract runtime failure diagnostic
+on:
+  push:
+    branches: [automation/runtime-completion-20260917]
+    paths: [.github/workflows/runtime-log-extract.yml]
+permissions:
+  actions: read
+  contents: read
+jobs:
+  extract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Read the completed validation job
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh api repos/chenfengyimei/VLGameAgent/actions/jobs/105139460602/logs > validation.log
+      - name: Extract only failure context and pytest summary
+        shell: python
+        run: |
+          from pathlib import Path
+          lines = Path('validation.log').read_text(encoding='utf-8-sig').splitlines()
+          start = next(i for i, line in enumerate(lines) if 'FAILURES' in line)
+          end = next(i for i in range(start, len(lines)) if 'Process completed with exit code' in lines[i])
+          text = '\n'.join(lines[start:end + 1])
+          Path('failure.txt').write_text(text)
+          print(text)
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: runtime-windows-failure
+          path: failure.txt
+          retention-days: 1
+          if-no-files-found: error
