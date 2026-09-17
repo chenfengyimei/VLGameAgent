@@ -14,12 +14,13 @@ jobs:
       - name: Read the completed validation job
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh api repos/chenfengyimei/VLGameAgent/actions/jobs/105139460602/logs > validation.log
+        run: gh api --allow-escape-sequences repos/chenfengyimei/VLGameAgent/actions/jobs/105139460602/logs > validation.log
       - name: Extract only failure context and pytest summary
         shell: python
         run: |
           from pathlib import Path
-          lines = Path('validation.log').read_text(encoding='utf-8-sig').splitlines()
+          import re
+          lines = re.sub(r'\x1b\[[0-9;]*m', '', Path('validation.log').read_text(encoding='utf-8-sig')).splitlines()
           start = next(i for i, line in enumerate(lines) if 'FAILURES' in line)
           end = next(i for i in range(start, len(lines)) if 'Process completed with exit code' in lines[i])
           text = '\n'.join(lines[start:end + 1])
