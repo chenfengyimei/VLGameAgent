@@ -39,6 +39,19 @@ reference-only JSONL. Evidence coverage and active execution are reported as
 separate durations; neither uses action TTL. Both public run entries accept
 `--decision-timeout-seconds` and `--perception-timeout-seconds`.
 
+## Optional neural motor development
+
+The [neural motor guide](docs/guides/neural-motor-training.md) adds a real
+PyTorch feature-to-action MLP, source-verified train/validation subsets,
+held-out evaluation, numeric-only checkpoints and pinned development-only
+policy loading. Separate CPU hash locks and Linux/Windows CI keep PyTorch out
+of the normal runtime path. Use `uga-train neural-motor`, `neural-verify` and
+`neural-evaluate`.
+
+This is a bounded motor head, not a visual foundation model, learned temporal
+policy, all five neural stages or qualified GPU/gameplay training. The existing
+deterministic baseline and all runtime safety boundaries remain.
+
 ## Architectural rules
 
 - Slow reasoning and real-time control are separate.
