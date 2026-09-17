@@ -1,0 +1,55 @@
+diff --git a/tests/unit/test_lifecycle_hardening.py b/tests/unit/test_lifecycle_hardening.py
+index 8a5f31a..2697bf7 100644
+--- a/tests/unit/test_lifecycle_hardening.py
++++ b/tests/unit/test_lifecycle_hardening.py
+@@ -116,3 +116,22 @@ class BoundedPublicationTests(unittest.IsolatedAsyncioTestCase):
+             self.assertFalse((Path(tmp) / "causal-test").exists())
+             self.assertTrue(writer.staging_path.exists())
+             writer.abort()
++
++    async def test_codec_flush_failure_is_fatal_and_retains_staging(self) -> None:
++        class BrokenFlush:
++            def append(self, frame):  # type: ignore[no-untyped-def]
++                pass
++
++            def close(self):  # type: ignore[no-untyped-def]
++                raise OSError("test disk full during trailer flush")
++
++        with tempfile.TemporaryDirectory() as tmp:
++            writer = writer_at(Path(tmp))
++            writer.attach_video(BrokenFlush())
++            with self.assertRaises(RecordingFailure) as caught:
++                await finalize_episode(writer, EpisodeResult.SUCCESS, UGATime(100))
++            self.assertTrue(_has_fatal_provider_error(caught.exception))
++            self.assertIsInstance(caught.exception.__cause__, OSError)
++            self.assertFalse((Path(tmp) / "causal-test").exists())
++            self.assertTrue(writer.staging_path.exists())
++            writer.abort()
+diff --git a/uga/recording/episode_writer.py b/uga/recording/episode_writer.py
+index bdb0df9..4933212 100644
+--- a/uga/recording/episode_writer.py
++++ b/uga/recording/episode_writer.py
+@@ -519,7 +519,8 @@ class EpisodeWriter:
+             ):
+                 raise ContractViolation("Episode staging path failed its ownership guard")
+             failure: BaseException | None = None
+-            if self._video is not None:
++            if self._video is not None and not self._video_closed:
++                self._video_closed = True
+                 try:
+                     self._video.close()
+                 except BaseException as exc:
+diff --git a/uga/recording/finalize.py b/uga/recording/finalize.py
+index b37f2e0..e9515ec 100644
+--- a/uga/recording/finalize.py
++++ b/uga/recording/finalize.py
+@@ -28,3 +28,9 @@ async def finalize_episode(
+         if isinstance(exc, asyncio.CancelledError):
+             raise
+         raise RecordingFailure("Episode finalization timed out; inspect retained staging") from exc
++    except Exception as exc:
++        # Codec flush, disk-full and checksum/publish failures also invalidate
++        # this run's recording evidence; an outer launcher must not blindly
++        # retry them as a transient model failure.
++        writer.forbid_publication()
++        raise RecordingFailure("Episode finalization failed; manual intervention required") from exc

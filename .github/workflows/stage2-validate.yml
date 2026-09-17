@@ -9,7 +9,7 @@ concurrency:
   group: stage2-hardening-validation
   cancel-in-progress: false
 env:
-  BASE_SHA: c4af90632865b4d8e758d6eabc84bd410ada38aa
+  BASE_SHA: bcea453c7a5983510b0b4cd7ace39e64ef1aa60a
 jobs:
   verify:
     runs-on: windows-latest
@@ -31,7 +31,7 @@ jobs:
           persist-credentials: false
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
-          ref: c4af90632865b4d8e758d6eabc84bd410ada38aa
+          ref: bcea453c7a5983510b0b4cd7ace39e64ef1aa60a
           path: work
           fetch-depth: 0
           persist-credentials: false
