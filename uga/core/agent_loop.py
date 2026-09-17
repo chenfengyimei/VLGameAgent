@@ -43,6 +43,7 @@ from uga.policy.chunk_controller import ActionChunkController, ActionChunkSubmis
 from uga.policy.fast_policy import FastPolicy, FastPolicyOutput, PolicyContext
 from uga.policy.vision_transport import ProviderError, ProviderErrorKind
 from uga.recording.episode_writer import EpisodeWriter
+from uga.safety.sensitive_page import inspect_sensitive_page
 from uga.time.clock import ClockBackend
 from uga.windows.coordinates import CoordinateTransform, Rect
 
@@ -428,6 +429,21 @@ class RealtimeAgentLoop:
                 "agent.loop",
                 {"previous": transition.previous.value, "mode": transition.current.value},
             )
+
+        if perception is not None:
+            sensitive = inspect_sensitive_page(perception.visible_text)
+            if sensitive.requires_owner:
+                self._leases.revoke_all()
+                self._scheduler.neutralize()
+                self._last_supervision_disposition = DecisionDisposition.WAIT.value
+                self._last_supervision_reason = sensitive.reason
+                await self._events.publish(
+                    EventType.POLICY_INFERENCE_COMPLETED, "agent.loop",
+                    {"disposition": "owner_required", "reason": sensitive.reason},
+                )
+                return AgentLoopStep(
+                    observation, transition, None, None, self._scheduler.stats(), perception
+                )
 
         output: FastPolicyOutput | None = None
         submission: ActionChunkSubmission | None = None

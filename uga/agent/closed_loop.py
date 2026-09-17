@@ -54,6 +54,7 @@ from uga.safety.action_gate import (
     point_is_clickable,
     resolved_click_point,
 )
+from uga.safety.sensitive_page import inspect_sensitive_page
 from uga.time.clock import ClockBackend, UGATime
 from uga.windows.coordinates import Point
 from uga.windows.window_identity import WindowIdentity
@@ -322,6 +323,9 @@ class ActionValidator:
         action = outcome.action
         if action is None:
             return False, "ACT decision did not include an action"
+        sensitive = inspect_sensitive_page(fresh_snapshot.visible_text, action)
+        if sensitive.requires_owner:
+            return False, sensitive.reason
         consistent, generation_reason = generations_consistent(
             outcome, decided_snapshot, fresh_snapshot
         )
@@ -976,6 +980,11 @@ class ClosedLoopSupervisor:
             return SupervisedDecision(
                 DecisionDisposition.REOBSERVE, "decision generation became stale", outcome
             )
+        sensitive = inspect_sensitive_page(fresh_snapshot.visible_text, outcome.action)
+        if sensitive.requires_owner:
+            # Source tags and goals cannot authorize sensitive pages.
+            # WAIT here never escalates to an automatic recovery click.
+            return SupervisedDecision(DecisionDisposition.WAIT, sensitive.reason, outcome)
         recovery = self._pending_recovery
         recovering_high_resolution = recovery == RecoveryDirective.HIGH_RESOLUTION
         if recovering_high_resolution:
