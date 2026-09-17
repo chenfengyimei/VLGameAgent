@@ -11,6 +11,7 @@ from pathlib import Path
 from uga.core.artifact_limits import DEFAULT_ARTIFACT_LIMITS, parse_json_text, read_text_limited
 from uga.core.errors import ContractViolation
 from uga.dataset.builder import build_dataset_manifest
+from uga.dataset.processor import DatasetSplit
 from uga.environment.fixture_world import FixtureScenario, FixtureWorld
 from uga.release.fixture_process import launch_owned_python_gui
 from uga.release.fixture_qualification import run_fixture_qualification
@@ -109,10 +110,11 @@ def run_fixture_corpus(
         "dataset_manifest": str(manifest_path),
         "motor_samples": str(samples_path),
         "hours": manifest.qualified_hours(),
-        "train_hours": sum(
-            item.duration_ns for item in manifest.episodes if item.split.value == "train"
-        )
-        / 3_600_000_000_000,
+        "duration_basis": "executed_primitive_span_union_v2",
+        "train_hours": manifest.qualified_hours(DatasetSplit.TRAIN),
+        "recorded_train_hours": manifest.hours(DatasetSplit.TRAIN),
+        "release_volume_met": manifest.qualified_hours(DatasetSplit.TRAIN) >= 5.0,
+
         "episodes": [
             {"scenario": scenario.value, "episode": episode, "report": report}
             for scenario, episode, report in collected
@@ -120,6 +122,11 @@ def run_fixture_corpus(
     }
     summary_path = root / "corpus-report.json"
     summary_path.write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
+    if require_release_volume and manifest.qualified_hours(DatasetSplit.TRAIN) < 5.0:
+        raise ContractViolation(
+            "collected corpus has less than five measured active train hours; "
+            f"artifacts retained at {summary_path}"
+        )
     return summary_path
 
 

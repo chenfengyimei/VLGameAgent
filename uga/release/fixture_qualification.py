@@ -266,6 +266,95 @@ def _build_fixture_cycle(
     return tuple(actions), base_ns + 4_200_000_000
 
 
+@dataclass(frozen=True, slots=True)
+class FixtureActionGroup:
+    actions: tuple[PhysicalAction, ...]
+    cycle: int
+    movement: bool = False
+
+    @property
+    def effective_ns(self) -> int:
+        return min(action.lifetime.effective_from.value_ns for action in self.actions)
+
+
+def _fixture_action_groups(
+    actions: tuple[PhysicalAction, ...], cycle: int
+) -> tuple[FixtureActionGroup, ...]:
+    """Label reset/menu/click/look separately from motor movement.
+
+    Each group is admitted only when its first primitive is due, using a real
+    captured pre-action observation. Held movement and releases share one label.
+    """
+    groups: dict[str, list[PhysicalAction]] = {}
+    for action in actions:
+        suffix = action.action_id.removeprefix(f"fixture-{cycle:04d}-")
+        name = suffix.split("-", 1)[0]
+        group = "movement" if name in {"w", "a", "s", "d"} else name
+        groups.setdefault(group, []).append(action)
+    return tuple(sorted(
+        (FixtureActionGroup(tuple(values), cycle, name == "movement")
+         for name, values in groups.items()),
+        key=lambda group: group.effective_ns,
+    ))
+
+
+def _submit_fixture_group(
+    group: FixtureActionGroup,
+    frame: Frame,
+    lease: ControlLease,
+    scenario: FixtureScenario,
+    writer: EpisodeWriter,
+    scheduler: ActionScheduler,
+    arbiter: ActionArbiter,
+    now: UGATime,
+) -> tuple[int, bool]:
+    if not 0 <= now.value_ns - frame.capture_timestamp.value_ns <= 500_000_000:
+        raise ContractViolation("fixture group requires a fresh pre-action capture")
+    actions = group.actions
+    pre_id = f"fixture-pre-{group.cycle:04d}-{actions[0].action_id}"
+    visual = analyze_fixture_frame(frame)
+    writer.record_observation(pre_id, now, {
+        "source": "captured-pre-action-screen",
+        "frame_id": frame.frame_id,
+        "capture_timestamp_ns": frame.capture_timestamp.value_ns,
+        "features": _visual_features(visual, frame.width, frame.height, scenario),
+        "visual": asdict(visual),
+    })
+    lifetime = ActionLifetime(
+        min(a.lifetime.created_at for a in actions), UGATime(group.effective_ns),
+        max(a.lifetime.expires_at for a in actions),
+    )
+    proposal = ActionProposal(
+        uuid.uuid4().hex, "fixture-qualification", lease.owner, lease.mode,
+        lease.lease_id, lease.generation, lifetime, actions, pre_id, 1.0,
+    )
+    decision = arbiter.decide(proposal)
+    if not decision.accepted:
+        raise ContractViolation("fixture group proposal was not accepted")
+    parent_id = None
+    if group.movement:
+        move_x, move_y = FixtureWorld(scenario=scenario).canonical_movement
+        canonical = CanonicalAction(
+            f"fixture-{group.cycle:04d}-canonical", lifetime, move_x=move_x, move_y=move_y,
+        )
+        parent_id = canonical.action_id
+        writer.record_canonical_action(
+            canonical,
+            _canonical_provenance(canonical, lease.lease_id, pre_id, proposal.proposal_id)
+        )
+    for action in actions:
+        writer.record_action(
+            action, _provenance(action, lease.lease_id, pre_id, proposal.proposal_id, parent_id)
+        )
+    added = scheduler.schedule(
+        decision, frame.window_identity, lease,
+        pre_action_observation_id=pre_id, pre_action_capture_ns=frame.capture_timestamp.value_ns,
+    )
+    if added != len(actions):
+        raise ContractViolation("fixture group was not fully scheduled")
+    return added, group.movement
+
+
 def _capture_registry(preference: str, windows: Win32WindowBackend) -> CaptureBackendRegistry:
     order = (
         (preference,)
@@ -351,7 +440,7 @@ def _provenance(
     lease_id: str,
     observation_id: str,
     proposal_id: str,
-    parent_action_id: str,
+    parent_action_id: str | None,
 ) -> ActionProvenance:
     return ActionProvenance(
         action.action_id,
@@ -755,7 +844,7 @@ def run_fixture_qualification(
     final_frame: Frame | None = None
     success_seen = False
     pending_checks: list[int] = []
-    pending_observations: list[tuple[int, int, str, int, str]] = []
+    pending_groups: list[tuple[FixtureActionGroup, ControlLease]] = []
     episode_path: Path | None = None
     capture_started = clock.now()
     capture_ended = capture_started
@@ -833,51 +922,22 @@ def run_fixture_qualification(
                     confidence=1.0,
                     reason=f"developer-owned fixture cycle {next_cycle}",
                 )
-                observation_id = f"fixture-observation-{next_cycle:04d}"
-                proposal = ActionProposal(
-                    uuid.uuid4().hex,
-                    "fixture-qualification",
-                    lease.owner,
-                    lease.mode,
-                    lease.lease_id,
-                    lease.generation,
-                    ActionLifetime(
-                        created,
-                        actions[0].lifetime.effective_from,
-                        UGATime(last_expiry),
-                    ),
-                    actions,
-                    observation_id,
-                    1.0,
+                pending_groups.extend(
+                    (group, lease) for group in _fixture_action_groups(actions, next_cycle)
                 )
-                decision = arbiter.decide(proposal)
-                added = scheduler.schedule(decision, target.identity, lease)
-                if not decision.accepted or added != len(actions):
-                    raise ContractViolation("fixture cycle proposal was not fully scheduled")
-                for action in actions:
-                    writer.record_action(
-                        action,
-                        _provenance(
-                            action,
-                            lease.lease_id,
-                            observation_id,
-                            proposal.proposal_id,
-                            f"fixture-{next_cycle:04d}-canonical",
-                        ),
-                    )
-                accepted_proposals += 1
-                scheduled += added
+                pending_groups.sort(key=lambda item: item[0].effective_ns)
                 pending_checks.append(success_check)
-                pending_observations.append(
-                    (
-                        base_ns + 250_000_000,
-                        next_cycle,
-                        lease.lease_id,
-                        base_ns,
-                        proposal.proposal_id,
-                    )
-                )
                 next_cycle += 1
+            while pending_groups and pending_groups[0][0].effective_ns <= clock.now().value_ns:
+                group, group_lease = pending_groups.pop(0)
+                assert final_frame is not None
+                added, canonical_added = _submit_fixture_group(
+                    group, final_frame, group_lease, scenario, writer, scheduler, arbiter,
+                    clock.now()
+                )
+                scheduled += added
+                canonical_recorded += int(canonical_added)
+                accepted_proposals += 1
             if loop_before.value_ns >= next_scheduler_ns:
                 before_stats = scheduler.stats()
                 after_stats = scheduler.tick()
@@ -920,54 +980,6 @@ def run_fixture_qualification(
                         "visual": asdict(visual),
                     },
                 )
-                while (
-                    pending_observations
-                    and frame.capture_timestamp.value_ns >= pending_observations[0][0]
-                ):
-                    (
-                        _,
-                        observation_cycle,
-                        lease_id,
-                        observation_base_ns,
-                        proposal_id,
-                    ) = pending_observations.pop(0)
-                    observation_id = f"fixture-observation-{observation_cycle:04d}"
-                    writer.record_observation(
-                        observation_id,
-                        frame.capture_timestamp,
-                        {
-                            "task": metadata.task,
-                            "cycle": observation_cycle,
-                            "source": "captured-screen",
-                            "features": _visual_features(
-                                visual,
-                                frame.width,
-                                frame.height,
-                                scenario,
-                            ),
-                            "visual": asdict(visual),
-                        },
-                    )
-                    move_x, move_y = fixture_world.canonical_movement
-                    canonical = CanonicalAction(
-                        f"fixture-{observation_cycle:04d}-canonical",
-                        ActionLifetime(
-                            frame.capture_timestamp,
-                            UGATime(observation_base_ns + 1_000_000_000),
-                            UGATime(observation_base_ns + 4_950_000_000),
-                        ),
-                        move_x=move_x,
-                        move_y=move_y,
-                        look_x=0.05,
-                        interact=True,
-                    )
-                    writer.record_canonical_action(
-                        canonical,
-                        _canonical_provenance(
-                            canonical, lease_id, observation_id, proposal_id
-                        ),
-                    )
-                    canonical_recorded += 1
                 while pending_checks and frame.capture_timestamp.value_ns >= pending_checks[0]:
                     success_seen = success_seen or _success_pixel_count(frame) >= 20
                     pending_checks.pop(0)
@@ -1104,9 +1116,13 @@ def run_fixture_qualification(
         episode_result = (
             EpisodeResult.SUCCESS if success_seen and control_passed else EpisodeResult.FAILURE
         )
-        episode_path = writer.finalize(episode_result, ended)
+        shutdown.trip(ShutdownCause.NORMAL_STOP)
+        writer.record_execution_receipts(scheduler.drain_receipts())
+        episode_path = writer.finalize(episode_result, clock.now())
     except BaseException:
+        shutdown.trip(ShutdownCause.RUNTIME_FAILURE)
         with contextlib.suppress(Exception):
+            writer.record_execution_receipts(scheduler.drain_receipts())
             writer.finalize(EpisodeResult.ABORTED, clock.now())
         raise
     finally:
