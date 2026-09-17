@@ -406,3 +406,11 @@ python -m pip install <bundle里的wheel>
 | `uga-build-evidence` | 生成/复验源码绑定的构建资格证据 |
 
 许可证：**MIT**（见 [LICENSE](../LICENSE)）。
+
+
+## GUI 模型闭环更新
+
+[Qwen3-VL / GLM-4.6V GUI 闭环指南](guides/gui-model-closed-loop.md)
+包含模型优先模式、坐标尺度、独立复核、操作回执与效果验证。
+旧教程的 OCR 快捷决策需显式 `--gui-planning-mode rules-first`；
+默认由模型提出下一个 GUI 操作，不再用该回退覆盖 WAIT。
