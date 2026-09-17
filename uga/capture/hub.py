@@ -6,13 +6,14 @@ import math
 import time
 from collections import Counter, deque
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from threading import Lock
 from typing import Protocol
 
-from uga.capture.frame import Frame
+from uga.capture.frame import BufferKind, Frame
 from uga.capture.ring_buffer import FrameRingBuffer, SequencedFrame
 from uga.core.errors import BackendUnavailableError, CaptureTimeoutError, ContractViolation
+from uga.recording.channel import RecorderChannel
 
 
 class SynchronousFrameSource(Protocol):
@@ -43,9 +44,9 @@ class CaptureHub:
     The primary source is capture-driven.  The fallback is sampled only after
     the accepted timeline has been quiet for ``fallback_after_s``. Consumers
     always receive the newest item and may skip obsolete frames.  The recorder
-    callback is invoked for every accepted frame, serialised after publication
-    and outside the publish lock (F16): a slow recorder never delays the
-    newest frame's visibility or the capture timeline.
+    callback runs on one bounded FIFO worker. Capture never waits for codec or
+    disk work. Saturation/failure stops the recording explicitly; it never drops
+    evidence or publishes an incomplete Episode as qualified.
     """
 
     records_frames = True
@@ -62,6 +63,9 @@ class CaptureHub:
         primary_hz: float | None = None,
         consumer_timeout_s: float = 10.0,
         source_error_backoff_s: float = 0.05,
+        recorder_capacity: int = 32,
+        recorder_max_bytes: int = 256 * 1024 * 1024,
+        recorder_close_timeout_s: float = 5.0,
     ) -> None:
         if not math.isfinite(fallback_after_s) or fallback_after_s <= 0:
             raise ContractViolation("capture fallback delay must be positive")
@@ -89,7 +93,15 @@ class CaptureHub:
         self._consumer_timeout_s = consumer_timeout_s
         self._source_error_backoff_s = source_error_backoff_s
         self._publish_lock = Lock()
-        self._record_lock = Lock()
+        if recorder_capacity < 1 or recorder_max_bytes < 1:
+            raise ContractViolation("recorder queue limits must be positive")
+        if not math.isfinite(recorder_close_timeout_s) or recorder_close_timeout_s <= 0:
+            raise ContractViolation("recorder close timeout must be finite and positive")
+        self._record_channel: RecorderChannel | None = None
+        self._recorder_capacity = recorder_capacity
+        self._recorder_max_bytes = recorder_max_bytes
+        self._recorder_close_timeout_s = recorder_close_timeout_s
+        self._record_failure: BaseException | None = None
         self._stats_lock = Lock()
         self._started = asyncio.Event()
         # Scheduling follows when the accepted image was sampled, not when its
@@ -114,10 +126,29 @@ class CaptureHub:
 
     async def run(self, stop: asyncio.Event) -> None:
         self._started.set()
-        async with asyncio.TaskGroup() as tasks:
-            tasks.create_task(self._capture_primary(stop))
-            if self._fallback is not None:
-                tasks.create_task(self._capture_fallback(stop))
+        try:
+            async with asyncio.TaskGroup() as tasks:
+                tasks.create_task(self._capture_primary(stop))
+                if self._fallback is not None:
+                    tasks.create_task(self._capture_fallback(stop))
+        finally:
+            if self._record_channel is not None:
+                try:
+                    await asyncio.to_thread(
+                        self._record_channel.close, self._recorder_close_timeout_s
+                    )
+                except BaseException as exc:
+                    self._record_failure = exc
+                    raise
+
+    @property
+    def recording_complete(self) -> bool:
+        return self._record_failure is None and (
+            self._record_channel is None or self._record_channel.drained
+        )
+
+    def recording_stats(self) -> dict[str, int]:
+        return {} if self._record_channel is None else self._record_channel.stats()
 
     async def capture_once(self) -> SequencedFrame:
         await self._started.wait()
@@ -237,6 +268,12 @@ class CaptureHub:
                 with self._stats_lock:
                     self._stale += 1
                 return
+            if self._record_frame is not None:
+                try:
+                    self._enqueue_recording(frame)
+                except BaseException as exc:
+                    self._record_failure = exc
+                    raise
             self._frames.publish(frame)
             with self._stats_lock:
                 if self._last_capture_timestamp_ns is not None:
@@ -249,10 +286,25 @@ class CaptureHub:
                 self._last_frame_monotonic = sampled_monotonic
                 self._accepted += 1
                 self._sources[source] += 1
-        # F16: the recorder callback runs OUTSIDE the publish lock — a slow
-        # disk/encoder must never delay the newest frame's visibility or the
-        # capture timeline.  A dedicated lock serialises recorder calls
-        # (episode frame order preserved) without blocking publishing.
-        if self._record_frame is not None:
-            with self._record_lock:
-                self._record_frame(frame)
+
+    def _enqueue_recording(self, frame: Frame) -> None:
+        # Called under publish_lock: FIFO order is the accepted frame order.
+        # Mutable capture buffers must be copied before the producer reuses them.
+        callback = self._record_frame
+        assert callback is not None
+        handle = frame.buffer_handle
+        if handle.kind != BufferKind.CPU_BYTES:
+            raise ContractViolation("asynchronous recording requires owned CPU frames")
+        if handle.size_bytes > self._recorder_max_bytes:
+            raise ContractViolation("frame exceeds recorder byte budget")
+        if not isinstance(handle.payload, bytes):
+            frame = replace(
+                frame, buffer_handle=replace(handle, payload=bytes(handle.readonly_view()))
+            )
+        if self._record_channel is None:
+            self._record_channel = RecorderChannel(
+                self._recorder_capacity, max_pending_bytes=self._recorder_max_bytes
+            )
+        self._record_channel.submit(
+            lambda: callback(frame), timeout_s=0.0, weight_bytes=handle.size_bytes
+        )

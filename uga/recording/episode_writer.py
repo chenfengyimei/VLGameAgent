@@ -2,14 +2,13 @@ from __future__ import annotations
 
 import math
 import os
-import queue
 import shutil
 import time
 import uuid
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 from dataclasses import replace
 from pathlib import Path
-from threading import Lock, Thread
+from threading import Lock
 from typing import Any
 
 from uga.capture.frame import Frame
@@ -23,6 +22,7 @@ from uga.core.artifact_limits import (
     sha256_file_limited,
 )
 from uga.core.errors import ContractViolation
+from uga.recording.channel import RecorderChannel as RecorderChannel
 from uga.recording.json_codec import canonical_json, to_json_value, write_json
 from uga.recording.parquet_io import write_rows
 from uga.recording.schema import (
@@ -151,6 +151,10 @@ class EpisodeWriter:
         self._latest_timestamp_ns = metadata.start_monotonic_ns
         self._closed = False
         self._lock = Lock()
+        self._video_lock = Lock()
+        self._inflight_frames = 0
+        self._video_failure: BaseException | None = None
+        self._video_close_started = False
 
     @property
     def staging_path(self) -> Path:
@@ -191,14 +195,25 @@ class EpisodeWriter:
             envelope = frame.to_envelope()
             self._ensure_table_capacity(len(self._timeline), 1, "timeline")
             self._reserve_buffer(1, envelope)
-            if self._video is not None:
-                self._video.append(frame)
             self._append_timeline(
                 frame.capture_timestamp,
                 TimelineKind.FRAME,
                 frame.frame_id,
                 envelope,
             )
+            self._inflight_frames += 1
+        # Codec/disk work never owns the metadata lock used by the control loop.
+        try:
+            with self._video_lock:
+                if self._video is not None:
+                    self._video.append(frame)
+        except BaseException as exc:
+            with self._lock:
+                self._video_failure = exc
+            raise
+        finally:
+            with self._lock:
+                self._inflight_frames -= 1
 
     def record_observation(self, observation_id: str, timestamp: UGATime, payload: object) -> None:
         if not observation_id.strip():
@@ -441,10 +456,15 @@ class EpisodeWriter:
             raise ContractViolation("a finalized episode cannot remain in progress")
         with self._lock:
             self._ensure_open()
+            if self._inflight_frames:
+                raise ContractViolation("cannot finalize while frame recording is in progress")
+            if self._video_failure is not None:
+                raise ContractViolation(
+                    "cannot finalize failed video recording"
+                ) from self._video_failure
             ending = end or UGATime(self._latest_timestamp_ns)
             self._validate_timestamp(ending)
-            if self._video is not None:
-                self._video.close()
+            self._close_video()
             if self._require_video and not self.video_path.is_file():
                 raise ContractViolation("required episode video was not produced")
             self._write_tables()
@@ -453,6 +473,21 @@ class EpisodeWriter:
             self._publish_staging()
             self._closed = True
             return self._final_path
+
+    def _close_video(self) -> None:
+        if self._video is None:
+            return
+        if self._video_close_started:
+            raise ContractViolation("video close already failed; retain private staging")
+        self._video_close_started = True
+        worker = RecorderChannel(capacity=1)
+        worker.submit(self._video.close)
+        try:
+            worker.close(timeout_s=5.0)
+        except BaseException as exc:
+            self._video_failure = exc
+            raise
+        self._video = None
 
     def _publish_staging(self) -> None:
         """Atomically publish after bounded retries for transient Windows locks."""
@@ -473,6 +508,8 @@ class EpisodeWriter:
         with self._lock:
             if self._closed:
                 return
+            if self._inflight_frames or (self._video_close_started and self._video is not None):
+                raise ContractViolation("cannot abort a recording with an in-flight video writer")
             staging_prefix = f".{self._metadata.episode_id}.inprogress-"
             if (
                 self._staging_path.parent != self._root
@@ -482,9 +519,11 @@ class EpisodeWriter:
             failure: BaseException | None = None
             if self._video is not None:
                 try:
-                    self._video.close()
+                    self._close_video()
                 except BaseException as exc:
-                    failure = exc
+                    # Closing may still be executing in a retired worker.
+                    # Keep staging intact rather than racing its file handles.
+                    raise RuntimeError("video close failed; private staging retained") from exc
             try:
                 if self._staging_path.exists():
                     shutil.rmtree(self._staging_path)
@@ -667,117 +706,3 @@ class EpisodeWriter:
     def _ensure_open(self) -> None:
         if self._closed:
             raise ContractViolation("episode writer is already finalized")
-
-
-class RecorderChannel:
-    """Dedicated bounded channel that blocks producers instead of dropping records.
-
-    D11: declared pending bytes are bounded — a slow consumer surfaces
-    backpressure (TimeoutError) instead of unbounded memory growth.  Records
-    are never dropped silently; training recordings either complete or fail
-    observably.  The producer NEVER holds the state lock across the blocking
-    put: the worker must always be able to record completions, or the pair
-    deadlocks.
-    """
-
-    def __init__(
-        self,
-        capacity: int = 1024,
-        *,
-        max_pending_bytes: int = DEFAULT_ARTIFACT_LIMITS.max_recorder_queue_bytes,
-    ) -> None:
-        if capacity < 1:
-            raise ContractViolation("recorder channel capacity must be positive")
-        if max_pending_bytes < 0:
-            raise ContractViolation("recorder channel byte cap cannot be negative")
-        self._queue: queue.Queue[tuple[int, Callable[[], None]] | None] = queue.Queue(
-            capacity
-        )
-        self._max_pending_bytes = max_pending_bytes
-        self._pending_bytes = 0
-        self._pending_entries = 0
-        self._completed = 0
-        self._rejected = 0
-        self._failure: BaseException | None = None
-        self._closed = False
-        self._state_lock = Lock()
-        self._thread = Thread(target=self._run, name="uga-recorder", daemon=True)
-        self._thread.start()
-
-    def submit(
-        self,
-        operation: Callable[[], None],
-        timeout_s: float | None = None,
-        *,
-        weight_bytes: int = 0,
-    ) -> None:
-        if weight_bytes < 0:
-            raise ContractViolation("recorder record weight cannot be negative")
-        with self._state_lock:
-            if self._closed:
-                raise ContractViolation("recorder channel is closed")
-            if self._failure is not None:
-                raise RuntimeError("recorder worker failed") from self._failure
-            if self._pending_bytes + weight_bytes > self._max_pending_bytes:
-                # Declared-byte budget: uncommitted weight cannot be drained
-                # by the worker, so an over-budget record is refused up front.
-                self._rejected += 1
-                raise TimeoutError(
-                    "recorder channel pending-byte limit reached; record was "
-                    "not dropped silently — the producer must retry or fail"
-                )
-        # The blocking put runs WITHOUT the state lock: the worker records
-        # completions under that same lock, so holding it here would deadlock
-        # the pair the moment the queue fills.
-        try:
-            self._queue.put((weight_bytes, operation), block=True, timeout=timeout_s)
-        except queue.Full as exc:
-            with self._state_lock:
-                self._rejected += 1
-            raise TimeoutError(
-                "recorder channel backpressure timeout; record was not dropped"
-            ) from exc
-        with self._state_lock:
-            self._pending_entries += 1
-            self._pending_bytes += weight_bytes
-
-    def stats(self) -> dict[str, int]:
-        """D11 telemetry: pending entries/bytes plus lifetime counters."""
-        with self._state_lock:
-            return {
-                "pending_entries": self._pending_entries,
-                "pending_bytes": self._pending_bytes,
-                "completed": self._completed,
-                "rejected": self._rejected,
-                "max_pending_bytes": self._max_pending_bytes,
-            }
-
-    def close(self) -> None:
-        with self._state_lock:
-            if self._closed:
-                return
-            self._closed = True
-        self._queue.put(None)
-        self._thread.join()
-        with self._state_lock:
-            if self._failure is not None:
-                raise RuntimeError("recorder worker failed") from self._failure
-
-    def _run(self) -> None:
-        while True:
-            entry = self._queue.get()
-            try:
-                if entry is None:
-                    return
-                weight_bytes, operation = entry
-                if self._failure is None:
-                    operation()
-                    with self._state_lock:
-                        self._completed += 1
-                        self._pending_entries = max(0, self._pending_entries - 1)
-                        self._pending_bytes = max(0, self._pending_bytes - weight_bytes)
-            except BaseException as exc:
-                if self._failure is None:
-                    self._failure = exc
-            finally:
-                self._queue.task_done()

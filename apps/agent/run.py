@@ -21,6 +21,7 @@ import signal
 import time
 import uuid
 from collections.abc import Callable
+from functools import partial
 from pathlib import Path
 from types import FrameType
 
@@ -453,7 +454,7 @@ async def _run(args: argparse.Namespace) -> int:
             recorder.attach_video(PyAvVideoRecorder(recorder.video_path, fps=15))
             if journal is not None:
                 journal.set_sink(
-                    lambda record: _persist_planner_decision(recorder, clock, record)
+                    partial(_persist_planner_decision, recorder, clock)
                 )
         except BaseException:
             _best_effort_cleanup(
@@ -877,6 +878,13 @@ async def _run(args: argparse.Namespace) -> int:
             loop.fail_closed_loop("runtime_error")
         elif duration_expired:
             loop.fail_closed_loop("timeout")
+    if recorder is not None and not capture_source.recording_complete:
+        # A timed-out recorder may still own its codec. Never close/delete its
+        # resources concurrently, or publish an incomplete Episode as valid.
+        print(f"incomplete episode retained: {recorder.staging_path}", flush=True)
+        if run_error is None:
+            run_error = RuntimeError("recording failed to drain; Episode was not published")
+        recorder = None
     if recorder is not None:
         stats = scheduler.stats()
         diagnostics = loop.closed_loop_diagnostics or {}
