@@ -1,0 +1,25 @@
+name: Review workspace
+on:
+  push:
+    branches: [automation/review-workspace-20260917]
+    paths:
+      - .github/workflows/review-workspace.yml
+permissions:
+  contents: read
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: a15d6d003dd95f59dec6ddd78fd5b930348fddc0
+          persist-credentials: false
+      - name: Export audited source only
+        run: git archive --format=zip --output=review-source-a15d6d0.zip HEAD
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: review-source-a15d6d0
+          path: review-source-a15d6d0.zip
+          retention-days: 1
+          if-no-files-found: error
