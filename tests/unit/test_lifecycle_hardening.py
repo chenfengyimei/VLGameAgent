@@ -116,3 +116,22 @@ class BoundedPublicationTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse((Path(tmp) / "causal-test").exists())
             self.assertTrue(writer.staging_path.exists())
             writer.abort()
+
+    async def test_codec_flush_failure_is_fatal_and_retains_staging(self) -> None:
+        class BrokenFlush:
+            def append(self, frame):  # type: ignore[no-untyped-def]
+                pass
+
+            def close(self):  # type: ignore[no-untyped-def]
+                raise OSError("test disk full during trailer flush")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            writer = writer_at(Path(tmp))
+            writer.attach_video(BrokenFlush())
+            with self.assertRaises(RecordingFailure) as caught:
+                await finalize_episode(writer, EpisodeResult.SUCCESS, UGATime(100))
+            self.assertTrue(_has_fatal_provider_error(caught.exception))
+            self.assertIsInstance(caught.exception.__cause__, OSError)
+            self.assertFalse((Path(tmp) / "causal-test").exists())
+            self.assertTrue(writer.staging_path.exists())
+            writer.abort()

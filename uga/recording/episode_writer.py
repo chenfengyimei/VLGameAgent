@@ -519,7 +519,8 @@ class EpisodeWriter:
             ):
                 raise ContractViolation("Episode staging path failed its ownership guard")
             failure: BaseException | None = None
-            if self._video is not None:
+            if self._video is not None and not self._video_closed:
+                self._video_closed = True
                 try:
                     self._video.close()
                 except BaseException as exc:

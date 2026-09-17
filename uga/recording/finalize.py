@@ -28,3 +28,9 @@ async def finalize_episode(
         if isinstance(exc, asyncio.CancelledError):
             raise
         raise RecordingFailure("Episode finalization timed out; inspect retained staging") from exc
+    except Exception as exc:
+        # Codec flush, disk-full and checksum/publish failures also invalidate
+        # this run's recording evidence; an outer launcher must not blindly
+        # retry them as a transient model failure.
+        writer.forbid_publication()
+        raise RecordingFailure("Episode finalization failed; manual intervention required") from exc
