@@ -492,6 +492,9 @@ class GroundedVlmPlanner:
         started = time.monotonic()
         self.last_raw_reply = None
         self.last_schema_valid = False
+        self.last_decision_was_dialogue = False
+        self.last_input_manifest = []
+        self.last_high_resolution_upgraded = None
         self._last_decision_source = "model"
         if not frames or frames[-1].frame_id != snapshot.frame_id:
             raise ContractViolation("grounded planner frames must end at the snapshot frame")
