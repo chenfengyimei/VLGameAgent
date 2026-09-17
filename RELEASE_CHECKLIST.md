@@ -3,6 +3,12 @@
 Packaging must not be interpreted as release approval. V1 is releasable only
 when every gate below has recorded evidence.
 
+Runtime/data code remediation is tracked in the
+[module delivery](docs/reviews/runtime-hardening-completion-2026-09-17.md).
+Its regression tests do not close the live hardware, corpus or GPU gates below.
+Previously checked smoke entries are historical, not automatically re-qualified
+for every subsequent source revision.
+
 ## Development package evidence
 
 - [x] Ruff, strict mypy, pytest, and Rust release compilation pass.

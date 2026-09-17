@@ -18,6 +18,19 @@ dashboard/replay/dataset UIs, a developer-owned Fixture World, qualification
 evidence tooling, and verified Windows development packaging. The project is
 licensed under [MIT](LICENSE).
 
+## Runtime hardening and data compatibility
+
+The [2026-09-17 module delivery](docs/reviews/runtime-hardening-completion-2026-09-17.md)
+covers bounded recording/inference, sensitive-page handoff, causal GUI exports,
+native lifetime guards and remaining live qualification. Console and direct
+run entries share one parser, including `--decision-timeout-seconds`. Bounded
+goal claims require `--goal-evidence`. Use `uga-dataset gui-export EPISODE
+--output NEW_DIRECTORY` for receipt-qualified GUI examples.
+
+Existing recordings stay immutable. Only actual pre-action evidence qualifies
+training inputs and demonstrated duration. CI does not establish physical-input
+latency, long-running device reliability or five-stage GPU model training.
+
 ## Architectural rules
 
 - Slow reasoning and real-time control are separate.
