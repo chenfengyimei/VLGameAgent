@@ -7,12 +7,15 @@ import time
 from collections import Counter, deque
 from collections.abc import Callable
 from dataclasses import dataclass, replace
+from functools import partial
 from threading import Lock
 from typing import Protocol
 
 from uga.capture.frame import BufferKind, Frame
 from uga.capture.ring_buffer import FrameRingBuffer, SequencedFrame
 from uga.core.errors import BackendUnavailableError, CaptureTimeoutError, ContractViolation
+from uga.policy.call_budget import CallBudget, DeadlineWorker
+from uga.policy.vision_transport import ProviderError
 from uga.recording.channel import RecorderChannel
 
 
@@ -66,6 +69,7 @@ class CaptureHub:
         recorder_capacity: int = 32,
         recorder_max_bytes: int = 256 * 1024 * 1024,
         recorder_close_timeout_s: float = 5.0,
+        capture_call_timeout_s: float = 4.0,
     ) -> None:
         if not math.isfinite(fallback_after_s) or fallback_after_s <= 0:
             raise ContractViolation("capture fallback delay must be positive")
@@ -83,6 +87,11 @@ class CaptureHub:
             or source_error_backoff_s > 1.0
         ):
             raise ContractViolation("capture source error backoff must be in (0, 1]")
+        if not math.isfinite(capture_call_timeout_s) or capture_call_timeout_s <= 0:
+            raise ContractViolation("capture call timeout must be finite and positive")
+        self._capture_call_timeout_s = capture_call_timeout_s
+        self._primary_worker = DeadlineWorker("uga-primary-capture")
+        self._fallback_worker = DeadlineWorker("uga-fallback-capture")
         self._primary = primary
         self._fallback = fallback
         self._frames = frames
@@ -128,9 +137,16 @@ class CaptureHub:
         self._started.set()
         try:
             async with asyncio.TaskGroup() as tasks:
-                tasks.create_task(self._capture_primary(stop))
+                producers = [tasks.create_task(self._capture_primary(stop))]
                 if self._fallback is not None:
-                    tasks.create_task(self._capture_fallback(stop))
+                    producers.append(tasks.create_task(self._capture_fallback(stop)))
+
+                async def cancel_on_stop() -> None:
+                    await stop.wait()
+                    for producer in producers:
+                        producer.cancel()
+
+                tasks.create_task(cancel_on_stop())
         finally:
             if self._record_channel is not None:
                 try:
@@ -151,14 +167,17 @@ class CaptureHub:
         return {} if self._record_channel is None else self._record_channel.stats()
 
     async def capture_once(self) -> SequencedFrame:
-        await self._started.wait()
-        item = await asyncio.to_thread(
-            self._frames.wait_for_newer,
-            self._last_consumer_sequence,
-            self._consumer_timeout_s,
-        )
-        if item is None:
-            raise CaptureTimeoutError("capture hub produced no frame within its consumer budget")
+        # No default-executor condition wait may trap asyncio.run shutdown.
+        deadline = time.monotonic() + self._consumer_timeout_s
+        while True:
+            item = self._frames.latest() if self._started.is_set() else None
+            if item is not None and item.sequence > self._last_consumer_sequence:
+                break
+            if time.monotonic() >= deadline:
+                raise CaptureTimeoutError(
+                    "capture hub produced no frame within its consumer budget"
+                )
+            await asyncio.sleep(0.005)
         with self._stats_lock:
             skipped = max(0, item.sequence - self._last_consumer_sequence - 1)
             self._consumer_skipped += skipped
@@ -189,7 +208,17 @@ class CaptureHub:
         while not stop.is_set():
             attempt_started = time.monotonic()
             try:
-                frame = await asyncio.to_thread(self._primary.capture)
+                frame = await self._primary_worker.call(
+                    self._primary.capture, CallBudget(self._capture_call_timeout_s)
+                )
+            except ProviderError as exc:
+                if not exc.fatal:
+                    raise
+                # Retire a stalled source once, never retry it as an unbounded
+                # series of detached threads. Fallback can still own capture.
+                with self._stats_lock:
+                    self._source_errors["primary"] += 1
+                return
             except CaptureTimeoutError:
                 await asyncio.sleep(0)
                 continue
@@ -204,11 +233,9 @@ class CaptureHub:
                         stop.wait(), timeout=self._source_error_backoff_s
                     )
                 continue
-            await asyncio.to_thread(
-                self._publish,
-                frame,
-                "primary",
-                time.monotonic(),
+            await self._primary_worker.call(
+                partial(self._publish, frame, "primary", time.monotonic()),
+                CallBudget(self._capture_call_timeout_s),
             )
             if self._primary_period_s is not None:
                 delay = attempt_started + self._primary_period_s - time.monotonic()
@@ -242,7 +269,15 @@ class CaptureHub:
                 continue
             attempt_started = time.monotonic()
             try:
-                frame = await asyncio.to_thread(self._fallback.capture)
+                frame = await self._fallback_worker.call(
+                    self._fallback.capture, CallBudget(self._capture_call_timeout_s)
+                )
+            except ProviderError as exc:
+                if not exc.fatal:
+                    raise
+                with self._stats_lock:
+                    self._source_errors["fallback"] += 1
+                return
             except (CaptureTimeoutError, BackendUnavailableError, ContractViolation):
                 # A failed heartbeat did not publish a frame and therefore does
                 # not consume the 4 Hz output budget.  ContractViolation covers
@@ -253,11 +288,9 @@ class CaptureHub:
                 await asyncio.sleep(min(0.05, self._fallback_period_s / 10.0))
                 continue
             last_attempt = attempt_started
-            await asyncio.to_thread(
-                self._publish,
-                frame,
-                "fallback",
-                attempt_started,
+            await self._fallback_worker.call(
+                partial(self._publish, frame, "fallback", attempt_started),
+                CallBudget(self._capture_call_timeout_s),
             )
 
     def _publish(self, frame: Frame, source: str, sampled_monotonic: float) -> None:
@@ -297,10 +330,9 @@ class CaptureHub:
             raise ContractViolation("asynchronous recording requires owned CPU frames")
         if handle.size_bytes > self._recorder_max_bytes:
             raise ContractViolation("frame exceeds recorder byte budget")
+        view = handle.readonly_view()  # Validate byte accounting for immutable payloads too.
         if not isinstance(handle.payload, bytes):
-            frame = replace(
-                frame, buffer_handle=replace(handle, payload=bytes(handle.readonly_view()))
-            )
+            frame = replace(frame, buffer_handle=replace(handle, payload=bytes(view)))
         if self._record_channel is None:
             self._record_channel = RecorderChannel(
                 self._recorder_capacity, max_pending_bytes=self._recorder_max_bytes

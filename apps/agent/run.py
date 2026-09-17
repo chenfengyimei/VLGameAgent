@@ -860,6 +860,8 @@ async def _run(args: argparse.Namespace) -> int:
                 if run_error is None:
                     run_error = exc
 
+        if journal is not None:
+            cleanup(journal.close)
         cleanup(watchdog_monitor.close)
         cleanup(scheduler.neutralize)
         cleanup(loop.drain_execution_receipts)
