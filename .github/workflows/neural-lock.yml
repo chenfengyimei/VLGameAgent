@@ -17,7 +17,8 @@ jobs:
         with:
           python-version: '3.11.9'
       - name: Download pinned CPU wheel and its dependencies without execution
-        run: python -m pip download --only-binary=:all: --index-url https://download.pytorch.org/whl/cpu torch==2.10.0 --dest wheels
+        run: |
+          python -m pip download --only-binary=:all: --index-url https://download.pytorch.org/whl/cpu torch==2.10.0 --dest wheels
       - name: Hash every selected wheel
         shell: python
         run: |
