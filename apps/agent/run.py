@@ -191,6 +191,8 @@ async def _run(args: argparse.Namespace) -> int:
         or args.watchdog_timeout_seconds <= 0
     ):
         raise SystemExit("--watchdog-timeout-seconds must be positive")
+    if not math.isfinite(args.decision_timeout_seconds) or args.decision_timeout_seconds <= 0:
+        raise SystemExit("--decision-timeout-seconds must be finite and positive")
     if not math.isfinite(args.tap_delay) or args.tap_delay < 0:
         raise SystemExit("--tap-delay must be >= 0")
     if not math.isfinite(args.tap_interval_seconds) or args.tap_interval_seconds < 0:
@@ -596,6 +598,7 @@ async def _run(args: argparse.Namespace) -> int:
         run_context=run_context,
         control_heartbeat=watchdog.heartbeat,
         recovery_budget=recovery_budget,
+        decision_timeout_s=args.decision_timeout_seconds,
     )
 
     if journal is not None and args.dashboard_port > 0:
@@ -1070,6 +1073,10 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=6.0,
         help="seconds between vision planner decisions",
+    )
+    parser.add_argument(
+        "--decision-timeout-seconds", type=float, default=90.0,
+        help="total decision budget including repair and secondary verification",
     )
     parser.add_argument(
         "--vlm-timeout-seconds",

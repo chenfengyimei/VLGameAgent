@@ -130,12 +130,15 @@ function Ensure-LocalModel {
 
 $useLocalModel = $BaseUrl -match '^https?://(?:127\.0\.0\.1|localhost)(?::|/)'
 if ($useLocalModel) {
+    $readinessAttempts = 0
     while ($true) {
         try {
             Ensure-LocalModel
             break
         }
         catch {
+            $readinessAttempts += 1
+            if ($readinessAttempts -ge 5) { throw "Local model startup retry budget exhausted" }
             Write-SupervisorLog "Model readiness failed: $($_.Exception.Message)"
             Write-SupervisorLog "Retrying model startup in $RestartDelaySeconds seconds"
             Start-Sleep -Seconds $RestartDelaySeconds
@@ -154,6 +157,8 @@ else {
     }
 }
 
+$mandatoryThinking = $Model -match '(?i)(^|/)glm-5\.3(-flash)?$'
+$outputBudget = if ($mandatoryThinking) { 4096 } else { 256 }
 $agentArgs = @(
     "-m", "apps.agent", "run",
     "--profile", $profilePath,
@@ -161,10 +166,10 @@ $agentArgs = @(
     "--goal", $goal,
     "--vlm-base-url", $BaseUrl,
     "--vlm-model", $Model,
-    "--vlm-no-thinking",
     "--vlm-decision-interval", "3",
     "--vlm-timeout-seconds", "$VisionTimeoutSeconds",
-    "--vlm-max-output-tokens", "256",
+    "--vlm-max-output-tokens", "$outputBudget",
+    "--decision-timeout-seconds", "$([Math]::Max(90, $VisionTimeoutSeconds))",
     "--vlm-temporal-frames", "1",
     "--vlm-image-width", "640",
     "--vlm-target-crops", "0",
@@ -179,6 +184,12 @@ $agentArgs = @(
     "--capture-hz", "2",
     "--dashboard-port", "$DashboardPort"
 )
+if ($mandatoryThinking) {
+    $agentArgs += @("--vlm-extra-body", '{"thinking":{"type":"enabled"},"reasoning_effort":"low"}')
+}
+else {
+    $agentArgs += "--vlm-no-thinking"
+}
 if (-not $useLocalModel) {
     $agentArgs += "--vlm-json-object"
 }
@@ -192,14 +203,14 @@ $ErrorActionPreference = "Continue"
 # attempt cap, and the budget only resets after a long healthy run.
 $maxRestarts = 10
 $restartCount = 0
+$totalRestarts = 0
 $delaySeconds = $RestartDelaySeconds
 while ($true) {
     Write-SupervisorLog "Starting one continuous UGA agent process"
     $startedAt = Get-Date
     & $resolvedPython @agentArgs 2>&1 | ForEach-Object {
         $agentLine = "$_"
-        Add-Content -LiteralPath $supervisorLog -Value $agentLine -Encoding utf8
-        Write-Host $agentLine
+        Write-SupervisorLog $agentLine
     }
     $agentExitCode = $LASTEXITCODE
     $ranSeconds = [int]((Get-Date) - $startedAt).TotalSeconds
@@ -222,6 +233,11 @@ while ($true) {
         $delaySeconds = $RestartDelaySeconds
     }
     $restartCount += 1
+    $totalRestarts += 1
+    if ($totalRestarts -gt $maxRestarts) {
+        Write-SupervisorLog "Total run restart budget exhausted"
+        exit 1
+    }
     if ($restartCount -gt $maxRestarts) {
         Write-SupervisorLog "Restart budget exhausted ($maxRestarts consecutive crashes); supervisor standing down"
         exit 1
