@@ -88,9 +88,10 @@ def export_motor_samples(
     output_bytes = 0
     for episode_path in episode_paths:
         episode = DatasetProcessor(limits=limits).process(episode_path)
-        if not episode.samples:
+        motor_samples = [item for item in episode.samples if item.action_layer == "canonical"]
+        if not motor_samples:
             raise ContractViolation(f"Episode has no canonical motor samples: {episode_path}")
-        for aligned in episode.samples:
+        for aligned in motor_samples:
             if len(rows) >= limits.max_training_samples:
                 raise ContractViolation("motor sample export exceeds the sample resource limit")
             try:
@@ -372,8 +373,11 @@ def _verify_training_sample_provenance(
         processed = DatasetProcessor(limits=limits).process(episode_path)
         allowed_samples = {sample.action_id: sample for sample in processed.samples}
         observations: dict[str, tuple[float, ...]] = {}
+        selected_observations = {sample.observation_id for sample in episode_samples}
         for row in read_rows(episode_path / "observations.parquet", limits=limits):
             observation_id = str(row["observation_id"])
+            if observation_id not in selected_observations:
+                continue
             observation_payload = parse_json_text(str(row["payload_json"]))
             features = observation_payload.get("features")
             if not isinstance(features, list):

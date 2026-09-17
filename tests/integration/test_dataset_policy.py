@@ -578,7 +578,7 @@ class DatasetPolicyTests(unittest.TestCase):
                     limits=replace(DEFAULT_ARTIFACT_LIMITS, max_dataset_bytes=1),
                 )
             self.assertGreater(loaded.hours(DatasetSplit.TRAIN), 0)
-            self.assertGreater(loaded.qualified_hours(DatasetSplit.TRAIN), 0)
+            self.assertEqual(loaded.qualified_hours(DatasetSplit.TRAIN), 0.0)
             self.assertEqual(dict(loaded.category_distribution())[DatasetCategory.COMBAT], 0)
             samples = root / "motor-samples.jsonl"
             export_motor_samples((episode_path,), samples)
@@ -833,6 +833,12 @@ class DatasetPolicyTests(unittest.TestCase):
                         action.lifetime,
                     ),
                 )
+            for action in actions:
+                writer.record_execution_receipts((ExecutionReceipt(
+                    action.action_id, "gui-proposal", type(action).__name__,
+                    ExecutionPrimitiveStatus.EXECUTED, UGATime(130), identity(), "lease-gui", 1,
+                    pre_action_observation_id="obs-gui", pre_action_capture_ns=110,
+                ),))
             episode = writer.finalize(EpisodeResult.SUCCESS, UGATime(300))
             trajectory = OpenCuaExporter().export(episode)
             self.assertEqual(trajectory.steps[0].ground_truth_actions[0].action_type, "moveTo")

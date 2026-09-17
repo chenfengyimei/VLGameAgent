@@ -39,6 +39,8 @@ class AlignedSample:
     inference_observation_timestamp_ns: int
     inference_observation_json: str
     execution_status: str
+    action_layer: str = "physical"
+    action_type: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,10 +75,23 @@ class DatasetProcessor:
         times = [int(str(row["timestamp_ns"])) for row in observations]
         samples: list[AlignedSample] = []
         exclusions: dict[str, int] = {}
-        canonical_actions = [
-            action for action in replay.actions if action.get("action_layer") == "canonical"
+        # Keep mixed motor/GUI episodes. Physical children are evidence for a
+        # logical label, never duplicate labels of their own.
+        logical_ids = {
+            str(action["action_id"]) for action in replay.actions
+            if action.get("action_layer") == "canonical"
+            or action.get("action_type") == "GuiAction"
+        }
+        children = {
+            str(row["action_id"]) for row in replay.provenance
+            if row.get("parent_action_id") in logical_ids
+        }
+        selected_actions = [
+            action for action in replay.actions
+            if str(action["action_id"]) in logical_ids
+            or (action.get("action_layer") == "physical"
+                and str(action["action_id"]) not in children)
         ]
-        selected_actions = canonical_actions or replay.actions
         start = int(replay.metadata["start_monotonic_ns"])
         end = int(replay.metadata["end_monotonic_ns"])
         if not replay.has_execution_receipt_table:
@@ -123,6 +138,9 @@ class DatasetProcessor:
             if type(capture_ns) is not int:
                 self._exclude(exclusions, "missing_pre_action_capture_time")
                 continue
+            if any(r.get("pre_action_capture_ns") != capture_ns for r in receipts):
+                self._exclude(exclusions, "inconsistent_pre_action_capture_time")
+                continue
             observation_time = capture_ns
             delay = action_time - observation_time
             if delay < 0 or delay > self._max_alignment_delay_ns:
@@ -149,18 +167,19 @@ class DatasetProcessor:
                     int(str(inference_observation["timestamp_ns"])),
                     str(inference_observation["payload_json"]),
                     "executed",
+                    str(action["action_layer"]),
+                    str(action["action_type"]),
                 )
             )
+            # Measured active execution time, not action TTL or wall time.
+            # Instantaneous point labels are valid but contribute zero duration.
             qualified_intervals.append(
-                (
-                    int(str(action["effective_from_ns"])),
-                    int(str(action["expires_at_ns"])),
-                )
+                (max(start, action_time), min(end, int(str(latest_receipt["at_ns"]))))
             )
         qualified_duration = self._merged_duration(qualified_intervals)
         qualification = (
             EpisodeQualification.QUALIFIED
-            if samples and qualified_duration > 0
+            if samples
             else EpisodeQualification.UNQUALIFIED
         )
         return ProcessedEpisode(
@@ -180,12 +199,16 @@ class DatasetProcessor:
         provenance: dict[str, object],
     ) -> tuple[dict[str, object], ...]:
         action_id = str(action["action_id"])
-        if action.get("action_layer") != "canonical":
+        if action.get("action_layer") != "canonical" and action.get("action_type") != "GuiAction":
             proposal_id = provenance.get("proposal_id")
             if provenance.get("action_source") == "GUI_AGENT" and proposal_id is not None:
                 children = {
                     str(row["action_id"]) for row in replay.provenance
                     if row.get("proposal_id") == proposal_id
+                    and str(row["action_id"]) in {
+                        str(item["action_id"]) for item in replay.actions
+                        if item.get("action_layer") == "physical"
+                    }
                 }
                 receipts = replay.receipts_for_proposal(str(proposal_id))
                 if {str(row["action_id"]) for row in receipts} != children:

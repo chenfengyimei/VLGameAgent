@@ -189,6 +189,16 @@ class ReplayEngine:
         provenance_by_id = {
             str(row["action_id"]): row for row in self.provenance
         }
+        if len(observation_ids) != len(self.observations):
+            raise ContractViolation("Episode contains duplicate observation identifiers")
+        for row in self.provenance:
+            parent_id = row.get("parent_action_id")
+            if parent_id is not None:
+                parent = action_by_id.get(str(parent_id))
+                if parent is None or parent.get("action_layer") == "physical":
+                    raise ContractViolation("physical child references an invalid logical parent")
+                if row.get("proposal_id") != provenance_by_id[str(parent_id)].get("proposal_id"):
+                    raise ContractViolation("child and logical parent proposal identities differ")
         receipt_counts = Counter(
             str(row["action_id"]) for row in self.execution_receipts
         )
@@ -215,6 +225,11 @@ class ReplayEngine:
             if not str(receipt.get("proposal_id", "")).strip():
                 raise ContractViolation("execution receipt proposal id is missing")
             at_ns = int(receipt["at_ns"])
+            if receipt.get("status") == "executed" and not (
+                int(receipt_action["effective_from_ns"]) <= at_ns
+                <= int(receipt_action["expires_at_ns"])
+            ):
+                raise ContractViolation("executed receipt is outside the action lifetime")
             if at_ns < 0:
                 raise ContractViolation("execution receipt timestamp is negative")
             inference_id = receipt.get("inference_observation_id")

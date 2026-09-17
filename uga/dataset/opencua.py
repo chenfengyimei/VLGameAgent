@@ -13,6 +13,7 @@ from uga.core.artifact_limits import (
     read_text_limited,
 )
 from uga.core.errors import ContractViolation
+from uga.dataset.processor import DatasetProcessor
 from uga.recording.replay import ReplayEngine
 
 _SUPPORTED_ACTIONS = frozenset({"moveTo", "click", "write", "press", "scroll", "terminate"})
@@ -93,6 +94,18 @@ class OpenCuaExporter:
 
     def export(self, episode_path: str | Path) -> OpenCuaTrajectory:
         replay = ReplayEngine(episode_path)
+        processed = DatasetProcessor().process(episode_path)
+        qualified_ids = {sample.action_id for sample in processed.samples}
+        eligible: dict[str, str] = {}
+        for action in replay.actions:
+            if str(action["action_id"]) not in qualified_ids:
+                continue
+            provenance = replay.provenance_for_action(str(action["action_id"]))
+            assert provenance is not None
+            for receipt in DatasetProcessor._receipts_for_training_action(
+                replay, action, provenance
+            ):
+                eligible[str(receipt["action_id"])] = str(receipt["pre_action_observation_id"])
         action_order = {
             str(row["reference_id"]): int(row["sequence"])
             for row in replay.timeline
@@ -100,7 +113,7 @@ class OpenCuaExporter:
         }
         actions_by_observation: dict[str, list[dict[str, object]]] = {}
         for action in replay.actions:
-            observation_id = action.get("observation_id")
+            observation_id = eligible.get(str(action["action_id"]))
             if observation_id is None or action.get("action_layer") != "physical":
                 continue
             actions_by_observation.setdefault(str(observation_id), []).append(action)

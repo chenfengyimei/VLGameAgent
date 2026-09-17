@@ -61,6 +61,14 @@ class GuiActionController:
             return GuiActionSubmission((), None, 0)
         decision = self._arbiter.decide(proposal)
         if decision.accepted and self._recorder is not None:
+            self._recorder.record_gui_action(
+                action,
+                ActionProvenance(
+                    action.action_id, "GUI_AGENT", policy_version, None,
+                    observation_id, None, None, lease.mode.value, lease.lease_id,
+                    action.confidence, False, action.lifetime, proposal.proposal_id,
+                ),
+            )
             for physical_action in physical:
                 self._recorder.record_action(
                     physical_action,
@@ -78,6 +86,7 @@ class GuiActionController:
                         False,
                         physical_action.lifetime,
                         proposal.proposal_id,
+                        action.action_id,
                     ),
                 )
         scheduled = self._scheduler.schedule(

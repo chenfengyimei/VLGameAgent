@@ -6,6 +6,7 @@ from dataclasses import asdict
 from pathlib import Path
 
 from uga.dataset.builder import build_dataset_manifest
+from uga.dataset.gui_export import export_gui_samples
 from uga.dataset.manifest import DatasetManifest
 from uga.dataset.opencua import (
     OpenCuaExporter,
@@ -39,6 +40,10 @@ def _process(args: argparse.Namespace) -> None:
         "episode_id": episode.episode_id,
         "game_id": episode.game_id,
         "duration_ns": episode.duration_ns,
+        "qualification": episode.qualification.value,
+        "qualified_active_duration_ns": episode.qualified_duration_ns,
+        "duration_basis": "executed_primitive_span_union_v2",
+        "exclusions": dict(episode.exclusion_counts),
         "samples": [asdict(sample) for sample in episode.samples],
     }
     args.output.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
@@ -63,6 +68,7 @@ def _manifest(args: argparse.Namespace) -> None:
                 "source_revision": manifest.source_revision,
                 "episodes": len(manifest.episodes),
                 "hours": manifest.hours(),
+                "qualified_active_hours": manifest.qualified_hours(),
                 "locked_test_games": manifest.locked_test_games,
                 "distribution": {
                     category.value: fraction
@@ -77,6 +83,10 @@ def _manifest(args: argparse.Namespace) -> None:
 def _build_manifest(args: argparse.Namespace) -> None:
     manifest = build_dataset_manifest(args.inventory, args.root)
     print(manifest.write(args.output).resolve())
+
+
+def _gui_export(args: argparse.Namespace) -> None:
+    print(export_gui_samples(args.episodes, args.output))
 
 
 def _opencua_export(args: argparse.Namespace) -> None:
@@ -139,6 +149,11 @@ def main() -> None:
     export.add_argument("episode", type=Path)
     export.add_argument("--output", type=Path, required=True)
     export.set_defaults(handler=_opencua_export)
+
+    gui_export = subparsers.add_parser("gui-export", help="export causal logical GUI JSONL")
+    gui_export.add_argument("episodes", nargs="+", type=Path)
+    gui_export.add_argument("--output", required=True, type=Path)
+    gui_export.set_defaults(handler=_gui_export)
 
     import_trajectory = subparsers.add_parser(
         "opencua-import", help="validate and summarize OpenCUA trajectory"

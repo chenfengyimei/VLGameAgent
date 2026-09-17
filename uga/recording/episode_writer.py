@@ -22,6 +22,7 @@ from uga.core.artifact_limits import (
     sha256_file_limited,
 )
 from uga.core.errors import ContractViolation
+from uga.gui.schema import GuiAction
 from uga.recording.channel import RecorderChannel as RecorderChannel
 from uga.recording.json_codec import canonical_json, to_json_value, write_json
 from uga.recording.parquet_io import write_rows
@@ -261,12 +262,15 @@ class EpisodeWriter:
     ) -> None:
         self._record_action(action, provenance, RecordedActionLayer.CANONICAL, None)
 
+    def record_gui_action(self, action: GuiAction, provenance: ActionProvenance) -> None:
+        self._record_action(action, provenance, RecordedActionLayer.SEMANTIC, None)
+
     def record_semantic_action(self, action: SemanticAction, provenance: ActionProvenance) -> None:
         self._record_action(action, provenance, RecordedActionLayer.SEMANTIC, None)
 
     def _record_action(
         self,
-        action: PhysicalAction | CanonicalAction | SemanticAction,
+        action: PhysicalAction | CanonicalAction | SemanticAction | GuiAction,
         provenance: ActionProvenance,
         layer: RecordedActionLayer,
         input_state: InputStateRecord | None,
