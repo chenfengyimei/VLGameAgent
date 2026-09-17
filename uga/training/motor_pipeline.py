@@ -26,6 +26,7 @@ from uga.training.behavior_cloning import (
     MotorTrainingSample,
     TrainingMetrics,
 )
+from uga.training.contracts import atomic_text, finite_number, identifier, integer, strict_json
 
 
 @dataclass(frozen=True, slots=True)
@@ -82,8 +83,14 @@ def export_motor_samples(
     limits: ArtifactResourceLimits = DEFAULT_ARTIFACT_LIMITS,
 ) -> Path:
     """Export provenance-preserving motor samples from canonical Episode actions."""
-    if not episode_paths:
-        raise ContractViolation("motor sample export requires at least one Episode")
+    if not episode_paths or len(episode_paths) > limits.max_dataset_episodes:
+        raise ContractViolation("motor sample export requires a bounded nonempty Episode list")
+    sources = tuple(Path(path).resolve() for path in episode_paths)
+    if len(set(sources)) != len(sources):
+        raise ContractViolation("motor sample export contains duplicate source Episodes")
+    destination = Path(output_path).resolve()
+    if any(destination == source or source in destination.parents for source in sources):
+        raise ContractViolation("motor sample export must be outside every source Episode")
     rows: list[str] = []
     output_bytes = 0
     for episode_path in episode_paths:
@@ -101,11 +108,11 @@ def export_motor_samples(
                 if not isinstance(features, list):
                     raise TypeError("observation features must be a list")
                 sample = MotorTrainingSample(
-                    tuple(float(value) for value in features),
-                    float(action["move_x"]),
-                    float(action["move_y"]),
-                    float(action["look_x"]),
-                    float(action["look_y"]),
+                    tuple(finite_number(value, "feature") for value in features),
+                    finite_number(action["move_x"], "move_x"),
+                    finite_number(action["move_y"], "move_y"),
+                    finite_number(action["look_x"], "look_x"),
+                    finite_number(action["look_y"], "look_y"),
                     _canonical_button_mask(action),
                     aligned.episode_id,
                     aligned.observation_id,
@@ -136,10 +143,7 @@ def export_motor_samples(
             if output_bytes > limits.max_jsonl_bytes:
                 raise ContractViolation("motor sample export exceeds the byte resource limit")
             rows.append(encoded)
-    destination = Path(output_path).resolve()
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    destination.write_text("\n".join(rows) + "\n", encoding="utf-8")
-    return destination
+    return atomic_text(destination, "\n".join(rows) + "\n")
 
 
 def load_motor_training_config(
@@ -203,7 +207,7 @@ def load_motor_samples(
         if not line.strip():
             continue
         try:
-            payload: Any = parse_json_text(line)
+            payload: Any = strict_json(line)
             if not isinstance(payload, dict) or not isinstance(payload.get("features"), list):
                 raise TypeError("sample must be an object with a features list")
             if len(payload["features"]) > limits.max_feature_dimensions:
@@ -218,15 +222,15 @@ def load_motor_samples(
                 raise ContractViolation("motor training work exceeds the resource limit")
             samples.append(
                 MotorTrainingSample(
-                    tuple(float(value) for value in payload["features"]),
-                    float(payload["move_x"]),
-                    float(payload["move_y"]),
-                    float(payload["look_x"]),
-                    float(payload["look_y"]),
-                    int(payload["buttons"]),
-                    str(payload["episode_id"]),
-                    str(payload["observation_id"]),
-                    str(payload["action_id"]),
+                    tuple(finite_number(value, "feature") for value in payload["features"]),
+                    finite_number(payload["move_x"], "move_x"),
+                    finite_number(payload["move_y"], "move_y"),
+                    finite_number(payload["look_x"], "look_x"),
+                    finite_number(payload["look_y"], "look_y"),
+                    integer(payload["buttons"], "buttons", 0, 0xFFFF),
+                    identifier(payload["episode_id"], "episode_id"),
+                    identifier(payload["observation_id"], "observation_id"),
+                    identifier(payload["action_id"], "action_id"),
                 )
             )
         except (KeyError, TypeError, ValueError, json.JSONDecodeError, ContractViolation) as exc:
@@ -262,7 +266,7 @@ def train_motor_policy(
         limits=limits,
         training_epochs=config.epochs,
     )
-    _verify_training_sample_provenance(samples, dataset, dataset_root, limits=limits)
+    verify_motor_sample_provenance(samples, dataset, dataset_root, limits=limits)
     checkpoint, metrics = BehaviorCloningTrainer().train(
         samples,
         policy_version=policy_version,
@@ -274,28 +278,32 @@ def train_motor_policy(
     output.mkdir(parents=True, exist_ok=False)
     checkpoint_path = checkpoint.save(output / "decoder-checkpoint.json")
     metrics_path = _write_metrics(metrics, output / "metrics.json")
-    license_metadata = tuple(
-        entry
-        for item in dataset.licenses
-        for entry in (
-            (f"dataset:{item.license_id}:source", item.source),
-            (f"dataset:{item.license_id}:license", item.dataset_license),
-            (
-                f"dataset:{item.license_id}:distribution_allowed",
-                str(item.distribution_allowed).lower(),
-            ),
-            (
-                f"dataset:{item.license_id}:commercial_allowed",
-                str(item.commercial_allowed).lower(),
-            ),
-            (f"dataset:{item.license_id}:review_date", item.review_date),
+    license_metadata = (
+        tuple(
+            entry
+            for item in dataset.licenses
+            for entry in (
+                (f"dataset:{item.license_id}:source", item.source),
+                (f"dataset:{item.license_id}:license", item.dataset_license),
+                (
+                    f"dataset:{item.license_id}:distribution_allowed",
+                    str(item.distribution_allowed).lower(),
+                ),
+                (
+                    f"dataset:{item.license_id}:commercial_allowed",
+                    str(item.commercial_allowed).lower(),
+                ),
+                (f"dataset:{item.license_id}:review_date", item.review_date),
+            )
         )
-    ) + (
-        ("base_model", base_model_license),
-        ("trainer", "deterministic_linear_v1"),
-        ("freeze_visual_layers", str(config.freeze_visual_layers).lower()),
-        ("train_components", ",".join(config.train_components)),
-    ) + tuple((f"loss:{name}", value) for name, value in config.loss)
+        + (
+            ("base_model", base_model_license),
+            ("trainer", "deterministic_linear_v1"),
+            ("freeze_visual_layers", str(config.freeze_visual_layers).lower()),
+            ("train_components", ",".join(config.train_components)),
+        )
+        + tuple((f"loss:{name}", value) for name, value in config.loss)
+    )
     artifact = TrainingArtifactManifest(
         policy_version,
         checkpoint_path.name,
@@ -335,17 +343,21 @@ def _canonical_button_mask(payload: dict[str, Any]) -> int:
         ("confirm", ActionButton.CONFIRM),
         ("back", ActionButton.BACK),
     ):
-        if bool(payload.get(name, False)):
+        value = payload.get(name, False)
+        if type(value) is not bool:
+            raise ContractViolation("canonical action button must be a boolean")
+        if value:
             result |= int(button)
     return result
 
 
-def _verify_training_sample_provenance(
+def verify_motor_sample_provenance(
     samples: tuple[MotorTrainingSample, ...],
     dataset: DatasetManifest,
     dataset_root: str | Path,
     *,
     limits: ArtifactResourceLimits = DEFAULT_ARTIFACT_LIMITS,
+    expected_split: DatasetSplit = DatasetSplit.TRAIN,
 ) -> None:
     episodes = {episode.episode_id: episode for episode in dataset.episodes}
     grouped: dict[str, list[MotorTrainingSample]] = {}
@@ -355,8 +367,10 @@ def _verify_training_sample_provenance(
         episode_id = sample.episode_id
         assert episode_id is not None
         episode = episodes[episode_id]
-        if episode.split != DatasetSplit.TRAIN:
-            raise ContractViolation("motor training samples must come from the train split")
+        if episode.split != expected_split:
+            raise ContractViolation(
+                f"motor samples must come from the {expected_split.value} split"
+            )
         if episode.quality_status != QualityStatus.ACCEPTED:
             raise ContractViolation("motor training samples require accepted-quality Episodes")
         if not episode.execution_receipts_qualified:
@@ -386,7 +400,9 @@ def _verify_training_sample_provenance(
                 raise ContractViolation("recorded observation exceeds the feature dimension limit")
             if observation_id in observations:
                 raise ContractViolation("Episode contains duplicate observation identifiers")
-            observations[observation_id] = tuple(float(value) for value in features)
+            observations[observation_id] = tuple(
+                finite_number(value, "feature") for value in features
+            )
         actions = {
             str(row["action_id"]): row
             for row in read_rows(episode_path / "actions.parquet", limits=limits)

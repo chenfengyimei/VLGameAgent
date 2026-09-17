@@ -1,0 +1,41 @@
+name: Neural motor CPU contracts
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  neural:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            lock: linux
+          - os: windows-latest
+            lock: win32
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    env:
+      OMP_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.11.9'
+      - run: python -m pip install --require-hashes -r requirements-lock.txt
+      - run: python -m pip install --require-hashes -r requirements-neural-cpu-${{ matrix.lock }}.txt
+      - run: python -m pip install --no-deps --no-build-isolation -e .
+      - name: Fail instead of skipping a missing neural backend
+        run: python -c "import torch; assert torch.__version__ == '2.10.0+cpu'; assert not torch.cuda.is_available()"
+      - run: pytest tests/neural -q -ra --junitxml=build/neural-tests.xml
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: neural-cpu-${{ matrix.lock }}-results
+          path: build/neural-tests.xml
+          if-no-files-found: error
+          retention-days: 7

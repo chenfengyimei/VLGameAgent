@@ -1,0 +1,12 @@
+{
+  "hidden_dim": 64,
+  "epochs": 100,
+  "batch_size": 64,
+  "learning_rate": 0.01,
+  "weight_decay": 0.001,
+  "seed": 0,
+  "device": "cpu",
+  "patience": 20,
+  "max_seconds": 300.0,
+  "gradient_clip": 1.0
+}

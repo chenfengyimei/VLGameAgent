@@ -234,11 +234,21 @@ class TemporalActionDecoder:
         )
 
 
+@runtime_checkable
+class ActionDecoder(Protocol):
+    @property
+    def policy_version(self) -> str: ...
+
+    def decode(
+        self, features: tuple[float, ...], context: PolicyContext, *, horizon: int | None = None
+    ) -> ActionChunk: ...
+
+
 class StructuredFastPolicy:
     def __init__(
         self,
         backbone: VisualBackbone,
-        decoder: TemporalActionDecoder,
+        decoder: ActionDecoder,
         *,
         cadence: AdaptivePolicyCadence | None = None,
         clock: ClockBackend | None = None,

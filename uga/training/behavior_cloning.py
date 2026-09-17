@@ -7,6 +7,7 @@ from uga.core.artifact_limits import DEFAULT_ARTIFACT_LIMITS, ArtifactResourceLi
 from uga.core.errors import ContractViolation
 from uga.policy.action_chunk import KNOWN_ACTION_BUTTON_MASK
 from uga.policy.fast_policy import DecoderCheckpoint
+from uga.training.contracts import finite_number, identifier, integer
 
 
 @dataclass(frozen=True, slots=True)
@@ -22,16 +23,20 @@ class MotorTrainingSample:
     action_id: str | None = None
 
     def __post_init__(self) -> None:
-        if not self.features or any(not math.isfinite(value) for value in self.features):
+        if not self.features or any(
+            not math.isfinite(finite_number(value, "feature")) for value in self.features
+        ):
             raise ContractViolation("motor sample requires finite features")
         if any(
-            not -1 <= axis <= 1 for axis in (self.move_x, self.move_y, self.look_x, self.look_y)
+            not -1 <= finite_number(axis, "axis") <= 1
+            for axis in (self.move_x, self.move_y, self.look_x, self.look_y)
         ):
             raise ContractViolation("motor target axes must be in [-1, 1]")
-        if not 0 <= self.buttons <= 0xFFFF or self.buttons & ~KNOWN_ACTION_BUTTON_MASK:
+        integer(self.buttons, "buttons", 0, KNOWN_ACTION_BUTTON_MASK)
+        if self.buttons & ~KNOWN_ACTION_BUTTON_MASK:
             raise ContractViolation("motor sample contains undefined canonical button bits")
         identifiers = (self.episode_id, self.observation_id, self.action_id)
-        if any(value is not None and not value.strip() for value in identifiers):
+        if any(value is not None and not identifier(value, "provenance") for value in identifiers):
             raise ContractViolation("motor sample provenance identifiers cannot be blank")
         if any(value is None for value in identifiers) and any(
             value is not None for value in identifiers
@@ -64,6 +69,8 @@ class BehaviorCloningTrainer:
         learning_rate: float = 0.05,
         limits: ArtifactResourceLimits = DEFAULT_ARTIFACT_LIMITS,
     ) -> tuple[DecoderCheckpoint, TrainingMetrics]:
+        integer(epochs, "epochs", 1, limits.max_training_epochs)
+        finite_number(learning_rate, "learning_rate")
         if not samples or epochs < 1 or learning_rate <= 0:
             raise ContractViolation("invalid behavior-cloning training request")
         if len(samples) > limits.max_training_samples:
@@ -92,11 +99,7 @@ class BehaviorCloningTrainer:
                         + biases[axis]
                     )
                     error = prediction - targets[axis]
-                    gradient = (
-                        error
-                        if axis < 2 or abs(error) <= 0.1
-                        else math.copysign(0.1, error)
-                    )
+                    gradient = error if axis < 2 or abs(error) <= 0.1 else math.copysign(0.1, error)
                     for index, value in enumerate(sample.features):
                         weights[axis][index] -= learning_rate * gradient * value
                     biases[axis] -= learning_rate * gradient
