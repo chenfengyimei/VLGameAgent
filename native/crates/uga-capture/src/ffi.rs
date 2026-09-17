@@ -25,7 +25,7 @@ const BACKEND_DXGI: u32 = 2;
 const RESPONSE_GRACE_MS: u64 = 2_000;
 const INIT_DEADLINE_MS: u64 = 10_000;
 const CLOSE_DEADLINE_MS: u64 = 2_000;
-const MAX_CAPTURE_TIMEOUT_MS: u32 = 1_000;
+const MAX_CAPTURE_TIMEOUT_MS: u32 = 2_000;
 
 thread_local! {
     static LAST_ERROR: RefCell<String> = const { RefCell::new(String::new()) };

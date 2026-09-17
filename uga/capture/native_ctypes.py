@@ -33,6 +33,8 @@ from uga.windows.window_identity import WindowIdentity
 _EXPECTED_ABI = 0x0001_0001
 _SHA256 = re.compile(r"[0-9a-f]{64}")
 _SAFE_DLL_SEARCH = 0x00000100 | 0x00000800
+# Preserve the existing WGC/DXGI 2s startup capture contract.
+_MAX_CAPTURE_TIMEOUT_MS = 2_000
 
 
 class NativeBackendId(IntEnum):
@@ -154,8 +156,8 @@ class NativeCaptureLibrary:
         return handle
 
     def next(self, handle: ctypes.c_void_p, timeout_ms: int) -> NativeCapturedFrame:
-        if type(timeout_ms) is not int or not 0 <= timeout_ms <= 1000:
-            raise BackendUnavailableError("capture timeout must be an integer in [0, 1000] ms")
+        if type(timeout_ms) is not int or not 0 <= timeout_ms <= _MAX_CAPTURE_TIMEOUT_MS:
+            raise BackendUnavailableError("capture timeout must be an integer in [0, 2000] ms")
         native = _NativeFrame()
         status = int(self._dll.uga_capture_next(handle, timeout_ms, ctypes.byref(native)))
         if status != 0:
@@ -220,8 +222,8 @@ class CtypesNativeCaptureDriver(NativeCaptureDriver):
         windows: WindowBackend,
         timeout_ms: int = 250,
     ) -> None:
-        if type(timeout_ms) is not int or not 0 <= timeout_ms <= 1000:
-            raise BackendUnavailableError("capture timeout must be an integer in [0, 1000] ms")
+        if type(timeout_ms) is not int or not 0 <= timeout_ms <= _MAX_CAPTURE_TIMEOUT_MS:
+            raise BackendUnavailableError("capture timeout must be an integer in [0, 2000] ms")
         self._session_lock = RLock()
         self._stopping = Event()
         self._backend = backend

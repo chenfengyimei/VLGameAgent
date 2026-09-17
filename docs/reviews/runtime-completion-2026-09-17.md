@@ -34,7 +34,7 @@ The existing deterministic CPU trainer remains a development baseline.
    deadline. At most four HTTP requests are admitted per decision. A timed-out
    worker is not reused, and its late result cannot authorize input.
 3. Capture source calls have a four-second default outer bound. Native capture
-   timeouts are integer milliseconds in [0,1000]. Initialization, response grace
+   timeouts are integer milliseconds in [0,2000]. Initialization, response grace
    and teardown deadlines are separate. A driver thread is not force-killed:
    owned state stays alive until it exits. Bounded caller shutdown does not
    promise kernel-resource reclamation under a broken driver.
@@ -129,3 +129,12 @@ Never restore automatic legal consent, relabel effect frames as pre-action
 inputs, or recover nominal corpus volume by counting TTL. Keep source Episodes
 immutable and regenerate derivatives with provenance. A code revert does not
 make historical release evidence valid for a different tree.
+
+## Windows compatibility correction
+
+The first full Windows validation failed the existing WGC and DXGI tests because
+our new 1000ms admission cap rejected their established 2000ms timeout. The
+follow-up preserves the existing two-second capture API while still rejecting
+negative, boolean, overflowing and greater-than-2000ms inputs in Python and Rust.
+Both original Windows tests remain enabled and unchanged. This is an API
+compatibility fix, not an increased inference/recording budget or a skipped test.

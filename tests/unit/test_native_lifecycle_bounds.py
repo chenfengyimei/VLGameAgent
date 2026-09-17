@@ -74,9 +74,21 @@ class NativeLifecycleBoundsTests(unittest.TestCase):
 
     def test_timeout_overflow_and_boolean_are_not_wrapped_into_native_unsigned(self) -> None:
         windows = FakeWindows()
-        for value in (-1, True, 1001, 1 << 33):
+        for value in (-1, True, 2001, 1 << 33):
             with self.subTest(value=value), self.assertRaises(BackendUnavailableError):
                 CtypesNativeCaptureDriver(
                     NativeBackendId.WGC, cast(NativeCaptureLibrary, FakeLibrary(windows)),
                     cast(WindowBackend, windows), value,
                 )
+
+    def test_existing_two_second_capture_configuration_remains_supported(self) -> None:
+        windows = FakeWindows()
+        driver = CtypesNativeCaptureDriver(
+            NativeBackendId.WGC, cast(NativeCaptureLibrary, FakeLibrary(windows)),
+            cast(WindowBackend, windows), timeout_ms=2000,
+        )
+        driver.start(windows.identity)
+        try:
+            self.assertIsNotNone(driver.capture())
+        finally:
+            driver.stop()
