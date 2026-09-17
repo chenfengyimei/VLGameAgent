@@ -49,6 +49,7 @@ from uga.policy.structured_output import (
 )
 from uga.policy.vision_transport import ProviderError
 from uga.policy.vlm_planner import PlannerReplyError, encode_frame_png
+from uga.safety.semantic_gate import sensitive_page_reason
 
 GROUNDING_RESPONSE_FORMAT: dict[str, Any] = {
     "type": "json_schema",
@@ -370,7 +371,6 @@ class GroundedVlmPlanner:
         self.last_raw_reply: str | None = None
         self.last_schema_valid = False
         self.last_decision_was_dialogue = False
-        self._login_agreement_clicked = False
         self._last_image_count = 0
         self._last_decision_source = "model"
         self.last_high_resolution_upgraded: bool | None = None
@@ -427,6 +427,12 @@ class GroundedVlmPlanner:
             quest_target_level=quest_target_level,
             quest_text=quest_text,
         )
+        if (
+            fast_outcome is not None and fast_outcome.kind == DecisionKind.ACT
+            and self._strategy_registry is not None
+            and not self._strategy_registry.allows(self._last_decision_source)
+        ):
+            fast_outcome = None
         if fast_outcome is not None:
             # Deterministic, freshly grounded controls should not wait behind a slow
             # local VLM request.  The closed-loop supervisor still revalidates the
@@ -628,6 +634,19 @@ class GroundedVlmPlanner:
                 WaitReason.NO_SAFE_ACTION,
                 explanation="real-name registration gate: standing by for the owner",
             )
+        handoff = sensitive_page_reason(snapshot.visible_text)
+        if handoff is not None:
+            self.last_raw_reply = None
+            self.last_schema_valid = True
+            self._last_image_count = 0
+            self._last_decision_source = "sensitive_page_handoff"
+            return PlannerOutcome(
+                uuid.uuid4().hex, snapshot.frame_id, snapshot.frame_sequence,
+                snapshot.window_identity.window_generation, snapshot.geometry_generation,
+                snapshot.task_generation, DecisionKind.WAIT, "operator handoff",
+                snapshot.text, GoalStatus.IN_PROGRESS, 1.0, None,
+                WaitReason.NO_SAFE_ACTION, explanation=handoff,
+            )
         if not self._prefer_ocr_task_panel:
             return None
         if not self.strategy_allows_fast_paths:
@@ -674,27 +693,6 @@ class GroundedVlmPlanner:
                 action_kind=GuiActionKind.CLICK,
             )
         self.last_decision_was_dialogue = False
-        login_start = next(
-            (r for r in snapshot.visible_text if "开始游戏" in r.text), None
-        )
-        agreement = next(
-            (r for r in snapshot.visible_text if "同意用户协议" in r.text), None
-        )
-        if login_start is not None and agreement is not None:
-            if not self._login_agreement_clicked:
-                # 游戏登录页：必须先勾选同意用户协议，开始游戏才会生效。
-                self._login_agreement_clicked = True
-                self._last_decision_source = "ocr_login_agreement_fast"
-                return self._ocr_action(
-                    snapshot,
-                    agreement,
-                    source="ocr_login_agreement_fast",
-                    expected_effect="the user agreement checkbox is ticked",
-                    action_kind=GuiActionKind.CLICK,
-                    pointer_offset=(-0.06, 0.0),
-                )
-        elif self._login_agreement_clicked:
-            self._login_agreement_clicked = False
         glyph = find_close_glyph(snapshot.visible_text)
         if (
             glyph is not None

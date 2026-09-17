@@ -13,6 +13,7 @@ from uga.core.artifact_limits import (
     read_text_limited,
 )
 from uga.core.errors import ContractViolation
+from uga.dataset.processor import DatasetProcessor
 from uga.recording.replay import ReplayEngine
 
 _SUPPORTED_ACTIONS = frozenset({"moveTo", "click", "write", "press", "scroll", "terminate"})
@@ -98,9 +99,17 @@ class OpenCuaExporter:
             for row in replay.timeline
             if row["kind"] in {"action", "raw_input"}
         }
+        qualified = DatasetProcessor().process(episode_path)
+        allowed: dict[str, str] = {}
+        for sample in qualified.samples:
+            if sample.action_layer == "physical":
+                allowed[sample.action_id] = sample.observation_id
+            elif sample.action_layer == "gui":
+                for child in replay.child_action_ids(sample.action_id):
+                    allowed[child] = sample.observation_id
         actions_by_observation: dict[str, list[dict[str, object]]] = {}
         for action in replay.actions:
-            observation_id = action.get("observation_id")
+            observation_id = allowed.get(str(action["action_id"]))
             if observation_id is None or action.get("action_layer") != "physical":
                 continue
             actions_by_observation.setdefault(str(observation_id), []).append(action)

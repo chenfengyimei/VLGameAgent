@@ -814,6 +814,7 @@ class DatasetPolicyTests(unittest.TestCase):
                     CoordinateSpace.PHYSICAL_SCREEN_PIXEL,
                 ),
                 MouseButtonAction("click", click_lifetime, MouseButton.LEFT, True),
+                MouseButtonAction("release", click_lifetime, MouseButton.LEFT, False),
             )
             for action in actions:
                 writer.record_action(
@@ -831,8 +832,15 @@ class DatasetPolicyTests(unittest.TestCase):
                         0.9,
                         False,
                         action.lifetime,
+                        "proposal-gui",
                     ),
                 )
+                writer.record_execution_receipts((ExecutionReceipt(
+                    action.action_id, "proposal-gui", type(action).__name__,
+                    ExecutionPrimitiveStatus.EXECUTED, action.lifetime.effective_from,
+                    identity(), "lease-gui", 1,
+                    pre_action_observation_id="obs-gui", pre_action_capture_ns=110,
+                ),))
             episode = writer.finalize(EpisodeResult.SUCCESS, UGATime(300))
             trajectory = OpenCuaExporter().export(episode)
             self.assertEqual(trajectory.steps[0].ground_truth_actions[0].action_type, "moveTo")

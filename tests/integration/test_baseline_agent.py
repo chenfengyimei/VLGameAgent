@@ -428,9 +428,16 @@ capability_level: 3
             self.assertTrue(result.decision.accepted)
             clock.set(200)
             self.assertEqual(scheduler.tick().executed, 1)
+            runtime.drain_execution_receipts()
             episode = recorder.finalize(EpisodeResult.SUCCESS, UGATime(300_000_000))
             replay = ReplayEngine(episode)
             self.assertEqual(replay.validation().action_count, 2)
+            from uga.dataset.processor import DatasetProcessor
+            samples = DatasetProcessor().process(episode).samples
+            self.assertEqual(len(samples), 1)
+            self.assertLessEqual(
+                samples[0].observation_timestamp_ns, samples[0].action_timestamp_ns
+            )
             self.assertTrue(replay.actions_for_observation(obs.observation_id))
             self.assertTrue(any(action["action_layer"] == "canonical" for action in replay.actions))
         self.assertEqual(len(backend.actions), 1)

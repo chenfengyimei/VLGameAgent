@@ -130,6 +130,7 @@ class NativeCaptureSecurityTests(unittest.TestCase):
             }
             with (
                 patch.dict(os.environ, env),
+                patch("uga.capture.native_ctypes.find_native_library", return_value=source),
                 patch("uga.capture.native_ctypes.ctypes.CDLL") as loader,
                 self.assertRaisesRegex(BackendUnavailableError, "SHA-256 mismatch"),
             ):

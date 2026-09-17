@@ -508,7 +508,7 @@ class ClosedLoopSupervisorTests(unittest.TestCase):
         self.assertEqual(second.disposition, DecisionDisposition.BLOCK)
         self.assertEqual(self.supervisor.status, TerminalStatus.BLOCKED)
 
-    def test_critical_action_requires_explicit_matching_goal(self) -> None:
+    def test_critical_action_requires_handoff_even_with_matching_goal(self) -> None:
         current = snapshot(1, 0)
         proposal = outcome(1, label="delete", risk=ActionRisk.CRITICAL)
 
@@ -516,7 +516,7 @@ class ClosedLoopSupervisorTests(unittest.TestCase):
             proposal, current, current, frame(1, 0), frame(1, 0), "open settings"
         )
 
-        self.assertEqual(rejected.disposition, DecisionDisposition.REOBSERVE)
+        self.assertEqual(rejected.disposition, DecisionDisposition.WAIT)
 
         supervisor = ClosedLoopSupervisor(self.clock, self.profile)
         accepted = supervisor.assess(
@@ -527,7 +527,7 @@ class ClosedLoopSupervisorTests(unittest.TestCase):
             frame(1, 0),
             "delete",
         )
-        self.assertEqual(accepted.disposition, DecisionDisposition.EXECUTE)
+        self.assertEqual(accepted.disposition, DecisionDisposition.WAIT)
 
     def test_stale_window_generation_is_never_executed(self) -> None:
         decided = snapshot(1, 0)
