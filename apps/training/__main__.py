@@ -93,9 +93,18 @@ def _qualification_report(args: argparse.Namespace) -> None:
 
 
 def _neural_motor(args: argparse.Namespace) -> None:
+    from uga.training import neural_motor, neural_pipeline
     from uga.training.neural_pipeline import train_neural_motor
 
-    revision = require_clean_source_revision(args.project_root)
+    source_root = args.project_root.resolve()
+    if (
+        source_root != Path(__file__).resolve().parents[2]
+        or Path(neural_motor.__file__).resolve() != source_root / "uga/training/neural_motor.py"
+        or Path(neural_pipeline.__file__).resolve()
+        != source_root / "uga/training/neural_pipeline.py"
+    ):
+        raise ContractViolation("neural training must use its actual clean source checkout")
+    revision = require_clean_source_revision(source_root)
     artifact = train_neural_motor(
         train_path=args.train_samples,
         validation_path=args.validation_samples,

@@ -13,12 +13,13 @@ pytest.importorskip("torch")
 from tests.neural.helpers import corpus
 
 
-def cli(*args: str) -> subprocess.CompletedProcess[str]:
+def cli(*args: str, cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [sys.executable, "-m", "apps.training", *args],
         text=True,
         capture_output=True,
         timeout=60,
+        cwd=cwd,
         env={**os.environ, "OMP_NUM_THREADS": "1", "MKL_NUM_THREADS": "1"},
     )
 
@@ -26,14 +27,18 @@ def cli(*args: str) -> subprocess.CompletedProcess[str]:
 def test_cli_train_verify_test_evaluation_and_dirty_guard(tmp_path: Path) -> None:
     data = corpus(tmp_path / "data")
     project = tmp_path / "source"
-    project.mkdir()
-    for command in (
-        ["init"],
-        ["config", "user.name", "Test"],
-        ["config", "user.email", "test@example.invalid"],
-        ["commit", "--allow-empty", "-m", "synthetic contract source"],
-    ):
-        subprocess.run(["git", "-C", str(project), *command], check=True, capture_output=True)
+    subprocess.run(
+        [
+            "git",
+            "clone",
+            "--no-hardlinks",
+            "--quiet",
+            str(Path(__file__).resolve().parents[2]),
+            str(project),
+        ],
+        check=True,
+        capture_output=True,
+    )
     arguments = [
         "neural-motor",
         "--train-samples",
@@ -58,10 +63,10 @@ def test_cli_train_verify_test_evaluation_and_dirty_guard(tmp_path: Path) -> Non
         str(project),
     ]
     (project / "uncommitted.txt").write_text("dirty")
-    failure = cli(*arguments)
+    failure = cli(*arguments, cwd=project)
     assert failure.returncode == 2 and "clean" in failure.stderr
     (project / "uncommitted.txt").unlink()
-    result = cli(*arguments)
+    result = cli(*arguments, cwd=project)
     assert result.returncode == 0, result.stderr
     artifact = json.loads(result.stdout)["artifact"]
     verify = cli("neural-verify", artifact)
@@ -81,3 +86,32 @@ def test_cli_train_verify_test_evaluation_and_dirty_guard(tmp_path: Path) -> Non
     )
     assert evaluate.returncode == 0, evaluate.stderr
     assert json.loads((tmp_path / "evaluation.json").read_text())["split"] == "test"
+
+
+def test_cli_cannot_claim_a_different_repository_revision(tmp_path: Path) -> None:
+    data = corpus(tmp_path / "data")
+    result = cli(
+        "neural-motor",
+        "--train-samples",
+        str(data["train"]),
+        "--validation-samples",
+        str(data["validation"]),
+        "--dataset-manifest",
+        str(data["manifest"]),
+        "--dataset-root",
+        str(data["root"]),
+        "--config",
+        str(data["config"]),
+        "--output",
+        str(tmp_path / "model"),
+        "--policy-version",
+        "test",
+        "--encoder-version",
+        "test",
+        "--encoder-license",
+        "MIT",
+        "--project-root",
+        str(tmp_path),
+    )
+    assert result.returncode == 2 and "actual clean source" in result.stderr
+    assert not (tmp_path / "model").exists()

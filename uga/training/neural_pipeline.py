@@ -11,6 +11,7 @@ import json
 import math
 import re
 import shutil
+import statistics
 import tempfile
 from dataclasses import asdict, replace
 from pathlib import Path
@@ -254,11 +255,28 @@ def _verified_neural_artifact(
         ):
             raise ContractViolation("neural checkpoint identity differs from artifact")
         config = NeuralTrainingConfig.load(root / "config.json")
+        if config.hidden_dim != model.hidden_dim:
+            raise ContractViolation("neural model dimensions differ from training config")
         dataset = DatasetManifest.load(root / "dataset-manifest.json")
         if dataset.source_revision != data["dataset_source_revision"]:
             raise ContractViolation("neural artifact dataset revision mismatch")
         train = load_motor_samples(root / "train.jsonl")
         validation = load_motor_samples(root / "validation.jsonl")
+        columns = tuple(zip(*(sample.features for sample in train), strict=True))
+        expected_statistics = (
+            tuple(statistics.fmean(c) for c in columns),
+            tuple(max(1e-6, statistics.pstdev(c)) for c in columns),
+            tuple(min(c) for c in columns),
+            tuple(max(c) for c in columns),
+        )
+        for stored, expected in zip(
+            (model.mean, model.scale, model.lower, model.upper), expected_statistics, strict=True
+        ):
+            if len(stored) != len(expected) or any(
+                not math.isclose(x, y, rel_tol=1e-12, abs_tol=1e-12)
+                for x, y in zip(stored, expected, strict=True)
+            ):
+                raise ContractViolation("neural normalization differs from train-only statistics")
         episode_splits = {e.episode_id: e.split for e in dataset.episodes}
         seen: set[tuple[str | None, str | None, str | None]] = set()
         for samples, split in ((train, DatasetSplit.TRAIN), (validation, DatasetSplit.VALIDATION)):
@@ -278,6 +296,7 @@ def _verified_neural_artifact(
             not isinstance(metrics, dict)
             or metrics.get("schema") != "uga.neural_motor_training"
             or metrics.get("stage") != "motor"
+            or metrics.get("seed") != config.seed
             or metrics.get("device") != config.device
             or metrics.get("source_revision") != data["source_revision"]
             or metrics.get("dataset_source_revision") != dataset.source_revision

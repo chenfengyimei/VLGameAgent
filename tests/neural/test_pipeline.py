@@ -200,3 +200,31 @@ def test_modified_metrics_with_updated_hash_rejected(tmp_path: Path) -> None:
     artifact.write_text(json.dumps(payload))
     with pytest.raises(ContractViolation, match="metrics do not match"):
         verify_neural_artifact(artifact)
+
+
+def test_normalization_is_recomputed_from_train_snapshot(tmp_path: Path) -> None:
+    data = corpus(tmp_path / "data")
+    artifact = run_train(data, tmp_path / "model")
+    path = artifact.parent / "model.json"
+    model = json.loads(path.read_text())
+    model["data"]["upper"] = [10.0, 10.0]
+    path.write_text(json.dumps(model))
+    payload = json.loads(artifact.read_text())
+    payload["files"]["model.json"] = sha256_file(path)
+    artifact.write_text(json.dumps(payload))
+    with pytest.raises(ContractViolation, match="train-only statistics"):
+        verify_neural_artifact(artifact)
+
+
+def test_inflated_confidence_is_rejected(tmp_path: Path) -> None:
+    data = corpus(tmp_path / "data")
+    artifact = run_train(data, tmp_path / "model")
+    path = artifact.parent / "model.json"
+    model = json.loads(path.read_text())
+    model["data"]["validation_reliability"] = 1.0
+    path.write_text(json.dumps(model))
+    payload = json.loads(artifact.read_text())
+    payload["files"]["model.json"] = sha256_file(path)
+    artifact.write_text(json.dumps(payload))
+    with pytest.raises(ContractViolation, match="confidence"):
+        verify_neural_artifact(artifact)
