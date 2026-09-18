@@ -83,3 +83,15 @@ and its CI artifacts, not an assumed future green result in this document.
 Rollback: stop the agent, then revert this batch or switch to a consistent prior
 revision. Do not alter original Episodes, reset safety latches in a live session
 or selectively mix old and new supervision modules.
+
+## Windows validation follow-up: fractional deadline precision
+
+Full Windows validation passed the repaired capture cadence but exposed an
+existing nested-budget assertion: a 0.2-second relative limit was returned as
+0.20000000000004547 after subtracting absolute monotonic timestamps. Both
+operation and model-call budgets now retain their original relative duration
+and deduct elapsed time directly, while still respecting the absolute cutoff.
+Explicit absolute deadlines and cancellation remain compatible. Five frozen-clock
+regressions test multiple uptimes, elapsed time, nested requests and cancellation
+without relaxing the original assertion or adding a rounding tolerance. This is
+a numerical contract/CI correction, not evidence of a material real-world delay.

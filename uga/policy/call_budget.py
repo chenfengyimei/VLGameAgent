@@ -30,7 +30,9 @@ class CallBudget:
             raise ContractViolation("decision deadline must be finite and positive")
         if type(max_requests) is not int or max_requests < 1:
             raise ContractViolation("decision request cap must be a positive integer")
-        self.deadline = time.monotonic() + timeout_s
+        self._started_at = time.monotonic()
+        self._duration = timeout_s
+        self.deadline = self._started_at + timeout_s
         self._cancelled = threading.Event()
         self._external_cancelled = cancelled
         self._requests = 0
@@ -38,7 +40,11 @@ class CallBudget:
         self._lock = threading.Lock()
 
     def remaining(self) -> float:
-        seconds = self.deadline - time.monotonic()
+        now = time.monotonic()
+        # Preserve the caller's relative upper bound as well as the absolute
+        # cutoff; floating-point timestamp subtraction must not grant time.
+        seconds = min(self.deadline - now, self._duration,
+                      self._duration - (now - self._started_at))
         if self._cancelled.is_set() or seconds <= 0:
             raise ProviderError(
                 ProviderErrorKind.TIMEOUT,
