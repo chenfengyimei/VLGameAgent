@@ -42,4 +42,3 @@ def digest_difference(before: bytes, after: bytes) -> float:
     if not before or len(before) != len(after):
         return 1.0
     return sum(a != b for a, b in zip(before, after, strict=True)) / len(before)
-
