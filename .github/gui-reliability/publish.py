@@ -6,8 +6,8 @@ import subprocess
 from pathlib import Path
 
 base='6dbaa640710874a9fd8b2bfacb345c6ae13e8f65'
-head='5553820f111b0cf22b66c70e394a1a2ec347d625'
-tree='93a44d1235d77cc6f4b39f15095229202880dc71'
+head='b0479606e500a884bbe6f55035a9e120b4f6b7c8'
+tree='fdc1b7c0c6a5abeb6aa73970a4d0768124731864'
 branch='fix/gui-reliability-20260918'
 env=os.environ.copy()
 auth=base64.b64encode(('x-access-token:'+env.pop('GH_TOKEN')).encode()).decode()

@@ -30,3 +30,18 @@ for commit in record['commits']:
 assert git('rev-parse', 'HEAD').decode().strip() == HEAD
 assert git('rev-parse', 'HEAD^{tree}').decode().strip() == TREE
 print('RESTORED', HEAD, TREE)
+
+# Follow-up isolated after the first Windows validation found budget rounding.
+extra_bytes = base64.b64decode(Path(__file__).with_name('extra.txt').read_text(), validate=True)
+assert hashlib.sha256(extra_bytes).hexdigest() == '5278d0d355db82874c02d0c6ee6f0703dbb20cb65c30308211ad2b9cb4989f9d'
+extra = json.loads(lzma.decompress(extra_bytes))
+assert extra['parent'] == HEAD
+assert extra['sha'] == 'b0479606e500a884bbe6f55035a9e120b4f6b7c8'
+assert extra['tree'] == 'fdc1b7c0c6a5abeb6aa73970a4d0768124731864'
+assert git('rev-parse', 'HEAD').decode().strip() == extra['parent']
+git('apply', '--index', '--binary', '-', data=extra['patch'].encode('utf-8'))
+assert git('write-tree').decode().strip() == extra['tree']
+created = git('hash-object', '-t', 'commit', '-w', '--stdin', data=extra['commit'].encode('utf-8'))
+assert created.decode().strip() == extra['sha']
+git('reset', '--hard', extra['sha'])
+print('RESTORED_FINAL', extra['sha'], extra['tree'])

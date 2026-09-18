@@ -47,7 +47,7 @@ for attempt in range(3):
     run(f'gui-regression-{attempt+1}', [py,'-m','pytest','-q',
         'tests/unit/test_capture_cadence.py','tests/unit/test_capture_hub.py',
         'tests/unit/test_gui_effect_evidence.py','tests/integration/test_gui_final_state.py',
-        'tests/integration/test_gui_model_roundtrip.py',
+        'tests/integration/test_gui_model_roundtrip.py','tests/unit/test_deadline_precision.py',
         f'--junitxml={evidence / ("gui-regression-"+str(attempt+1)+".xml")}'])
 run('agent-smoke',[py,'-m','apps.agent'])
 run('fixture-smoke',[py,'-m','apps.example_game','--headless-smoke'])
