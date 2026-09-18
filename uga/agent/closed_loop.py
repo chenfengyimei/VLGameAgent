@@ -47,6 +47,7 @@ from uga.perception.schema import (
     NormalizedBox,
     PerceptionSnapshot,
     PlannerOutcome,
+    TextRegion,
     WaitReason,
 )
 from uga.policy.decision_journal import DecisionJournal, DecisionRecord
@@ -411,15 +412,51 @@ class ActionValidator:
                     return False, "target no longer exists at the grounded OCR region"
                 if grounding == "conflict":
                     return False, "OCR and model target grounding conflict"
-            for element in fresh_snapshot.ui_elements:
-                if (
-                    action.target_box.intersection_ratio(element.box) >= 0.35
-                    and normalize_visible_text(action.target_label)
-                    in normalize_visible_text(element.label)
-                    and not element.enabled
-                ):
-                    return False, "grounded UI element is disabled"
+            if self._disabled_target(action, fresh_snapshot):
+                return False, "grounded UI element at the landing point is disabled"
         return True, "grounded action validated on the latest frame"
+
+    @staticmethod
+    def _disabled_target(action: GroundedAction, snapshot: PerceptionSnapshot) -> bool:
+        if action.target_box is None:
+            return False
+        # Disabled state belongs to the actual control under the pointer, not
+        # the model's label or the area ratio of a possibly oversized model box.
+        point = resolved_click_point(action)
+        return any(
+            element.confidence >= 0.65 and not element.enabled and element.box.contains(point)
+            for element in snapshot.ui_elements
+        )
+
+    @classmethod
+    def validate_fresh_target(
+        cls, action: GroundedAction, assessed: PerceptionSnapshot,
+        current: PerceptionSnapshot,
+    ) -> tuple[bool, str]:
+        """Recheck deterministic target state after a potentially slow verifier.
+
+        This does not grant authority or re-run a model. Prior approval cannot
+        override a newly disabled control or contradictory local OCR evidence.
+        """
+        if action.target_box is None:
+            return True, "no pointer target to revalidate"
+        if cls._disabled_target(action, current):
+            return False, "latest UI element at the landing point is disabled"
+        before = cls._ocr_target_grounding(action, assessed)
+        after = cls._ocr_target_grounding(action, current)
+        if before == "match" and after != "match":
+            return False, "target text changed or disappeared after supervision"
+        if after == "conflict":
+            box = action.target_box
+
+            def local_text(snapshot: PerceptionSnapshot) -> tuple[TextRegion, ...]:
+                return tuple(region for region in snapshot.visible_text if max(
+                    box.intersection_ratio(region.box), region.box.intersection_ratio(box)
+                ) >= 0.35)
+
+            if before != "conflict" or local_text(assessed) != local_text(current):
+                return False, "latest OCR conflicts with the supervised target"
+        return True, "target state still matches supervision"
 
     @staticmethod
     def _ocr_target_grounding(
