@@ -1067,9 +1067,9 @@ class GroundedVlmTests(unittest.TestCase):
         self.assertAlmostEqual(center.y, 0.71, places=3)
         self.assertEqual(client.calls, [])
 
-    def test_review_story_cue_alone_falls_back_to_model(self) -> None:
-        # 回顾剧情 sidebar alone identifies the dialogue screen but has no
-        # advance zone: without the countdown the model decides.
+    def test_review_story_cue_advances_using_the_configured_hotspot(self) -> None:
+        # 回顾剧情 sidebar identifies the dialogue screen, but is never the
+        # click target itself: the user-confirmed lower-right hotspot advances.
         client = _Client([_reply("wait")])
         current = replace(
             _snapshot(),
@@ -1090,16 +1090,18 @@ class GroundedVlmTests(unittest.TestCase):
             max_target_crops=0,
             compact_output=True,
             prefer_ocr_task_panel=True,
+            dialogue_hotspot=(0.96, 0.915),
         ).decide(
             snapshot=current,
             frames=(_large_frame(100),),
             goal="持续推进剧情",
         )
 
-        self.assertEqual(outcome.kind, DecisionKind.WAIT)
-        self.assertEqual(len(client.calls), 1)
+        self.assertEqual(outcome.kind, DecisionKind.ACT)
+        self.assertEqual(outcome.action.target_label, "ui_dialogue_advance")  # type: ignore[union-attr]
+        self.assertEqual(client.calls, [])
 
-    def test_dialogue_choice_without_review_story_label_falls_back_to_model(self) -> None:
+    def test_little_dragon_rescue_choice_advances_without_review_story_label(self) -> None:
         client = _Client([_reply("wait")])
         choice_box = NormalizedBox(0.69, 0.69, 0.78, 0.74)
         current = replace(
@@ -1127,9 +1129,9 @@ class GroundedVlmTests(unittest.TestCase):
             goal="持续推进剧情",
         )
 
-        self.assertEqual(outcome.kind, DecisionKind.WAIT)
-        self.assertIsNone(outcome.action)
-        self.assertEqual(len(client.calls), 1)
+        self.assertEqual(outcome.kind, DecisionKind.ACT)
+        self.assertEqual(outcome.action.target_label, "拯救小龙")  # type: ignore[union-attr]
+        self.assertEqual(client.calls, [])
 
     def test_hold_prompt_uses_long_click(self) -> None:
         client = _Client([_reply("wait")])

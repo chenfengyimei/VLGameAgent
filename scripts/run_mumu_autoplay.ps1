@@ -4,19 +4,24 @@ param(
     [string]$Model = "glm-4.6v",
     [string]$BaseUrl = "https://open.bigmodel.cn/api/paas/v4",
     [int]$DashboardPort = 8787,
-    [int]$RestartDelaySeconds = 15,
+    [int]$RestartDelaySeconds = 5,
     [int]$ModelContextLength = 8192,
-    [int]$VisionTimeoutSeconds = 60,
-    [int]$DecisionTimeoutSeconds = 60,
+    [int]$VisionTimeoutSeconds = 15,
+    [int]$DecisionTimeoutSeconds = 35,
+    [int]$WatchdogTimeoutSeconds = 60,
+    [int]$ExecutionFrameAgeMs = 30000,
     [int]$MaxOutputTokens = 0,
-    [int]$MaxRestarts = 10,
+    # Zero means unlimited transient-crash restarts. Permanent provider
+    # failures and the emergency stop still terminate immediately.
+    [int]$MaxRestarts = 0,
+    [ValidateRange(0.5, 30.0)][double]$DecisionIntervalSeconds = 1.0,
     [ValidateSet("model-first", "rules-first")]
-    [string]$GuiPlanningMode = "model-first",
+    [string]$GuiPlanningMode = "rules-first",
     [ValidateSet("unit", "normalized_1000")]
     [string]$GuiCoordinateSpace = "normalized_1000",
-    [ValidateRange(320, 1280)][int]$ImageWidth = 960,
+    [ValidateRange(320, 1280)][int]$ImageWidth = 640,
     [ValidateRange(1, 3)][int]$TemporalFrames = 1,
-    [ValidateRange(0, 2)][int]$TargetCrops = 1
+    [ValidateRange(0, 2)][int]$TargetCrops = 0
 )
 
 $ErrorActionPreference = "Stop"
@@ -30,16 +35,19 @@ if ($RestartDelaySeconds -lt 1) {
 if ($ModelContextLength -lt 2048) {
     throw "ModelContextLength must be at least 2048"
 }
-if ($VisionTimeoutSeconds -lt 30) {
-    throw "VisionTimeoutSeconds must be at least 30"
+if ($VisionTimeoutSeconds -lt 5) {
+    throw "VisionTimeoutSeconds must be at least 5"
 }
 
 if ($DecisionTimeoutSeconds -lt 1 -or $MaxRestarts -lt 0) {
     throw "DecisionTimeoutSeconds must be positive and MaxRestarts non-negative"
 }
+if ($WatchdogTimeoutSeconds -lt ($DecisionTimeoutSeconds + 15)) {
+    throw "WatchdogTimeoutSeconds must exceed DecisionTimeoutSeconds by at least 15 seconds"
+}
 $requiresThinking = $Model -match '(?i)(^|/)glm-5\.3(-flash)?$'
 if ($MaxOutputTokens -eq 0) {
-    $MaxOutputTokens = if ($requiresThinking) { 4096 } else { 1024 }
+    $MaxOutputTokens = if ($requiresThinking) { 4096 } else { 256 }
 }
 if ($MaxOutputTokens -lt 64 -or $MaxOutputTokens -gt 16384) {
     throw "MaxOutputTokens must be within [64, 16384]"
@@ -188,10 +196,12 @@ $agentArgs = @(
     "--goal", $goal,
     "--vlm-base-url", $BaseUrl,
     "--vlm-model", $Model,
-    "--vlm-decision-interval", "3",
+    "--vlm-decision-interval", "$DecisionIntervalSeconds",
     "--vlm-timeout-seconds", "$VisionTimeoutSeconds",
     "--vlm-max-output-tokens", "$MaxOutputTokens",
     "--decision-timeout-seconds", "$DecisionTimeoutSeconds",
+    "--watchdog-timeout-seconds", "$WatchdogTimeoutSeconds",
+    "--execution-frame-age-ms", "$ExecutionFrameAgeMs",
     "--vlm-temporal-frames", "$TemporalFrames",
     "--vlm-image-width", "$ImageWidth",
     "--vlm-target-crops", "$TargetCrops",
@@ -222,8 +232,8 @@ Write-SupervisorLog "Starting supervisor loop (crash-restart + window rediscover
 # NativeCommandError records; with ErrorActionPreference = Stop that kills
 # the launcher on the first stderr line. Relax it around the agent pipe.
 $ErrorActionPreference = "Continue"
-# F06: crash restarts are bounded — exponential backoff with jitter, a hard
-# attempt cap, and a process-lifetime attempt cap.
+# Transient crashes restart indefinitely by default with bounded backoff.
+# Operators can still provide a positive MaxRestarts for a finite run.
 $restartCount = 0
 $delaySeconds = $RestartDelaySeconds
 while ($true) {
@@ -253,12 +263,15 @@ while ($true) {
         $delaySeconds = $RestartDelaySeconds
     }
     $restartCount += 1
-    if ($restartCount -gt $maxRestarts) {
+    if ($MaxRestarts -gt 0 -and $restartCount -gt $MaxRestarts) {
         Write-SupervisorLog "Restart budget exhausted ($MaxRestarts total crashes); supervisor standing down"
         exit 1
     }
     $jitter = Get-Random -Minimum 0 -Maximum 3
-    Write-SupervisorLog "Restarting agent in $delaySeconds seconds after a crash (attempt $restartCount/$maxRestarts)"
+    $restartBudgetLabel = if ($MaxRestarts -eq 0) { "unlimited" } else { "$MaxRestarts" }
+    Write-SupervisorLog "Restarting agent in $delaySeconds seconds after a crash (attempt $restartCount/$restartBudgetLabel)"
     Start-Sleep -Seconds ($delaySeconds + $jitter)
-    $delaySeconds = [Math]::Min($delaySeconds * 2, 300)
+    # A transient provider or capture failure must not make the supposedly
+    # continuous supervisor disappear for several minutes.
+    $delaySeconds = [Math]::Min($delaySeconds * 2, 30)
 }

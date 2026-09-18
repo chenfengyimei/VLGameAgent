@@ -53,6 +53,8 @@ _DIALOGUE_CUES = ("秒后自动继续", "回顾剧情")
 _LEVEL_TARGET_RE = re.compile(r"达到\s*(\d+)\s*级")
 _PAGE_LEVEL_RE = re.compile(r"等级\D{0,3}(\d+)")
 _QUEST_PROGRESS_RE = re.compile(r"\d+/\d+")
+_CHARACTER_NAME_LENGTH_RE = re.compile(r"([1-7])\s*[/／]\s*7")
+_ONBOARDING_HOSTILE_CUES = ("黑衣人", "恶灵")
 _LOADING_CUES = ("加载中", "正在加载", "loading")
 _POPUP_CUES = ("确定", "领取", "关闭")
 _TITLE_BAND_MAX_CENTER_X = 0.30
@@ -107,6 +109,237 @@ def quest_is_market_task(quest_text: str | None) -> bool:
     if not quest_text:
         return False
     return _MARKET_TASK_RE.search(quest_text) is not None
+
+
+def character_creation_name_prompt_active(regions: Iterable[TextRegion]) -> bool:
+    """Whether the initial character-name dialog is visible.
+
+    This is deliberately narrower than a generic ``确定`` dialog.  It keeps
+    the onboarding fast path from confirming an empty character name just
+    because the generic progress-control rule sees a button with that label.
+    """
+    return any(
+        normalize_visible_text(region.text) == "请输入名字" and region.confidence >= 0.85
+        for region in regions
+    )
+
+
+def character_creation_control(
+    regions: Iterable[TextRegion],
+) -> tuple[str, TextRegion] | None:
+    """Return the one verified control for the recorded 仙遇 onboarding flow.
+
+    A match requires both the page's title anchor and its lower-screen button
+    in the same latest OCR snapshot.  The name-confirmation step additionally
+    requires a nonzero ``N/7`` character counter, so the agent never confirms
+    an empty name field.  Unknown variants fall through to the VLM instead of
+    being treated as this deterministic flow.
+    """
+    visible = tuple(regions)
+
+    def has_title(title: str) -> bool:
+        return any(
+            normalize_visible_text(region.text) == title and region.confidence >= 0.85
+            for region in visible
+        )
+
+    def lower_button(label: str) -> TextRegion | None:
+        matches = [
+            region
+            for region in visible
+            if normalize_visible_text(region.text) == label
+            and region.confidence >= 0.85
+            and region.box.center.x >= 0.45
+            and region.box.center.y >= 0.60
+        ]
+        if not matches:
+            return None
+        return max(matches, key=lambda region: region.confidence)
+
+    if has_title("创角"):
+        button = lower_button("定制细节")
+        if button is not None:
+            return "customize", button
+    if has_title("选择预设"):
+        button = lower_button("开启仙途")
+        if button is not None:
+            return "start", button
+    if has_title("请输入名字") and any(
+        (match := _CHARACTER_NAME_LENGTH_RE.fullmatch(region.text.strip()))
+        and int(match.group(1)) > 0
+        and region.confidence >= 0.85
+        for region in visible
+    ):
+        button = lower_button("确定")
+        if button is not None:
+            return "confirm_name", button
+    return None
+
+
+def onboarding_joystick_tutorial_active(regions: Iterable[TextRegion]) -> bool:
+    """Whether the first-world movement tutorial explicitly asks for the stick.
+
+    The virtual stick itself is graphical, so it cannot be OCR-grounded like a
+    normal button.  Its calibrated drag is permitted only while the game's
+    own ``滑动摇杆可以移动`` teaching cue is visible in the latest frame.
+    """
+    return any(
+        "滑动摇杆可以移动" in normalize_visible_text(region.text)
+        and region.confidence >= 0.85
+        for region in regions
+    )
+
+
+def invasion_task_navigation_target(regions: Iterable[TextRegion]) -> TextRegion | None:
+    """The left main-quest line that starts the recorded 黑衣人 encounter.
+
+    The task line itself is the game's auto-navigation control.  It is only
+    used before enemies appear, so combat frames do not keep reopening the
+    tracker instead of using the combat rule.
+    """
+    visible = tuple(regions)
+    has_main_quest = any(
+        normalize_visible_text(region.text) == "主线"
+        and region.confidence >= 0.85
+        and region.box.center.x <= 0.30
+        and 0.10 <= region.box.center.y <= 0.35
+        for region in visible
+    )
+    enemies_visible = any(
+        any(cue in normalize_visible_text(region.text) for cue in _ONBOARDING_HOSTILE_CUES)
+        and region.confidence >= 0.85
+        and 0.30 <= region.box.center.x <= 0.75
+        and 0.18 <= region.box.center.y <= 0.70
+        for region in visible
+    )
+    if not has_main_quest or enemies_visible:
+        return None
+    candidates = [
+        region
+        for region in visible
+        if region.confidence >= 0.85
+        and region.box.center.x <= 0.35
+        and 0.15 <= region.box.center.y <= 0.45
+        and (
+            "入侵袭击" in normalize_visible_text(region.text)
+            or "击败这些不速之客" in normalize_visible_text(region.text)
+        )
+    ]
+    return max(candidates, key=lambda region: region.confidence) if candidates else None
+
+
+def invasion_group_attack_control(regions: Iterable[TextRegion]) -> TextRegion | None:
+    """The 群攻 skill for the recorded 黑衣人/恶灵 main-quest encounters."""
+    visible = tuple(regions)
+    invasion_task_active = any(
+        "入侵袭击" in normalize_visible_text(region.text)
+        or "击败这些不速之客" in normalize_visible_text(region.text)
+        for region in visible
+    )
+    enemy_visible = any(
+        any(cue in normalize_visible_text(region.text) for cue in _ONBOARDING_HOSTILE_CUES)
+        and region.confidence >= 0.85
+        and 0.30 <= region.box.center.x <= 0.75
+        and 0.18 <= region.box.center.y <= 0.70
+        for region in visible
+    )
+    if not invasion_task_active or not enemy_visible:
+        return None
+    skills = [
+        region
+        for region in visible
+        if normalize_visible_text(region.text) == "群攻"
+        and region.confidence >= 0.85
+        and 0.55 <= region.box.center.x <= 0.90
+        and 0.70 <= region.box.center.y <= 0.98
+    ]
+    return max(skills, key=lambda region: region.confidence) if skills else None
+
+
+def auto_navigation_active(regions: Iterable[TextRegion]) -> bool:
+    """Whether the game is already carrying the character to a quest target."""
+    return any(
+        "自动寻路中" in normalize_visible_text(region.text) and region.confidence >= 0.85
+        for region in regions
+    )
+
+
+def cutscene_skip_control(regions: Iterable[TextRegion]) -> TextRegion | None:
+    """Return the recorded top-right cutscene skip control, if it is present.
+
+    ``跳过`` is a common word, so it is not enough to match its OCR text.  The
+    recorded control is a short, high-confidence label at the *upper right of
+    the game client*, beneath MuMu's protected title strip.  This deliberately
+    rejects ordinary in-game text and anything in the emulator chrome.
+    """
+    candidates = [
+        region
+        for region in regions
+        if normalize_visible_text(region.text) == "跳过"
+        and region.confidence >= 0.85
+        and region.box.center.x >= 0.85
+        and 0.065 <= region.box.center.y <= 0.20
+    ]
+    return max(candidates, key=lambda region: region.confidence) if candidates else None
+
+
+def dialogue_review_visible(regions: Iterable[TextRegion]) -> bool:
+    """Recognize the dialogue scene from its left-side ``回顾剧情`` affordance.
+
+    The review button is an anchor only: clicking it would leave the dialogue.
+    A separately user-confirmed lower-right hotspot advances the dialogue.
+    """
+    return any(
+        "回顾剧情" in normalize_visible_text(region.text)
+        and region.confidence >= 0.85
+        and region.box.center.x <= 0.15
+        and 0.25 <= region.box.center.y <= 0.70
+        for region in regions
+    )
+
+
+def rescue_little_dragon_choice(regions: Iterable[TextRegion]) -> TextRegion | None:
+    """Return the confirmed rescue choice shown in the 小青龙 dialogue."""
+    candidates = [
+        region
+        for region in regions
+        if normalize_visible_text(region.text) == "拯救小龙"
+        and region.confidence >= 0.85
+        and region.box.center.x >= 0.60
+        and 0.60 <= region.box.center.y <= 0.90
+    ]
+    return max(candidates, key=lambda region: region.confidence) if candidates else None
+
+
+def little_dragon_healing_active(regions: Iterable[TextRegion]) -> bool:
+    """Whether the recorded central 小青龙 healing interaction is on screen.
+
+    The creature is graphical and therefore uses a calibrated hotspot.  Both
+    independent OCR anchors are required so the same central point cannot be
+    clicked on an ordinary world or dialogue screen.
+    """
+    visible = tuple(regions)
+    return any(
+        "拯救重伤的小青龙" in normalize_visible_text(region.text)
+        and region.confidence >= 0.85
+        for region in visible
+    ) and any(
+        "传功疗伤" in normalize_visible_text(region.text)
+        and region.confidence >= 0.85
+        for region in visible
+    )
+
+
+def narrative_continue_control(regions: Iterable[TextRegion]) -> TextRegion | None:
+    """Return a lower-screen ``点击任意处继续`` story-completion control."""
+    candidates = [
+        region
+        for region in regions
+        if "点击任意处继续" in normalize_visible_text(region.text)
+        and region.confidence >= 0.85
+        and region.box.center.y >= 0.70
+    ]
+    return max(candidates, key=lambda region: region.confidence) if candidates else None
 
 
 def find_xiuxian_path_quest_line(regions: Iterable[TextRegion]) -> TextRegion | None:

@@ -134,6 +134,25 @@ class ProviderExitTests(unittest.TestCase):
             self.assertEqual(_run_safely(argparse.Namespace()), 78)
         self.assertNotIn("provider body", stderr.getvalue())
 
+    def test_retired_timeout_worker_requests_process_restart(self) -> None:
+        error = ExceptionGroup(
+            "agent task failed",
+            [
+                ProviderError(
+                    ProviderErrorKind.TIMEOUT,
+                    "decision worker retired",
+                    fatal=True,
+                )
+            ],
+        )
+        stderr = io.StringIO()
+        with (
+            patch("apps.agent.__main__._run", side_effect=error),
+            patch("sys.stderr", stderr),
+        ):
+            self.assertEqual(_run_safely(argparse.Namespace()), 1)
+        self.assertIn("restartable", stderr.getvalue())
+
     def test_unrelated_failures_are_not_swallowed(self) -> None:
         with (
             patch("apps.agent.__main__._run", side_effect=RuntimeError("unexpected")),

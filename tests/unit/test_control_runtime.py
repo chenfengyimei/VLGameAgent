@@ -33,6 +33,7 @@ class FakeWindows:
     def __init__(self, target: WindowIdentity) -> None:
         self.target = target
         self.foreground: int | None = target.hwnd
+        self.foreground_requests: list[int] = []
 
     def discover(self, *, executable_name: str | None = None) -> tuple[WindowSnapshot, ...]:
         del executable_name
@@ -53,6 +54,13 @@ class FakeWindows:
 
     def foreground_hwnd(self) -> int | None:
         return self.foreground
+
+    def request_foreground(self, hwnd: int) -> bool:
+        self.foreground_requests.append(hwnd)
+        if hwnd != self.target.hwnd:
+            return False
+        self.foreground = hwnd
+        return True
 
 
 class FakeIntegrity:
@@ -308,6 +316,22 @@ class ControlRuntimeTests(unittest.TestCase):
         )
         self.windows.foreground = 999
         self.assertEqual(self.scheduler.tick().flushed, 1)
+
+    def test_focus_guard_can_restore_validated_target_for_unattended_run(self) -> None:
+        self.windows.foreground = 999
+        guard = FocusGuard(
+            self.windows,
+            self.integrity,
+            self.leases,
+            self.enabled,
+            restore_foreground=True,
+        )
+
+        decision = guard.check(self.target, self.lease)
+
+        self.assertTrue(decision.allowed)
+        self.assertEqual(decision.reason, GuardReason.ALLOWED)
+        self.assertEqual(self.windows.foreground_requests, [self.target.hwnd])
 
     def test_focus_guard_fails_closed_on_integrity_mismatch(self) -> None:
         self.integrity.target = IntegrityLevel.HIGH

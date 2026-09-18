@@ -55,6 +55,7 @@ from uga.perception.visual_digest import digest_difference as _digest_difference
 from uga.perception.visual_digest import region_digest
 from uga.policy.decision_journal import DecisionJournal, DecisionRecord
 from uga.safety.action_gate import (
+    deterministic_context_consistent,
     generations_consistent,
     is_trusted_deterministic_source,
     point_is_clickable,
@@ -372,14 +373,15 @@ class ActionValidator:
             # just the box center: a nonzero pointer offset can move an
             # otherwise safe center into a forbidden strip.
             final_point = resolved_click_point(action)
+            points = (center, final_point) if action.kind == GuiActionKind.DRAG else (final_point,)
             for region in self._profile.no_click_regions:
                 blocked = NormalizedBox(*region)
-                if blocked.contains(center) or blocked.contains(final_point):
+                if blocked.contains(center) or any(blocked.contains(point) for point in points):
                     return False, "target click point is inside a configured no-click region"
-            if decoy_click_blocked(
-                fresh_snapshot.visible_text, (final_point.x, final_point.y)
-            ) or decoy_click_blocked(
-                decided_snapshot.visible_text, (final_point.x, final_point.y)
+            if any(
+                decoy_click_blocked(fresh_snapshot.visible_text, (point.x, point.y))
+                or decoy_click_blocked(decided_snapshot.visible_text, (point.x, point.y))
+                for point in points
             ):
                 # 广告/运营诱饵横幅（首充礼包、新服冲榜、商城福利…）：无论
                 # 模型给它们贴什么标签，落在诱饵文字上的点击一律拒绝。
@@ -398,7 +400,7 @@ class ActionValidator:
                 and action.confidence >= _VISUAL_CLICK_MIN_CONFIDENCE
                 and action.kind in {GuiActionKind.CLICK, GuiActionKind.DOUBLE_CLICK,
                                     GuiActionKind.RIGHT_CLICK, GuiActionKind.LONG_CLICK,
-                                    GuiActionKind.SCROLL}
+                                    GuiActionKind.DRAG, GuiActionKind.SCROLL}
             )
             # A high-confidence icon is not exempt from visual freshness.
             if (self._target_changed(action.target_box, decided_frame, fresh_frame)
@@ -531,6 +533,8 @@ class ClosedLoopSupervisor:
         back_hotspot: tuple[float, float] | None = None,
         close_hotspot: tuple[float, float] | None = None,
         promote_hotspot: tuple[float, float] | None = None,
+        dialogue_hotspot: tuple[float, float] | None = None,
+        little_dragon_heal_hotspot: tuple[float, float] | None = None,
         available_keys: frozenset[str] | None = None,
         session: GameSessionState | None = None,
         journal: DecisionJournal | None = None,
@@ -549,6 +553,8 @@ class ClosedLoopSupervisor:
             ("back", back_hotspot),
             ("close", close_hotspot),
             ("promote", promote_hotspot),
+            ("dialogue", dialogue_hotspot),
+            ("little-dragon heal", little_dragon_heal_hotspot),
         ):
             if hotspot is not None and (
                 len(hotspot) != 2
@@ -599,6 +605,26 @@ class ClosedLoopSupervisor:
             None
             if self._promote_hotspot is None
             else _hotspot_box(self._promote_hotspot)
+        )
+        if dialogue_hotspot is None:
+            self._dialogue_hotspot: tuple[float, float] | None = None
+        else:
+            dialogue_x, dialogue_y = dialogue_hotspot
+            self._dialogue_hotspot = (float(dialogue_x), float(dialogue_y))
+        self._dialogue_box = (
+            None
+            if self._dialogue_hotspot is None
+            else _hotspot_box(self._dialogue_hotspot)
+        )
+        if little_dragon_heal_hotspot is None:
+            self._little_dragon_heal_hotspot: tuple[float, float] | None = None
+        else:
+            heal_x, heal_y = little_dragon_heal_hotspot
+            self._little_dragon_heal_hotspot = (float(heal_x), float(heal_y))
+        self._little_dragon_heal_box = (
+            None
+            if self._little_dragon_heal_hotspot is None
+            else _hotspot_box(self._little_dragon_heal_hotspot)
         )
         self._available_keys = available_keys
         self._session = session
@@ -1069,7 +1095,13 @@ class ClosedLoopSupervisor:
                 "real-name registration gate: standing by for the owner",
                 outcome,
             )
-        consistent, _ = generations_consistent(outcome, decided_snapshot, fresh_snapshot)
+        trusted_deterministic = is_trusted_deterministic_source(decision_source)
+        consistency_check = (
+            deterministic_context_consistent
+            if trusted_deterministic
+            else generations_consistent
+        )
+        consistent, _ = consistency_check(outcome, decided_snapshot, fresh_snapshot)
         if not consistent:
             self._stale_results_discarded += 1
             return SupervisedDecision(
@@ -1084,6 +1116,16 @@ class ClosedLoopSupervisor:
             # WAIT here never escalates to an automatic recovery click.
             return SupervisedDecision(DecisionDisposition.WAIT, sensitive.reason, outcome)
         recovery = self._pending_recovery
+        if (
+            recovery == RecoveryDirective.BACK
+            and not self._visual_back_recovery_allowed()
+        ):
+            # The top-left calibrated point is a page back ribbon only on an
+            # identified feature page. In the world/combat HUD the same point
+            # is the portrait, so an armed generic recovery must be cancelled.
+            self._pending_recovery = None
+            self._recovery_in_progress = None
+            recovery = None
         recovering_high_resolution = recovery == RecoveryDirective.HIGH_RESOLUTION
         if recovering_high_resolution:
             self._pending_recovery = None
@@ -1254,6 +1296,15 @@ class ClosedLoopSupervisor:
             return self._retry_or_block(outcome, "planner did not identify a safe action")
         assert outcome.action is not None
         if (
+            self._is_back_intent(outcome.action)
+            and not self._visual_exit_intent_allowed(outcome.action)
+        ):
+            return SupervisedDecision(
+                DecisionDisposition.REOBSERVE,
+                "visual exit suppressed outside an identified feature page or popup",
+                outcome,
+            )
+        if (
             self._available_keys is not None
             and outcome.action.kind in {GuiActionKind.KEY, GuiActionKind.HOTKEY}
             and outcome.action.key not in self._available_keys
@@ -1265,6 +1316,44 @@ class ClosedLoopSupervisor:
                 outcome,
                 f"grounded key has no confirmed binding: {outcome.action.key}",
             )
+        if trusted_deterministic:
+            # Local rules have already matched their complete page anchors and
+            # produced a concrete action without model latency.  Do not route
+            # them through model-oriented pixel stability, repeated-action,
+            # goal-target, or secondary-verifier gates: those checks caused
+            # correct 0 ms decisions to be logged forever without ever reaching
+            # SendInput.  Retain only the essential physical/sensitive gates.
+            consistent, _ = deterministic_context_consistent(
+                outcome, decided_snapshot, fresh_snapshot
+            )
+            if not consistent:
+                self._stale_results_discarded += 1
+                return SupervisedDecision(
+                    DecisionDisposition.REOBSERVE,
+                    "deterministic rule physical context became stale",
+                    outcome,
+                )
+            if outcome.action.target_box is not None:
+                points = (resolved_click_point(outcome.action),)
+                if outcome.action.kind == GuiActionKind.DRAG:
+                    points = (outcome.action.target_box.center, *points)
+                for point in points:
+                    verdict = point_is_clickable(
+                        point,
+                        no_click_regions=self._profile.no_click_regions,
+                        decided_text=decided_snapshot.visible_text,
+                        fresh_text=fresh_snapshot.visible_text,
+                    )
+                    if not verdict.allowed:
+                        return SupervisedDecision(
+                            DecisionDisposition.REOBSERVE, verdict.reason, outcome
+                        )
+            self._uncertain_retries = 0
+            return SupervisedDecision(
+                DecisionDisposition.EXECUTE,
+                "deterministic OCR rule fast-tracked after essential guards",
+                outcome,
+            )
         if not recovering_high_resolution and self._should_escape_repeated_action(
             outcome.action
         ):
@@ -1272,10 +1361,14 @@ class ClosedLoopSupervisor:
             # navigation shortcut. The common path consumes the shared budget.
             self._last_started_action_semantic_key = None
             self._consecutive_same_started_action = 0
-            return self._advance_loop_recovery(
-                outcome,
-                "same non-progress control was executed twice; leaving the panel to re-observe",
-            )
+            if self._visual_back_recovery_allowed():
+                return self._advance_loop_recovery(
+                    outcome,
+                    "same non-progress control was executed twice; leaving the panel to re-observe",
+                )
+            # Repeated combat/world controls may be legitimate (for example a
+            # skill used until an enemy dies). Continue normal validation;
+            # never reinterpret them as permission to click the portrait.
         if (
             self._goal_action_target is not None
             and not self._matches_goal_action_target(outcome.action)
@@ -1297,47 +1390,7 @@ class ClosedLoopSupervisor:
                 "single-step navigation target already produced an effect; refusing repeat",
                 outcome,
             )
-        if (
-            outcome.action.target_label in {"ui_back", "ui_close", "ui_promote"}
-            and outcome.action.target_box is not None
-            and (
-                self._back_hotspot is not None
-                or self._close_hotspot is not None
-                or self._promote_hotspot is not None
-            )
-            and is_trusted_deterministic_source(decision_source)
-            and not self._verify_all_actions
-        ):
-            # A reserved label is display text, not a permission: it only
-            # reaches this deterministic branch when trusted runtime rule code
-            # assigned the outcome (an ocr_* fast path).  Even then the shared
-            # generation guard and the final-point gate apply — a recreated
-            # window or a forbidden landing point still rejects the click.
-            consistent, generation_reason = generations_consistent(
-                outcome, decided_snapshot, fresh_snapshot
-            )
-            if not consistent:
-                self._stale_results_discarded += 1
-                return SupervisedDecision(
-                    DecisionDisposition.REOBSERVE,
-                    "stale decision discarded; observing the current generation",
-                    outcome,
-                )
-            verdict = point_is_clickable(
-                resolved_click_point(outcome.action),
-                no_click_regions=self._profile.no_click_regions,
-                decided_text=decided_snapshot.visible_text,
-                fresh_text=fresh_snapshot.visible_text,
-            )
-            if not verdict.allowed:
-                return self._retry_or_block(outcome, verdict.reason)
-            self._uncertain_retries = 0
-            return SupervisedDecision(
-                DecisionDisposition.EXECUTE,
-                "deterministic exit control executed without OCR grounding",
-                outcome,
-            )
-        if (self._allow_calibrated_intents and not self._verify_all_actions
+        if (not self._verify_all_actions
                 and self._is_back_intent(outcome.action)):
             # Graphical back/close controls carry no OCR text, so model boxes
             # on them can never pass OCR grounding and would block-loop the
@@ -1345,7 +1398,10 @@ class ClosedLoopSupervisor:
             # confirmed calibrated hotspots instead (alternating as attempts
             # fail; same trust level as recovery).  The model's own box is
             # never executed, and the shared generation and final-point gates
-            # still apply to the routed click.
+            # still apply to the routed click.  This routing is independent of
+            # the planning mode: it never executes the model's box, so a
+            # model-first run must not lose it (without it a graphical close
+            # button grounds as a conflict and blocks the cycle).
             consistent, generation_reason = generations_consistent(
                 outcome, decided_snapshot, fresh_snapshot
             )
@@ -1385,7 +1441,11 @@ class ClosedLoopSupervisor:
             )
         assert outcome.action is not None
         key = self._action_key(outcome.action)
-        if recovering_high_resolution and key == self._last_failed_action_key:
+        if (
+            recovering_high_resolution
+            and key == self._last_failed_action_key
+            and self._visual_back_recovery_allowed()
+        ):
             return self._advance_loop_recovery(
                 outcome, "high-resolution recovery repeated the failed action"
             )
@@ -1792,12 +1852,27 @@ class ClosedLoopSupervisor:
             )
         assert action.target_box is not None
         center = action.target_box.center
+        end_x = None
+        end_y = None
+        if action.kind == GuiActionKind.DRAG:
+            # Grounded drag offsets describe the endpoint relative to the
+            # visual control's center.  Click offsets keep their usual
+            # landing-point meaning; this avoids expanding the model schema
+            # with ungrounded drag endpoints.
+            end_x = min(1.0, max(0.0, center.x + action.pointer_offset_x))
+            end_y = min(1.0, max(0.0, center.y + action.pointer_offset_y))
         return GuiAction(
             f"grounded-{outcome.decision_id[:12]}",
             action.kind,
             lifetime,
-            x=min(1.0, max(0.0, center.x + action.pointer_offset_x)),
-            y=min(1.0, max(0.0, center.y + action.pointer_offset_y)),
+            x=center.x if action.kind == GuiActionKind.DRAG else min(
+                1.0, max(0.0, center.x + action.pointer_offset_x)
+            ),
+            y=center.y if action.kind == GuiActionKind.DRAG else min(
+                1.0, max(0.0, center.y + action.pointer_offset_y)
+            ),
+            end_x=end_x,
+            end_y=end_y,
             confidence=min(outcome.confidence, action.confidence),
             scroll_delta=action.scroll_delta,
         )
@@ -1826,6 +1901,10 @@ class ClosedLoopSupervisor:
         next_kind = (
             RecoveryKind.BACK if self._recovery_count else RecoveryKind.HIGH_RESOLUTION
         )
+        if next_kind == RecoveryKind.BACK and not self._visual_back_recovery_allowed():
+            self._pending_recovery = None
+            self._recovery_in_progress = None
+            return
         if not self._recovery_budget.consume(next_kind):
             state = self._recovery_budget.state()
             self._stop_blocked(
@@ -1858,6 +1937,14 @@ class ClosedLoopSupervisor:
     def _advance_loop_recovery(
         self, outcome: PlannerOutcome, reason: str
     ) -> SupervisedDecision:
+        if not self._visual_back_recovery_allowed():
+            self._pending_recovery = None
+            self._recovery_in_progress = None
+            return SupervisedDecision(
+                DecisionDisposition.REOBSERVE,
+                reason + "; visual back suppressed outside an identified feature page",
+                outcome,
+            )
         if (
             "back" in self._profile.recovery_safe_actions
             and self._back_recovery_streak < self._max_failed_back_recoveries
@@ -1968,6 +2055,25 @@ class ClosedLoopSupervisor:
         if self._session is not None and self._session.screen_type == ScreenType.FEATURE:
             return min(4, self._max_stuck_waits)
         return self._max_stuck_waits
+
+    def _visual_back_recovery_allowed(self) -> bool:
+        """A generic top-left back click is safe only on an identified page.
+
+        Generic profiles without session classification retain their existing
+        behaviour. Game-aware sessions fail closed on world/combat, dialogue,
+        loading and unknown screens because that coordinate has other meaning.
+        """
+        return self._session is None or self._session.screen_type == ScreenType.FEATURE
+
+    def _visual_exit_intent_allowed(self, action: GroundedAction) -> bool:
+        if self._session is None:
+            return True
+        if self._session.screen_type == ScreenType.FEATURE:
+            return True
+        if self._session.screen_type != ScreenType.POPUP:
+            return False
+        label = normalize_visible_text(action.target_label)
+        return "关闭" in label or label in {"close", "ui_close"}
 
     def _stable_state_key(self, snapshot: PerceptionSnapshot) -> str:
         """Animation-proof page identity for repeat counting.
@@ -2113,7 +2219,13 @@ class ClosedLoopSupervisor:
             or self._semantic_action_key(action) != self._last_started_action_semantic_key
         ):
             return False
-        if action.target_label in {"ui_back", "ui_close", "ui_promote"}:
+        if action.target_label in {
+            "ui_back",
+            "ui_close",
+            "ui_promote",
+            "ui_dialogue_advance",
+            "ui_little_dragon_heal",
+        }:
             # Exit/promote controls must never trigger another exit escape;
             # their own failure bound lives in the back recovery streak.
             return False

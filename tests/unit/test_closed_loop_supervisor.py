@@ -1202,6 +1202,41 @@ class ClosedLoopSupervisorTests(unittest.TestCase):
         self.assertAlmostEqual(center.x, 0.06, places=6)
         self.assertAlmostEqual(center.y, 0.08, places=6)
 
+    def test_model_first_mode_still_routes_exit_intent_to_hotspot(self) -> None:
+        # 回归：model-first（allow_calibrated_intents=False）下出口语义点击
+        # 仍必须路由到校准热点。图形关闭按钮没有 OCR 文本，一旦失去这条
+        # 路由就会判为 grounding conflict → 重试耗尽 → BLOCK，连续运行
+        # 在几轮内被终止（2026-09-18 实跑复现）。
+        supervisor = ClosedLoopSupervisor(
+            self.clock,
+            PerceptionProfile(
+                action_effect_timeout_ms=1000,
+                no_click_regions=((0.0, 0.0, 1.0, 0.055),),
+            ),
+            back_hotspot=(0.06, 0.08),
+            close_hotspot=(0.881, 0.186),
+            allow_calibrated_intents=False,
+        )
+        current = snapshot(1, 0)
+        proposal = replace(
+            outcome(1),
+            action=GroundedAction(
+                GuiActionKind.CLICK,
+                "关闭按钮",
+                NormalizedBox(0.866, 0.170, 0.887, 0.205),
+                "关闭当前页面",
+                0.90,
+            ),
+        )
+
+        decision = supervisor.assess(
+            proposal, current, current, frame(1, 0), frame(1, 0), "持续推进主线任务"
+        )
+
+        self.assertEqual(decision.disposition, DecisionDisposition.EXECUTE)
+        assert decision.outcome.action is not None
+        self.assertEqual(decision.outcome.action.target_label, "ui_back")
+
     def test_advertising_decoy_click_is_rejected(self) -> None:
         # 广告/运营横幅（首充礼包、新服冲榜、商城福利…）是纯营收诱饵：
         # 无论模型给它们贴什么标签，落在诱饵文字上的点击一律拒绝。
@@ -1373,9 +1408,81 @@ class ClosedLoopSupervisorTests(unittest.TestCase):
         )
 
         self.assertEqual(decision.disposition, DecisionDisposition.EXECUTE)
-        self.assertIn("deterministic exit control", decision.reason)
+        self.assertIn("deterministic OCR rule fast-tracked", decision.reason)
         assert decision.outcome.action is not None
         self.assertEqual(decision.outcome.action.target_label, "ui_back")
+
+    def test_deterministic_dialogue_rule_ignores_task_ocr_generation_churn(self) -> None:
+        supervisor = ClosedLoopSupervisor(
+            self.clock,
+            PerceptionProfile(
+                action_effect_timeout_ms=1000,
+                no_click_regions=((0.0, 0.0, 1.0, 0.065),),
+            ),
+            dialogue_hotspot=(0.96, 0.915),
+        )
+        decided = snapshot(1, 0)
+        fresh = replace(
+            snapshot(2, 1),
+            task_generation=decided.task_generation + 1,
+            state_signature="dialogue-ocr-jitter",
+        )
+        proposal = replace(
+            outcome(1),
+            action=GroundedAction(
+                GuiActionKind.CLICK,
+                "ui_dialogue_advance",
+                NormalizedBox(0.94, 0.895, 0.98, 0.935),
+                "the dialogue advances to the next line",
+                1.0,
+            ),
+        )
+
+        decision = supervisor.assess(
+            proposal,
+            decided,
+            fresh,
+            frame(1, 0),
+            frame(2, 1),
+            "持续推进主线",
+            decision_source="ocr_dialogue_click_fast",
+        )
+
+        self.assertEqual(decision.disposition, DecisionDisposition.EXECUTE)
+        self.assertIn("fast-tracked", decision.reason)
+
+    def test_deterministic_rule_still_obeys_no_click_region(self) -> None:
+        supervisor = ClosedLoopSupervisor(
+            self.clock,
+            PerceptionProfile(
+                action_effect_timeout_ms=1000,
+                no_click_regions=((0.0, 0.0, 1.0, 0.20),),
+            ),
+        )
+        current = snapshot(1, 0)
+        proposal = replace(
+            outcome(1),
+            action=GroundedAction(
+                GuiActionKind.CLICK,
+                "错误标题栏目标",
+                NormalizedBox(0.3, 0.05, 0.5, 0.10),
+                "must remain blocked",
+                1.0,
+            ),
+        )
+
+        decision = supervisor.assess(
+            proposal,
+            current,
+            current,
+            frame(1, 0),
+            frame(1, 0),
+            "持续推进主线",
+            decision_source="ocr_progress_control_fast",
+        )
+
+        self.assertEqual(decision.disposition, DecisionDisposition.REOBSERVE)
+        self.assertIn("no-click region", decision.reason)
 
     def test_model_reserved_label_is_routed_to_hotspot_never_raw_box(self) -> None:
         # A model reply claiming the reserved ``ui_back`` label has no
@@ -1590,6 +1697,58 @@ class ClosedLoopSupervisorTests(unittest.TestCase):
             "open settings",
         )
         self.assertEqual(armed.disposition, DecisionDisposition.REOBSERVE)
+
+    def test_world_screen_cancels_armed_visual_back_recovery(self) -> None:
+        session = GameSessionState()
+        session.screen_type = ScreenType.WORLD
+        supervisor = ClosedLoopSupervisor(
+            self.clock,
+            PerceptionProfile(
+                recovery_safe_actions=frozenset({"back"}),
+                action_effect_timeout_ms=1000,
+            ),
+            session=session,
+            back_hotspot=(0.06, 0.08),
+        )
+        supervisor._pending_recovery = RecoveryDirective.BACK  # noqa: SLF001
+        current = snapshot(1, 0)
+
+        decision = supervisor.assess(
+            outcome(1), current, current, frame(1, 0), frame(1, 0), "持续战斗"
+        )
+
+        self.assertEqual(decision.disposition, DecisionDisposition.EXECUTE)
+        self.assertIsNone(decision.recovery)
+        assert decision.outcome.action is not None
+        self.assertEqual(decision.outcome.action.target_label, "settings")
+
+    def test_world_screen_rejects_model_back_intent(self) -> None:
+        session = GameSessionState()
+        session.screen_type = ScreenType.WORLD
+        supervisor = ClosedLoopSupervisor(
+            self.clock,
+            PerceptionProfile(action_effect_timeout_ms=1000),
+            session=session,
+            back_hotspot=(0.06, 0.08),
+        )
+        proposal = replace(
+            outcome(1),
+            action=GroundedAction(
+                GuiActionKind.CLICK,
+                "返回",
+                NormalizedBox(0.02, 0.02, 0.08, 0.10),
+                "leave the current page",
+                0.95,
+            ),
+        )
+        current = snapshot(1, 0)
+
+        decision = supervisor.assess(
+            proposal, current, current, frame(1, 0), frame(1, 0), "持续战斗"
+        )
+
+        self.assertEqual(decision.disposition, DecisionDisposition.REOBSERVE)
+        self.assertIn("suppressed outside", decision.reason)
 
     def test_high_confidence_visual_only_click_passes_validation(self) -> None:
         # 晋升 medallion case: a graphical button with no OCR text in either

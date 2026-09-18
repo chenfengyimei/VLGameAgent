@@ -51,6 +51,36 @@ class FakeCaptureSource:
         return self._frames.publish(frame(1, timestamp_ns=100))
 
 
+class MutableSignaturePerceptionBuilder:
+    def __init__(self, signature: str) -> None:
+        self.signature = signature
+
+    def build(
+        self,
+        item: SequencedFrame,
+        mode: ControlMode,
+        *,
+        geometry_generation: int,
+        task_generation: int,
+        goal_facts: tuple[tuple[str, str], ...] = (),
+    ) -> PerceptionSnapshot:
+        return PerceptionSnapshot(
+            f"snapshot-{item.sequence}",
+            item.frame.frame_id,
+            item.sequence,
+            item.frame.capture_timestamp,
+            item.frame.window_identity,
+            geometry_generation,
+            task_generation,
+            mode,
+            (),
+            (),
+            goal_facts,
+            self.signature,
+            1.0,
+        )
+
+
 class FixedVisualCaptureSource:
     def __init__(self, frames: FrameRingBuffer, clock: ManualClock) -> None:
         self._frames = frames
@@ -702,6 +732,89 @@ class AgentLoopTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(diagnostics)
         self.assertGreaterEqual(diagnostics["continuous_cycle_count"], 2)  # type: ignore[index]
         self.assertEqual(loop.terminal_status.value, "running")
+        stop.set()
+        await task
+
+    async def test_continuous_blocked_mode_waits_until_screen_changes(self) -> None:
+        clock = ManualClock(100)
+        target = identity()
+        frames = FrameRingBuffer()
+        events = EventBus(clock)
+        leases = ControlLeaseManager(clock)
+        backend = DryRunInputBackend()
+        scheduler = ActionScheduler(
+            clock,
+            InputExecutor(
+                clock,
+                backend,
+                FocusGuard(
+                    FakeWindows(target), FakeIntegrity(), leases, AgentEnableState(True)
+                ),
+                leases,
+            ),
+            leases,
+        )
+        fixture_profile = profile()
+        factory_calls: list[int] = []
+
+        def make_supervisor() -> ClosedLoopSupervisor:
+            factory_calls.append(len(factory_calls) + 1)
+            return ClosedLoopSupervisor(clock, fixture_profile.perception)
+
+        supervisor = make_supervisor()
+        supervisor._stop_blocked("fixture refusal")  # noqa: SLF001
+        perception_builder = MutableSignaturePerceptionBuilder("screen-a")
+        loop = RealtimeAgentLoop(
+            clock=clock,
+            capture=FakeCaptureSource(frames),
+            frames=frames,
+            observation_builder=ObservationBuilder(
+                clock, "fixture-game", ObservationInputs("keep progressing")
+            ),
+            observations=TemporalObservationBuffer(),
+            environment=GenericEnvironment(fixture_profile),
+            mode_classifier=RuleModeClassifier(),
+            mode_router=ModeRouter(
+                ControlMode.GUI, confirmation_frames=1, started_at=UGATime(0)
+            ),
+            policy=None,
+            leases=leases,
+            controller=ActionChunkController(
+                GenericEnvironment(fixture_profile), ActionArbiter(clock, leases), scheduler
+            ),
+            scheduler=scheduler,
+            events=events,
+            grounded_planner=GroundedClickPlanner(),
+            perception_builder=perception_builder,  # type: ignore[arg-type]
+            closed_loop=supervisor,
+            gui_controller=GuiActionController(ActionArbiter(clock, leases), scheduler),
+            key_resolver=lambda _: None,
+            continuous_grounded=True,
+            closed_loop_factory=make_supervisor,
+        )
+        stop = asyncio.Event()
+        task = asyncio.create_task(loop.run(stop, observation_hz=100.0))
+
+        await asyncio.sleep(0.05)
+        self.assertFalse(task.done())
+        self.assertEqual(factory_calls, [1])
+        waiting = [
+            event
+            for event in events.history()
+            if event.event_type is EventType.AGENT_STUCK
+            and event.payload.get("disposition") == "wait_for_state_change"
+        ]
+        self.assertEqual(len(waiting), 1)
+
+        perception_builder.signature = "screen-b"
+        for _ in range(20):
+            if len(factory_calls) == 2:
+                break
+            await asyncio.sleep(0.01)
+        self.assertEqual(factory_calls, [1, 2])
+        self.assertFalse(task.done())
+        self.assertEqual(loop.terminal_status.value, "running")
+
         stop.set()
         await task
 

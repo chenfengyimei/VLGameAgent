@@ -11,17 +11,28 @@ from difflib import SequenceMatcher
 from typing import Any, Protocol
 
 from uga.agent.session_state import (
+    auto_navigation_active,
+    character_creation_control,
+    character_creation_name_prompt_active,
     close_glyph_aim,
+    cutscene_skip_control,
+    dialogue_review_visible,
     find_close_glyph,
     find_market_entry,
     find_xiuxian_path_quest_line,
+    invasion_group_attack_control,
+    invasion_task_navigation_target,
+    little_dragon_healing_active,
     mumu_close_dialog_cancel,
+    narrative_continue_control,
+    onboarding_joystick_tutorial_active,
     page_has_action_button,
     page_level_value,
     quest_is_market_task,
     quest_page_keyword,
     real_name_gate_active,
     realm_promotion_ready,
+    rescue_little_dragon_choice,
     stall_sell_item_cell,
     xiuxian_path_objective_goto,
 )
@@ -354,6 +365,8 @@ class GroundedVlmPlanner:
         back_hotspot: tuple[float, float] | None = None,
         close_hotspot: tuple[float, float] | None = None,
         promote_hotspot: tuple[float, float] | None = None,
+        dialogue_hotspot: tuple[float, float] | None = None,
+        little_dragon_heal_hotspot: tuple[float, float] | None = None,
         strategy_registry: StrategyRegistry | None = None,
         coordinate_space: str = "unit",
         enable_rule_fast_paths: bool = True,
@@ -378,6 +391,8 @@ class GroundedVlmPlanner:
             ("back", back_hotspot),
             ("close", close_hotspot),
             ("promote", promote_hotspot),
+            ("dialogue", dialogue_hotspot),
+            ("little-dragon heal", little_dragon_heal_hotspot),
         ):
             if hotspot is not None and (
                 len(hotspot) != 2
@@ -408,6 +423,14 @@ class GroundedVlmPlanner:
         self._close_hotspot = None if close_hotspot is None else tuple(close_hotspot)
         self._promote_hotspot = (
             None if promote_hotspot is None else tuple(promote_hotspot)
+        )
+        self._dialogue_hotspot = (
+            None if dialogue_hotspot is None else tuple(dialogue_hotspot)
+        )
+        self._little_dragon_heal_hotspot = (
+            None
+            if little_dragon_heal_hotspot is None
+            else tuple(little_dragon_heal_hotspot)
         )
         self._task_panel_cooldown_s = 25.0
         self._last_task_panel_click: tuple[str, float] | None = None
@@ -710,9 +733,9 @@ class GroundedVlmPlanner:
             return None
         dialog_cancel = mumu_close_dialog_cancel(snapshot.visible_text)
         if dialog_cancel is not None:
-            # MuMu 自己的"确定要关闭"确认框挡住整个窗口：唯一安全处置是
-            # 取消（确定会关掉模拟器、杀掉整个 run）。规则层直接接管，
-            # 不消耗 VLM 推理，也绝不允许模型碰这个弹窗的确定按钮。
+            # MuMu 自己的"确定要关闭"确认框必须先于所有游戏内规则处理。
+            # 原生弹窗可能半透明地保留底层教学/任务 OCR；若先检查摇杆或任务，
+            # 就可能在遮罩层上发出错误输入。唯一安全处置是点取消。
             self._last_decision_source = "ocr_mumu_dialog_cancel_fast"
             return self._ocr_action(
                 snapshot,
@@ -723,18 +746,203 @@ class GroundedVlmPlanner:
                 ),
                 action_kind=GuiActionKind.CLICK,
             )
+        character_control = character_creation_control(snapshot.visible_text)
+        if character_control is not None:
+            step, control = character_control
+            source, expected_effect = {
+                "customize": (
+                    "ocr_character_creation_customize_fast",
+                    "the character preset-selection page opens",
+                ),
+                "start": (
+                    "ocr_character_preset_start_fast",
+                    "the character-name prompt opens",
+                ),
+                "confirm_name": (
+                    "ocr_character_name_confirm_fast",
+                    "the entered character name is confirmed",
+                ),
+            }[step]
+            self._last_decision_source = source
+            return self._ocr_action(
+                snapshot,
+                control,
+                source=source,
+                expected_effect=expected_effect,
+                action_kind=GuiActionKind.CLICK,
+            )
+        if character_creation_name_prompt_active(snapshot.visible_text):
+            # Do not let the generic "确定" progress rule confirm a blank
+            # name.  The owner may type a name manually; once OCR sees a
+            # nonzero N/7 counter, the deterministic confirmation rule above
+            # resumes without a VLM request.
+            self._last_decision_source = "character_name_entry_wait"
+            return PlannerOutcome(
+                uuid.uuid4().hex,
+                snapshot.frame_id,
+                snapshot.frame_sequence,
+                snapshot.window_identity.window_generation,
+                snapshot.geometry_generation,
+                snapshot.task_generation,
+                DecisionKind.WAIT,
+                "character-name entry is awaiting a nonempty name",
+                snapshot.text,
+                GoalStatus.IN_PROGRESS,
+                1.0,
+                None,
+                WaitReason.NO_SAFE_ACTION,
+                explanation=(
+                    "character-name prompt is visible but its N/7 counter is empty or unreadable"
+                ),
+            )
+        if onboarding_joystick_tutorial_active(snapshot.visible_text):
+            # The left virtual joystick is graphical and has no OCR text of
+            # its own.  The in-game teaching cue is the page anchor; the
+            # user-recorded joystick center is calibrated for the MuMu frame.
+            # A DRAG starts at the center and its offset is the endpoint.
+            self._last_decision_source = "ocr_onboarding_joystick_forward_fast"
+            return PlannerOutcome(
+                uuid.uuid4().hex,
+                snapshot.frame_id,
+                snapshot.frame_sequence,
+                snapshot.window_identity.window_generation,
+                snapshot.geometry_generation,
+                snapshot.task_generation,
+                DecisionKind.ACT,
+                "first-world joystick movement tutorial is visible",
+                snapshot.text,
+                GoalStatus.IN_PROGRESS,
+                0.99,
+                GroundedAction(
+                    GuiActionKind.DRAG,
+                    "left movement joystick",
+                    NormalizedBox(0.125, 0.750, 0.205, 0.850),
+                    "the character moves forward and the joystick tutorial advances",
+                    0.99,
+                    ActionRisk.LOW,
+                    pointer_offset_y=-0.12,
+                ),
+                explanation=(
+                    "ocr_onboarding_joystick_forward_fast dragged the calibrated "
+                    "left joystick upward"
+                ),
+            )
+        cutscene_skip = cutscene_skip_control(snapshot.visible_text)
+        if cutscene_skip is not None:
+            self._last_decision_source = "ocr_cutscene_skip_fast"
+            return self._ocr_action(
+                snapshot,
+                cutscene_skip,
+                source="ocr_cutscene_skip_fast",
+                expected_effect="the cutscene ends and the game world becomes visible",
+                action_kind=GuiActionKind.CLICK,
+            )
+        rescue_choice = rescue_little_dragon_choice(snapshot.visible_text)
+        if rescue_choice is not None:
+            self._last_decision_source = "ocr_rescue_little_dragon_choice_fast"
+            return self._ocr_action(
+                snapshot,
+                rescue_choice,
+                source="ocr_rescue_little_dragon_choice_fast",
+                expected_effect="the little-dragon healing interaction opens",
+                action_kind=GuiActionKind.CLICK,
+            )
+        if (
+            little_dragon_healing_active(snapshot.visible_text)
+            and self._little_dragon_heal_hotspot is not None
+        ):
+            # 小青龙 itself is graphical.  The two healing labels above are
+            # the page anchors; the center hotspot is used only on that page.
+            return self._hotspot_click_action(
+                snapshot,
+                "ui_little_dragon_heal",
+                self._little_dragon_heal_hotspot,
+                "ocr_little_dragon_heal_fast",
+                "the injured little dragon receives healing and the quest advances",
+            )
+        narrative_continue = narrative_continue_control(snapshot.visible_text)
+        if narrative_continue is not None:
+            self._last_decision_source = "ocr_narrative_continue_fast"
+            return self._ocr_action(
+                snapshot,
+                narrative_continue,
+                source="ocr_narrative_continue_fast",
+                expected_effect=(
+                    "the story-completion page closes and the next quest becomes visible"
+                ),
+                action_kind=GuiActionKind.CLICK,
+            )
+        group_attack = invasion_group_attack_control(snapshot.visible_text)
+        if group_attack is not None:
+            # The OCR label sits just below the purple skill icon.  Target it
+            # for fresh grounding, then aim slightly upward at the actual
+            # 群攻 control.  The rule remains active only while 黑衣人 is
+            # visible, so it naturally stops after the encounter is cleared.
+            self._last_decision_source = "ocr_invasion_group_attack_fast"
+            return self._ocr_action(
+                snapshot,
+                group_attack,
+                source="ocr_invasion_group_attack_fast",
+                expected_effect=(
+                    "the black-clad enemies take damage and quest progress advances"
+                ),
+                action_kind=GuiActionKind.CLICK,
+                pointer_offset=(0.0, -0.06),
+            )
+        if auto_navigation_active(snapshot.visible_text):
+            # The game already owns movement.  Re-clicking the tracker here
+            # restarts/interrupts its path and can leave the player short of
+            # the destination; wait for the enemy or a refreshed task instead.
+            self._last_decision_source = "ocr_auto_navigation_wait"
+            return PlannerOutcome(
+                uuid.uuid4().hex,
+                snapshot.frame_id,
+                snapshot.frame_sequence,
+                snapshot.window_identity.window_generation,
+                snapshot.geometry_generation,
+                snapshot.task_generation,
+                DecisionKind.WAIT,
+                "the game is automatically navigating to the active quest",
+                snapshot.text,
+                GoalStatus.IN_PROGRESS,
+                1.0,
+                None,
+                WaitReason.ANIMATION,
+                explanation=(
+                    "ocr_auto_navigation_wait leaves in-progress auto-navigation uninterrupted"
+                ),
+            )
+        invasion_task = invasion_task_navigation_target(snapshot.visible_text)
+        if invasion_task is not None:
+            self._last_decision_source = "ocr_invasion_task_navigate_fast"
+            return self._ocr_action(
+                snapshot,
+                invasion_task,
+                source="ocr_invasion_task_navigate_fast",
+                expected_effect="the game auto-navigates to the black-clad enemy encounter",
+                action_kind=GuiActionKind.CLICK,
+            )
         dialogue_advance_cue = next(
             (
                 region
                 for region in snapshot.visible_text
                 if "秒后自动继续" in normalize_visible_text(region.text)
-                or "回顾剧情" in normalize_visible_text(region.text)
             ),
             None,
         )
-        if dialogue_advance_cue is not None and "秒后自动继续" in normalize_visible_text(
-            dialogue_advance_cue.text
-        ):
+        if dialogue_review_visible(snapshot.visible_text) and self._dialogue_hotspot is not None:
+            # ``回顾剧情`` only identifies this screen.  Never click that
+            # left-side button: it opens the replay UI.  The owner-recorded
+            # lower-right hotspot is the dialogue progression area.
+            self.last_decision_was_dialogue = True
+            return self._hotspot_click_action(
+                snapshot,
+                "ui_dialogue_advance",
+                self._dialogue_hotspot,
+                "ocr_dialogue_click_fast",
+                "the dialogue advances to the next line",
+            )
+        if dialogue_advance_cue is not None:
             # 对话快速跳过：倒计时区就是推进区——用鼠标连点右下角（比按
             # Space 可靠，过场剧情不吃键盘），并进入对话快速连点节奏。
             self.last_decision_was_dialogue = True

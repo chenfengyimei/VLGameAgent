@@ -32,6 +32,7 @@ from uga.core.events import Event, EventBus, EventType
 from uga.core.run_context import RunContext, RunStamp
 from uga.environment.adapter import EnvironmentAdapter
 from uga.gui.controller import GuiActionController, GuiActionSubmission
+from uga.gui.schema import GuiActionKind
 from uga.observation.buffer import TemporalObservationBuffer
 from uga.observation.builder import ObservationBuilder
 from uga.observation.schema import Observation
@@ -42,7 +43,13 @@ from uga.policy.chunk_controller import ActionChunkController, ActionChunkSubmis
 from uga.policy.fast_policy import FastPolicy, FastPolicyOutput, PolicyContext
 from uga.policy.vision_transport import ProviderError, ProviderErrorKind
 from uga.recording.episode_writer import EpisodeWriter
-from uga.safety.action_gate import generations_consistent, point_is_clickable, resolved_click_point
+from uga.safety.action_gate import (
+    deterministic_context_consistent,
+    generations_consistent,
+    is_trusted_deterministic_source,
+    point_is_clickable,
+    resolved_click_point,
+)
 from uga.safety.sensitive_page import inspect_sensitive_page
 from uga.time.clock import ClockBackend
 from uga.windows.coordinates import CoordinateTransform, Rect
@@ -200,6 +207,7 @@ class RealtimeAgentLoop:
         self._recovery_budget = recovery_budget
         self._max_continuous_rebuilds = max_continuous_rebuilds
         self._continuous_rebuilds = 0
+        self._blocked_terminal_signature: str | None = None
         self._next_grounded_inference_ns = 0
         self._grounded_failure_backoff_ns = max(
             self._grounded_decision_interval_ns, 15_000_000_000
@@ -658,7 +666,11 @@ class RealtimeAgentLoop:
             # raw planner proposal once sent a routed exit's original box —
             # parked on MuMu's own title-bar close button — to SendInput.
             outcome = supervised.outcome
+            decision_source = getattr(grounded_planner, "last_decision_source", None)
             execution_item = latest_after_inference
+            target_was_locally_grounded = bool(
+                is_trusted_deterministic_source(decision_source)
+            )
             if supervised.disposition in {DecisionDisposition.EXECUTE, DecisionDisposition.RECOVER}:
                 current_item = self._frames.latest() or latest_after_inference
                 final_perception = fresh_perception
@@ -677,7 +689,12 @@ class RealtimeAgentLoop:
                         final_perception = replace(
                             final_perception, task_generation=self._task_generation
                         )
-                execution_fresh, execution_reason = generations_consistent(
+                consistency_check = (
+                    deterministic_context_consistent
+                    if target_was_locally_grounded
+                    else generations_consistent
+                )
+                execution_fresh, execution_reason = consistency_check(
                     outcome, perception, final_perception
                 )
                 sensitive = inspect_sensitive_page(final_perception.visible_text, outcome.action)
@@ -687,26 +704,38 @@ class RealtimeAgentLoop:
                     execution_fresh, execution_reason = False, sensitive.reason
                 if (execution_fresh and outcome.action is not None
                         and supervised.disposition == DecisionDisposition.EXECUTE):
-                    execution_fresh, execution_reason = ActionValidator.validate_fresh_target(
-                        outcome.action, fresh_perception, final_perception
-                    )
-                    if execution_fresh and outcome.action.target_box is not None:
-                        verdict = point_is_clickable(
-                            resolved_click_point(outcome.action),
-                            no_click_regions=closed_loop.no_click_regions,
-                            decided_text=perception.visible_text,
-                            fresh_text=final_perception.visible_text,
+                    if not target_was_locally_grounded:
+                        execution_fresh, execution_reason = (
+                            ActionValidator.validate_fresh_target(
+                                outcome.action, fresh_perception, final_perception
+                            )
                         )
-                        execution_fresh, execution_reason = verdict.allowed, verdict.reason
+                    if execution_fresh and outcome.action.target_box is not None:
+                        points = (resolved_click_point(outcome.action),)
+                        if outcome.action.kind == GuiActionKind.DRAG:
+                            points = (outcome.action.target_box.center, *points)
+                        for point in points:
+                            verdict = point_is_clickable(
+                                point,
+                                no_click_regions=closed_loop.no_click_regions,
+                                decided_text=perception.visible_text,
+                                fresh_text=final_perception.visible_text,
+                            )
+                            execution_fresh, execution_reason = verdict.allowed, verdict.reason
+                            if not execution_fresh:
+                                break
                     if execution_fresh:
                         # Dynamic pixels need a match from the NEW observation,
                         # not an OCR match obtained before the slow verifier.
                         grounding = ActionValidator._ocr_target_grounding(
                             outcome.action, final_perception
                         )
+                        target_was_locally_grounded = (
+                            target_was_locally_grounded or grounding == "match"
+                        )
                         execution_fresh, execution_reason = closed_loop.validate_execution_frame(
                             outcome, latest_after_inference.frame, current_item.frame,
-                            target_was_ocr_grounded=grounding == "match",
+                            target_was_ocr_grounded=target_was_locally_grounded,
                         )
                 elif execution_fresh:
                     execution_fresh, execution_reason = closed_loop.validate_execution_context(
@@ -818,8 +847,18 @@ class RealtimeAgentLoop:
                     pre_action_observation_id=pre_action.observation_id,
                     pre_action_capture_ns=pre_action.latest_frame.capture_timestamp.value_ns,
                     execution_guard=lambda: self._execution_is_current(
-                        stamp, execution_item.frame, outcome.task_generation,
-                        visual_stability=True,
+                        stamp,
+                        execution_item.frame,
+                        (
+                            fresh_perception.task_generation
+                            if target_was_locally_grounded
+                            else outcome.task_generation
+                        ),
+                        # OCR was re-grounded on the newest frame immediately
+                        # before submission. Requiring raw target pixels to
+                        # remain identical until the 30 Hz scheduler runs
+                        # rejects valid clicks on animated game UI.
+                        visual_stability=not target_was_locally_grounded,
                         target_box=(
                             outcome.action.target_box if outcome.action is not None else None
                         ),
@@ -832,9 +871,7 @@ class RealtimeAgentLoop:
                             outcome,
                             fresh_perception,
                             execution_item.frame,
-                            source=getattr(
-                                grounded_planner, "last_decision_source", None
-                            ),
+                            source=decision_source,
                             physical_point=_physical_pointer_point(
                                 gui_submission.physical_actions
                             ),
@@ -1080,7 +1117,7 @@ class RealtimeAgentLoop:
         async def observe() -> None:
             period_s = 1.0 / observation_hz
             while not stop.is_set():
-                await self.step()
+                step_result = await self.step()
                 if self._closed_loop is not None and self._closed_loop.is_terminal:
                     if not self._continuous_grounded:
                         stop.set()
@@ -1092,10 +1129,59 @@ class RealtimeAgentLoop:
                         break
                     previous = self._closed_loop
                     if previous.status is TerminalStatus.BLOCKED:
-                        # A terminal refusal is not permission to rebuild a
-                        # supervisor and try the forbidden operation again.
-                        stop.set()
-                        break
+                        # Keep a continuous agent alive without retrying the
+                        # refused action on the same screen. A materially new
+                        # perception is fresh authority to plan the new state.
+                        current_signature = (
+                            None
+                            if step_result.perception is None
+                            else step_result.perception.state_signature
+                        )
+                        if self._blocked_terminal_signature is None:
+                            self._blocked_terminal_signature = current_signature
+                            await self._events.publish(
+                                EventType.AGENT_STUCK,
+                                "agent.loop",
+                                {
+                                    "status": previous.status.value,
+                                    "reason": previous.termination_reason
+                                    or "closed_loop_blocked",
+                                    "disposition": "wait_for_state_change",
+                                    "cycle": self._continuous_cycle_count,
+                                },
+                            )
+                        elif (
+                            current_signature is not None
+                            and current_signature != self._blocked_terminal_signature
+                        ):
+                            self._blocked_terminal_signature = None
+                            if self._continuous_rebuilds >= self._max_continuous_rebuilds:
+                                stop.set()
+                                break
+                            self._continuous_rebuilds += 1
+                            assert self._closed_loop_factory is not None
+                            self._closed_loop = self._closed_loop_factory()
+                            if self._run_context is not None:
+                                self._run_context.advance_generation()
+                            self._continuous_cycle_count += 1
+                            self._next_grounded_inference_ns = self._clock.now().value_ns
+                            await self._events.publish(
+                                EventType.AGENT_STUCK,
+                                "agent.loop",
+                                {
+                                    "status": previous.status.value,
+                                    "reason": previous.termination_reason
+                                    or "closed_loop_blocked",
+                                    "disposition": "resume_after_state_change",
+                                    "cycle": self._continuous_cycle_count,
+                                },
+                            )
+                        # Stay in the observation loop. In particular, do not
+                        # fall through to the generic terminal rebuild below.
+                        with contextlib.suppress(TimeoutError):
+                            await asyncio.wait_for(stop.wait(), timeout=period_s)
+                        continue
+                    self._blocked_terminal_signature = None
                     if (
                         self._recovery_budget is not None
                         and self._recovery_budget.exhausted

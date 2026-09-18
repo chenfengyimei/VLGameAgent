@@ -59,6 +59,18 @@ class GuiControlBridge:
                 CoordinateSpace.MODEL_NORMALIZED,
                 CoordinateSpace.PHYSICAL_SCREEN_PIXEL,
             )
+            # A joystick needs a real held drag, not three instantaneous
+            # mouse events.  Keep the pointer down while the scheduler moves
+            # it at 450ms and release it at 700ms, within the one-second
+            # grounded-action lifetime.
+            move_at = UGATime(action.lifetime.effective_from.value_ns + 450_000_000)
+            release_at = UGATime(action.lifetime.effective_from.value_ns + 700_000_000)
+            move_lifetime = ActionLifetime(
+                action.lifetime.created_at, move_at, action.lifetime.expires_at
+            )
+            release_lifetime = ActionLifetime(
+                action.lifetime.created_at, release_at, action.lifetime.expires_at
+            )
             return (
                 move,
                 MouseButtonAction(
@@ -66,13 +78,13 @@ class GuiControlBridge:
                 ),
                 AbsolutePointerAction(
                     f"{action.action_id}:drag",
-                    action.lifetime,
+                    move_lifetime,
                     round(end.x),
                     round(end.y),
                     CoordinateSpace.PHYSICAL_SCREEN_PIXEL,
                 ),
                 MouseButtonAction(
-                    f"{action.action_id}:up", action.lifetime, MouseButton.LEFT, False
+                    f"{action.action_id}:up", release_lifetime, MouseButton.LEFT, False
                 ),
             )
         if action.kind == GuiActionKind.LONG_CLICK:

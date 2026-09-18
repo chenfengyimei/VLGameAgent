@@ -15,6 +15,81 @@ GAME_ID = "mumu-xianyu"
 
 _RULES: tuple[StrategyRule, ...] = (
     StrategyRule(
+        name="auto_navigation_wait",
+        source="ocr_auto_navigation_wait",
+        game_id=GAME_ID,
+        summary="画面显示 自动寻路中 时不重复点击任务栏，等待到达目的地或战斗状态。",
+        allowed_action="wait",
+        risk="low",
+        effect="the game completes its in-progress auto-navigation",
+        cooldown_s=0.0,
+    ),
+    StrategyRule(
+        name="invasion_task_navigate",
+        source="ocr_invasion_task_navigate_fast",
+        game_id=GAME_ID,
+        summary="主线 入侵袭击/击败这些不速之客 且未见黑衣人时，点左侧任务行自动寻路。",
+        allowed_action="click(入侵袭击 task line)",
+        risk="navigation",
+        effect="the game auto-navigates to the black-clad enemy encounter",
+        cooldown_s=25.0,
+    ),
+    StrategyRule(
+        name="invasion_group_attack",
+        source="ocr_invasion_group_attack_fast",
+        game_id=GAME_ID,
+        summary="入侵袭击任务、黑衣人和右下 群攻 同时可见时，点群攻图标攻击。",
+        allowed_action="click(群攻 skill icon)",
+        risk="combat",
+        effect="the black-clad enemies take damage and quest progress advances",
+        cooldown_s=0.0,
+    ),
+    StrategyRule(
+        name="onboarding_joystick_forward",
+        source="ocr_onboarding_joystick_forward_fast",
+        game_id=GAME_ID,
+        summary=(
+            "首次世界移动教学同时识别 滑动摇杆可以移动：从左下摇杆中心向上短拖，"
+            "绝不在普通世界画面盲目移动。"
+        ),
+        allowed_action="drag(left joystick upward)",
+        risk="navigation",
+        effect="the character moves forward and the joystick tutorial advances",
+        cooldown_s=0.0,
+    ),
+    StrategyRule(
+        name="character_creation_customize",
+        source="ocr_character_creation_customize_fast",
+        game_id=GAME_ID,
+        summary="创角页同时识别 创角 标题与右下 定制细节，进入预设选择。",
+        allowed_action="click(定制细节)",
+        risk="progression",
+        effect="the character preset-selection page opens",
+        cooldown_s=0.0,
+    ),
+    StrategyRule(
+        name="character_preset_start",
+        source="ocr_character_preset_start_fast",
+        game_id=GAME_ID,
+        summary="选择预设页同时识别 选择预设 标题与右下 开启仙途，继续创角。",
+        allowed_action="click(开启仙途)",
+        risk="progression",
+        effect="the character-name prompt opens",
+        cooldown_s=0.0,
+    ),
+    StrategyRule(
+        name="character_name_confirm",
+        source="ocr_character_name_confirm_fast",
+        game_id=GAME_ID,
+        summary=(
+            "请输入名字 弹窗仅在字符计数为非零 N/7 时点 确定；空名称绝不自动确认。"
+        ),
+        allowed_action="click(确定 after a nonempty name is visible)",
+        risk="progression",
+        effect="the entered character name is confirmed",
+        cooldown_s=0.0,
+    ),
+    StrategyRule(
         name="mumu_close_dialog_cancel",
         source="ocr_mumu_dialog_cancel_fast",
         game_id=GAME_ID,
@@ -32,12 +107,58 @@ _RULES: tuple[StrategyRule, ...] = (
         source="ocr_dialogue_click_fast",
         game_id=GAME_ID,
         summary=(
-            "剧情对话 倒计时区（秒后自动继续）：连点推进区推进对话；"
-            "前置 = 秒后自动继续 文本"
+            "剧情对话：左侧 回顾剧情 仅作识别锚点，点击已校准右下推进区；"
+            "倒计时 秒后自动继续 仍可直接推进，绝不点击 回顾剧情 本身"
         ),
-        allowed_action="click(倒计时区)",
+        allowed_action="click(右下对话推进区 or 倒计时区)",
         risk="low",
         effect="the dialogue advances to the next line",
+        cooldown_s=0.0,
+    ),
+    StrategyRule(
+        name="cutscene_skip",
+        source="ocr_cutscene_skip_fast",
+        game_id=GAME_ID,
+        summary=(
+            "仅当 跳过 位于游戏内容右上、MuMu 标题条以下时点击；"
+            "用于跳过主线过场，普通 跳过 文本不匹配"
+        ),
+        allowed_action="click(top-right 跳过)",
+        risk="low",
+        effect="the cutscene ends and the game world becomes visible",
+        cooldown_s=0.0,
+    ),
+    StrategyRule(
+        name="rescue_little_dragon_choice",
+        source="ocr_rescue_little_dragon_choice_fast",
+        game_id=GAME_ID,
+        summary="小青龙对话中只点击右下的 拯救小龙 选项，进入疗伤互动。",
+        allowed_action="click(拯救小龙)",
+        risk="progression",
+        effect="the little-dragon healing interaction opens",
+        cooldown_s=0.0,
+    ),
+    StrategyRule(
+        name="little_dragon_heal",
+        source="ocr_little_dragon_heal_fast",
+        game_id=GAME_ID,
+        summary=(
+            "拯救重伤的小青龙 和 传功疗伤 同时可见时，点校准后的小青龙头部；"
+            "任一锚点缺失则不触发。"
+        ),
+        allowed_action="click(little dragon head hotspot)",
+        risk="progression",
+        effect="the injured little dragon receives healing and the quest advances",
+        cooldown_s=0.0,
+    ),
+    StrategyRule(
+        name="narrative_continue",
+        source="ocr_narrative_continue_fast",
+        game_id=GAME_ID,
+        summary="结契/剧情完成页下方出现 点击任意处继续 时，点该继续控件。",
+        allowed_action="click(点击任意处继续)",
+        risk="low",
+        effect="the story-completion page closes and the next quest becomes visible",
         cooldown_s=0.0,
     ),
     StrategyRule(

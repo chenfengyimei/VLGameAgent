@@ -182,6 +182,10 @@ class GroundedAction:
             for value in (self.pointer_offset_x, self.pointer_offset_y)
         ):
             raise ContractViolation("grounded pointer offsets must be finite and in [-0.25, 0.25]")
+        if self.kind == GuiActionKind.DRAG and (
+            self.pointer_offset_x == 0.0 and self.pointer_offset_y == 0.0
+        ):
+            raise ContractViolation("grounded drag requires a non-zero endpoint offset")
         if type(self.scroll_delta) is not int:
             raise ContractViolation("grounded scroll delta must be an integer")
         if self.kind == GuiActionKind.SCROLL:

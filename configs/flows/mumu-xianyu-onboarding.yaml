@@ -1,0 +1,166 @@
+version: 1
+game_id: mumu-xianyu
+name: 仙遇初始主线（用户标注优先）
+policy:
+  decision_order: deterministic_rules_then_vision_model
+  unknown_screen: vision_model_fallback
+  keep_running: true
+  notes:
+    - 每次只执行一个动作，并在下一张稳定画面验证结果。
+    - 热点仅能在完整页面锚点同时出现时使用，禁止跨页面套用。
+    - 自动寻路期间只等待；战斗时优先群攻；对话中绝不点击回顾剧情。
+steps:
+  - id: character_create_customize
+    order: 10
+    evidence: docs/assets/mumu-xianyu/onboarding/01-character-create.png
+    source: ocr_character_creation_customize_fast
+    recognize: {all: [创角, 定制细节]}
+    action: click_text:定制细节
+    expected: 打开选择预设页
+  - id: character_preset_start
+    order: 20
+    evidence: docs/assets/mumu-xianyu/onboarding/02-preset-selection.png
+    source: ocr_character_preset_start_fast
+    recognize: {all: [选择预设, 开启仙途]}
+    action: click_text:开启仙途
+    expected: 打开角色名称弹窗
+  - id: character_name_confirm
+    order: 30
+    evidence: docs/assets/mumu-xianyu/onboarding/03-name-confirmation.png
+    source: ocr_character_name_confirm_fast
+    recognize: {all: [请输入名字, 确定], require_nonzero_name_counter: true}
+    action: click_text:确定
+    expected: 确认非空角色名
+  - id: joystick_forward_tutorial
+    order: 40
+    evidence: docs/assets/mumu-xianyu/onboarding/04-joystick-forward-tutorial.png
+    source: ocr_onboarding_joystick_forward_fast
+    recognize: {all: [滑动摇杆可以移动]}
+    action: drag_hotspot:left_joystick_up
+    expected: 角色向前移动并完成移动教学
+  - id: invasion_first_attack
+    order: 50
+    evidence: docs/assets/mumu-xianyu/onboarding/05-invasion-group-attack.png
+    source: ocr_invasion_group_attack_fast
+    recognize: {all: [入侵袭击, 群攻], any: [黑衣人, 恶灵]}
+    action: click_text_offset:群攻:up
+    expected: 敌人受击且任务进度增加
+  - id: auto_navigation_wait
+    order: 60
+    evidence: docs/assets/mumu-xianyu/onboarding/06-auto-navigation.png
+    source: ocr_auto_navigation_wait
+    recognize: {all: [自动寻路中]}
+    action: wait
+    expected: 到达目标或任务状态刷新
+  - id: invasion_followup_attack
+    order: 70
+    evidence: docs/assets/mumu-xianyu/onboarding/07-evil-spirit-group-attack.png
+    source: ocr_invasion_group_attack_fast
+    recognize: {all: [入侵袭击, 群攻], any: [黑衣人, 恶灵]}
+    action: click_text_offset:群攻:up
+    expected: 敌人被击败且战斗结束
+  - id: refreshed_main_quest
+    order: 80
+    evidence: docs/assets/mumu-xianyu/onboarding/08-refreshed-main-quest.png
+    source: ocr_task_panel_fast
+    recognize: {all: [主线], any: [危机四伏, 速回桃源居]}
+    action: click_task_tracker
+    expected: 开始下一段自动寻路
+  - id: first_cutscene_skip
+    order: 90
+    evidence: docs/assets/mumu-xianyu/onboarding/09-cutscene-skip.png
+    source: ocr_cutscene_skip_fast
+    recognize: {all: [跳过], region: game_top_right}
+    action: click_text:跳过
+    expected: 结束过场动画
+  - id: senior_sister_task
+    order: 100
+    evidence: docs/assets/mumu-xianyu/onboarding/10-senior-sister-task.png
+    source: ocr_task_panel_fast
+    recognize: {all: [主线, 与师姐对话]}
+    action: click_task_tracker
+    expected: 自动寻路到师姐并进入对话
+  - id: senior_sister_dialogue
+    order: 110
+    evidence: docs/assets/mumu-xianyu/onboarding/11-senior-sister-dialogue.png
+    source: ocr_dialogue_click_fast
+    recognize: {all: [回顾剧情]}
+    action: click_hotspot:ui_dialogue_advance
+    expected: 推进师姐对话
+  - id: master_task
+    order: 120
+    evidence: docs/assets/mumu-xianyu/onboarding/12-master-task.png
+    source: ocr_task_panel_fast
+    recognize: {all: [主线, 与师父对话]}
+    action: click_task_tracker
+    expected: 自动寻路到师父并进入对话
+  - id: master_dialogue
+    order: 130
+    evidence: docs/assets/mumu-xianyu/onboarding/13-master-dialogue.png
+    source: ocr_dialogue_click_fast
+    recognize: {all: [回顾剧情]}
+    action: click_hotspot:ui_dialogue_advance
+    expected: 推进师父对话
+  - id: spirit_task
+    order: 140
+    evidence: docs/assets/mumu-xianyu/onboarding/14-spirit-task.png
+    source: ocr_task_panel_fast
+    recognize: {all: [主线, 药灵对话]}
+    action: click_task_tracker
+    expected: 自动寻路到药灵并进入对话
+  - id: spirit_dialogue
+    order: 150
+    evidence: docs/assets/mumu-xianyu/onboarding/15-spirit-dialogue.png
+    source: ocr_dialogue_click_fast
+    recognize: {all: [回顾剧情]}
+    action: click_hotspot:ui_dialogue_advance
+    expected: 推进药灵对话
+  - id: second_cutscene_skip
+    order: 160
+    evidence: docs/assets/mumu-xianyu/onboarding/16-cutscene-skip.png
+    source: ocr_cutscene_skip_fast
+    recognize: {all: [跳过], region: game_top_right}
+    action: click_text:跳过
+    expected: 结束过场动画
+  - id: little_dragon_task
+    order: 170
+    evidence: docs/assets/mumu-xianyu/onboarding/17-little-dragon-task.png
+    source: ocr_task_panel_fast
+    recognize: {all: [主线], any: [药园天劫, 前往药园]}
+    action: click_task_tracker
+    expected: 自动寻路并进入小青龙剧情
+  - id: little_dragon_rescue_choice
+    order: 180
+    evidence: docs/assets/mumu-xianyu/onboarding/18-little-dragon-rescue-choice.png
+    source: ocr_rescue_little_dragon_choice_fast
+    recognize: {all: [拯救小龙]}
+    action: click_text:拯救小龙
+    expected: 打开疗伤互动页
+  - id: little_dragon_heal
+    order: 190
+    evidence: docs/assets/mumu-xianyu/onboarding/19-little-dragon-heal.png
+    source: ocr_little_dragon_heal_fast
+    recognize: {all: [拯救重伤的小青龙, 传功疗伤]}
+    action: click_hotspot:ui_little_dragon_heal
+    expected: 点击小青龙头部并完成疗伤
+  - id: little_dragon_dialogue_task
+    order: 200
+    evidence: docs/assets/mumu-xianyu/onboarding/20-little-dragon-dialogue-task.png
+    source: ocr_task_panel_fast
+    recognize: {all: [主线, 与小青龙对话]}
+    action: click_task_tracker
+    expected: 进入疗伤后对话
+  - id: little_dragon_dialogue
+    order: 210
+    evidence: docs/assets/mumu-xianyu/onboarding/21-little-dragon-dialogue.png
+    source: ocr_dialogue_click_fast
+    recognize: {all: [回顾剧情]}
+    action: click_hotspot:ui_dialogue_advance
+    expected: 推进小青龙对话
+  - id: contract_continue
+    order: 220
+    evidence: docs/assets/mumu-xianyu/onboarding/22-contract-continue.png
+    source: ocr_narrative_continue_fast
+    recognize: {all: [点击任意处继续]}
+    action: click_text:点击任意处继续
+    expected: 关闭结契完成页并继续主线

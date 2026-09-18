@@ -51,11 +51,14 @@ class FocusGuard:
         integrity: IntegrityProvider,
         leases: ControlLeaseManager,
         enabled: AgentEnableState,
+        *,
+        restore_foreground: bool = False,
     ) -> None:
         self._windows = windows
         self._integrity = integrity
         self._leases = leases
         self._enabled = enabled
+        self._restore_foreground = restore_foreground
 
     def check(self, target: WindowIdentity, lease: ControlLease) -> GuardDecision:
         if not self._enabled.get():
@@ -67,7 +70,22 @@ class FocusGuard:
         if snapshot.identity != target:
             return GuardDecision(False, GuardReason.TARGET_CHANGED)
         if self._windows.foreground_hwnd() != target.hwnd:
-            return GuardDecision(False, GuardReason.TARGET_NOT_FOREGROUND)
+            request_foreground = getattr(self._windows, "request_foreground", None)
+            if not self._restore_foreground or not callable(request_foreground):
+                return GuardDecision(False, GuardReason.TARGET_NOT_FOREGROUND)
+            try:
+                restored = bool(request_foreground(target.hwnd))
+                # Re-read the identity after the focus transition. A recycled
+                # HWND must never inherit input intended for the old window.
+                refreshed = self._windows.snapshot(target.hwnd)
+            except Exception:
+                return GuardDecision(False, GuardReason.TARGET_NOT_FOREGROUND)
+            if (
+                not restored
+                or self._windows.foreground_hwnd() != target.hwnd
+                or refreshed.identity != target
+            ):
+                return GuardDecision(False, GuardReason.TARGET_NOT_FOREGROUND)
         current_level = self._integrity.current_process()
         target_level = self._integrity.process(target.pid)
         if current_level == IntegrityLevel.UNKNOWN or target_level == IntegrityLevel.UNKNOWN:

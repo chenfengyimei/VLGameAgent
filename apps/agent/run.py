@@ -126,6 +126,21 @@ def _episode_outcome(
     return EpisodeResult.FAILURE, "loop_ended_without_goal_confirmation"
 
 
+def _process_exit_code(
+    *, user_stopped: bool, policy: str, terminal_status: TerminalStatus
+) -> int:
+    """Map an ordinary incomplete run to a restartable process exit.
+
+    Exit 78 is reserved by ``apps.agent.__main__`` for an exception that was
+    positively classified as a fatal provider failure.  Reusing it for every
+    unfinished VLM run made the supervisor stand down after recoverable
+    watchdog/window/runtime interruptions.
+    """
+    if not user_stopped and policy == "vlm" and terminal_status != TerminalStatus.SUCCEEDED:
+        return 1
+    return 0
+
+
 def _capture_backend(
     profile: GameProfile, windows: Win32WindowBackend
 ) -> CaptureBackendRegistry:
@@ -199,6 +214,8 @@ async def _run(args: argparse.Namespace) -> int:
         or args.watchdog_timeout_seconds <= 0
     ):
         raise SystemExit("--watchdog-timeout-seconds must be positive")
+    if not 1_000 <= args.execution_frame_age_ms <= 3_600_000:
+        raise SystemExit("--execution-frame-age-ms must be within [1000, 3600000]")
     for name in ("decision_timeout_seconds", "perception_timeout_seconds"):
         timeout_s = getattr(args, name)
         if not math.isfinite(timeout_s) or timeout_s <= 0:
@@ -317,7 +334,17 @@ async def _run(args: argparse.Namespace) -> int:
     executor = InputExecutor(
         clock,
         SendInputBackend(),
-        FocusGuard(windows, Win32IntegrityProvider(), leases, enabled),
+        FocusGuard(
+            windows,
+            Win32IntegrityProvider(),
+            leases,
+            enabled,
+            # SendInput only targets the foreground window. The dashboard or
+            # another monitor may temporarily take focus during an unattended
+            # run, so reacquire the already identity-validated game window at
+            # the final input boundary.
+            restore_foreground=True,
+        ),
         leases,
     )
     scheduler = ActionScheduler(clock, executor, leases)
@@ -350,19 +377,31 @@ async def _run(args: argparse.Namespace) -> int:
     back_hotspot: tuple[float, float] | None = None
     close_hotspot: tuple[float, float] | None = None
     promote_hotspot: tuple[float, float] | None = None
-    for exit_name in ("ui_back", "ui_close", "ui_promote"):
-        binding = profile.binding(exit_name)
+    dialogue_hotspot: tuple[float, float] | None = None
+    little_dragon_heal_hotspot: tuple[float, float] | None = None
+    for hotspot_name in (
+        "ui_back",
+        "ui_close",
+        "ui_promote",
+        "ui_dialogue_advance",
+        "ui_little_dragon_heal",
+    ):
+        binding = profile.binding(hotspot_name)
         if binding is None:
             continue
         if binding.kind != BindingKind.NORMALIZED_HOTSPOT or binding.hotspot is None:
-            raise SystemExit(f"profile {exit_name} binding must be a normalized_hotspot")
+            raise SystemExit(f"profile {hotspot_name} binding must be a normalized_hotspot")
         if binding.confirmed:
-            if exit_name == "ui_back":
+            if hotspot_name == "ui_back":
                 back_hotspot = binding.hotspot
-            elif exit_name == "ui_close":
+            elif hotspot_name == "ui_close":
                 close_hotspot = binding.hotspot
-            else:
+            elif hotspot_name == "ui_promote":
                 promote_hotspot = binding.hotspot
+            elif hotspot_name == "ui_dialogue_advance":
+                dialogue_hotspot = binding.hotspot
+            else:
+                little_dragon_heal_hotspot = binding.hotspot
     available_keys = frozenset(
         binding.action
         for binding in profile.controls
@@ -408,6 +447,8 @@ async def _run(args: argparse.Namespace) -> int:
                 back_hotspot=back_hotspot,
                 close_hotspot=close_hotspot,
                 promote_hotspot=promote_hotspot,
+                dialogue_hotspot=dialogue_hotspot,
+                little_dragon_heal_hotspot=little_dragon_heal_hotspot,
             )
             policy: ScriptedTapPolicy | None = None
         except BaseException:
@@ -540,6 +581,7 @@ async def _run(args: argparse.Namespace) -> int:
                 profile.perception,
                 verifier=outcome_verifier,
                 max_recoveries=args.max_recoveries,
+                max_execution_frame_age_ns=args.execution_frame_age_ms * 1_000_000,
                 recovery_budget=recovery_budget,
                 task_graph=task_graph,
                 task_node_id=task_node_id if task_graph is not None else None,
@@ -548,6 +590,8 @@ async def _run(args: argparse.Namespace) -> int:
                 back_hotspot=back_hotspot,
                 close_hotspot=close_hotspot,
                 promote_hotspot=promote_hotspot,
+                dialogue_hotspot=dialogue_hotspot,
+                little_dragon_heal_hotspot=little_dragon_heal_hotspot,
                 available_keys=available_keys,
                 allow_calibrated_intents=args.gui_planning_mode == "rules-first",
                 verify_all_actions=args.gui_verification == "always",
@@ -990,12 +1034,11 @@ async def _run(args: argparse.Namespace) -> int:
     if run_error is not None:
         raise run_error
     print(f"physical actions executed: {scheduler.stats().executed}")
-    if (
-        not stop_state["user"] and args.policy == "vlm"
-        and loop.terminal_status != TerminalStatus.SUCCEEDED
-    ):
-        return 78
-    return 0
+    return _process_exit_code(
+        user_stopped=stop_state["user"],
+        policy=args.policy,
+        terminal_status=loop.terminal_status,
+    )
 
 
 def _client_fraction(value: str) -> float:
@@ -1084,6 +1127,17 @@ def build_parser(*, add_help: bool = True) -> argparse.ArgumentParser:
         help=(
             "control-plane liveness timeout; a scheduler stall beyond it trips the "
             "latched safety shutdown"
+        ),
+    )
+    parser.add_argument(
+        "--execution-frame-age-ms",
+        type=int,
+        default=30_000,
+        help=(
+            "max allowed age of the decision and execution frames in the "
+            "pre-submission freshness check (ms). Cloud VLM decisions take "
+            "seconds, so the closed-loop default of 1s rejects every action; "
+            "raise it to cover inference time plus margin"
         ),
     )
     parser.add_argument("--record", type=Path)

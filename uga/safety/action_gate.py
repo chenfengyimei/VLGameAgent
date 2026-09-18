@@ -107,3 +107,33 @@ def generations_consistent(
     ):
         return False, "decision generation became stale"
     return True, "decision generation matches the live snapshots"
+
+
+def deterministic_context_consistent(
+    outcome: PlannerOutcome,
+    decided_snapshot: PerceptionSnapshot,
+    fresh_snapshot: PerceptionSnapshot,
+) -> tuple[bool, str]:
+    """Freshness gate for local deterministic rules.
+
+    A fast OCR rule is produced synchronously from the captured screen and is
+    rechecked before the scheduler runs.  Quest text can legitimately refresh
+    (or OCR can jitter) between those two observations; treating that semantic
+    task counter like a recreated window used to turn a stream of correct
+    ``ocr_*`` decisions into zero physical submissions.  Keep the physical
+    context checks, but deliberately tolerate task-generation churn here.
+    """
+    if (
+        outcome.request_frame_id != decided_snapshot.frame_id
+        or outcome.request_frame_sequence != decided_snapshot.frame_sequence
+        or outcome.window_generation
+        != decided_snapshot.window_identity.window_generation
+        or outcome.geometry_generation != decided_snapshot.geometry_generation
+        or fresh_snapshot.frame_sequence < decided_snapshot.frame_sequence
+        or outcome.window_generation
+        != fresh_snapshot.window_identity.window_generation
+        or outcome.geometry_generation != fresh_snapshot.geometry_generation
+        or decided_snapshot.window_identity != fresh_snapshot.window_identity
+    ):
+        return False, "deterministic rule physical context became stale"
+    return True, "deterministic rule matches the live window and geometry"

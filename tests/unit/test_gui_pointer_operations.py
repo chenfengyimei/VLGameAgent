@@ -7,14 +7,16 @@ from dataclasses import replace
 from tests.integration.test_review_followup import GroundedClickPlanner, make_loop
 from tests.unit.test_grounded_vlm import _large_frame, _reply, _snapshot
 from uga.agent.closed_loop import ClosedLoopSupervisor
+from uga.control.lifetime import ActionLifetime
 from uga.control.physical import MouseButton, MouseButtonAction, WheelAction
 from uga.core.agent_loop import RealtimeAgentLoop
 from uga.environment.profile import PerceptionProfile
 from uga.gui.control_bridge import GuiControlBridge
+from uga.gui.schema import GuiAction, GuiActionKind
 from uga.perception.schema import NormalizedBox
 from uga.policy.grounded_vlm import GroundedVlmPlanner
 from uga.policy.vlm_planner import PlannerReplyError
-from uga.time.clock import ManualClock
+from uga.time.clock import ManualClock, UGATime
 
 
 class GuiPointerOperationTests(unittest.TestCase):
@@ -55,6 +57,24 @@ class GuiPointerOperationTests(unittest.TestCase):
         data["action"]["target_bbox"] = [0, 0, 1, 1]
         with self.assertRaises(PlannerReplyError):
             GroundedVlmPlanner._parse(json.dumps(data), _snapshot())
+
+    def test_drag_holds_then_moves_and_releases(self) -> None:
+        action = GuiAction(
+            "joystick-drag",
+            GuiActionKind.DRAG,
+            ActionLifetime(UGATime(0), UGATime(0), UGATime(1_000_000_000)),
+            x=0.165,
+            y=0.800,
+            end_x=0.165,
+            end_y=0.680,
+        )
+        actions = GuiControlBridge().translate(
+            action, RealtimeAgentLoop._coordinate_transform(_large_frame(100))
+        )
+        buttons = [item for item in actions if isinstance(item, MouseButtonAction)]
+        self.assertEqual([item.is_down for item in buttons], [True, False])
+        self.assertEqual(actions[2].lifetime.effective_from.value_ns, 450_000_000)
+        self.assertEqual(actions[3].lifetime.effective_from.value_ns, 700_000_000)
 
     def test_final_guard_is_local_to_target_not_background_animation(self) -> None:
         source = _large_frame(100)

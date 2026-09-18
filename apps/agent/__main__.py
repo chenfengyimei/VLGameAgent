@@ -7,7 +7,7 @@ import sys
 
 from uga.core.errors import ContractViolation, FatalRuntimeError
 from uga.core.runtime import AgentRuntime
-from uga.policy.vision_transport import ProviderError
+from uga.policy.vision_transport import ProviderError, ProviderErrorKind
 
 
 async def main() -> None:
@@ -42,6 +42,20 @@ def _has_fatal_provider_error(error: BaseException) -> bool:
     return False
 
 
+def _has_restartable_provider_error(error: BaseException) -> bool:
+    """A retired worker needs a fresh process, not manual intervention."""
+    if isinstance(error, ProviderError):
+        return error.kind in {
+            ProviderErrorKind.TIMEOUT,
+            ProviderErrorKind.UNREACHABLE,
+            ProviderErrorKind.RATE_LIMIT,
+            ProviderErrorKind.TRANSIENT_5XX,
+        }
+    if isinstance(error, BaseExceptionGroup):
+        return any(_has_restartable_provider_error(child) for child in error.exceptions)
+    return False
+
+
 def _run_safely(args: argparse.Namespace) -> int:
     try:
         return _run(args)
@@ -49,6 +63,9 @@ def _run_safely(args: argparse.Namespace) -> int:
         print(f"uga-agent: {error}", file=sys.stderr)
         return 2
     except Exception as error:
+        if _has_restartable_provider_error(error):
+            print("uga-agent: restartable provider/runtime failure", file=sys.stderr)
+            return 1
         if not _has_fatal_provider_error(error):
             raise
         # TaskGroup wraps worker failures. Keep the non-retryable outcome

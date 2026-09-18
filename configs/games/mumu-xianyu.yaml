@@ -47,6 +47,18 @@ controls:
     x: 0.320
     y: 0.600
     confirmed: true
+  # 剧情页左中 ``回顾剧情`` 仅是识别锚点，不能点击；右下为空白推进区。
+  ui_dialogue_advance:
+    kind: normalized_hotspot
+    x: 0.960
+    y: 0.915
+    confirmed: true
+  # 小青龙疗伤互动页：仅在“拯救重伤的小青龙”和“传功疗伤”同时识别时点击头部。
+  ui_little_dragon_heal:
+    kind: normalized_hotspot
+    x: 0.568
+    y: 0.588
+    confirmed: true
   dialogue_advance: {kind: virtual_key, code: 32, confirmed: true}
 capabilities:
   realtime_3d: true
