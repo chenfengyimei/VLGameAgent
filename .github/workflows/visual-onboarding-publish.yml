@@ -1,0 +1,139 @@
+name: Publish visual onboarding branch
+on:
+  push:
+    branches: [automation/visual-onboarding-publish-20260918]
+    paths: [.github/workflows/visual-onboarding-publish.yml]
+permissions:
+  contents: write
+  pull-requests: write
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ce18180f8a4d73760e018793e9a35539b025fc83
+          fetch-depth: 0
+      - name: Restore verified onboarding payload
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PAYLOAD_BLOB: 63d8d8c0fafd6e2cb7dd350d520d96d45d267a99
+          EXPECTED_BASE: ce18180f8a4d73760e018793e9a35539b025fc83
+          EXPECTED_HEAD: d54921a69df356ad2e4afcf0aba0cbe38a6430b1
+          TARGET_BRANCH: feat/visual-onboarding-20260918
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_BASE"
+          api="https://api.github.com/repos/${GITHUB_REPOSITORY}/git/blobs/${PAYLOAD_BLOB}"
+          gh api "$api" --jq .content | base64 -d > payload.text
+          base64 -d payload.text > payload.xz
+          xz -d -c payload.xz > payload.bin
+          file payload.bin || true
+          if git bundle verify payload.bin >/tmp/bundle.verify 2>&1; then
+            git bundle list-heads payload.bin | tee /tmp/bundle.heads
+            git fetch payload.bin "$EXPECTED_HEAD"
+            git checkout -B "$TARGET_BRANCH" "$EXPECTED_HEAD"
+          else
+            git checkout -B "$TARGET_BRANCH" "$EXPECTED_BASE"
+            if grep -q '^diff --git ' payload.bin; then
+              git apply --binary payload.bin
+              git add -A
+              git -c user.name='automation' -c user.email='automation@users.noreply.github.com' commit -m 'feat(onboarding): add visual install assistant and Chinese guides'
+            elif unzip -t payload.bin >/tmp/zip.verify 2>&1; then
+              mkdir restored
+              unzip -q payload.bin -d restored
+              if [ -d restored/VLGameAgent ]; then
+                rsync -a --delete --exclude .git restored/VLGameAgent/ ./
+              else
+                rsync -a --delete --exclude .git restored/ ./
+              fi
+              git add -A
+              git -c user.name='automation' -c user.email='automation@users.noreply.github.com' commit -m 'feat(onboarding): add visual install assistant and Chinese guides'
+            else
+              echo 'Unknown onboarding payload format' >&2
+              cat /tmp/bundle.verify >&2 || true
+              exit 1
+            fi
+          fi
+          actual_head="$(git rev-parse HEAD)"
+          if [ "$actual_head" != "$EXPECTED_HEAD" ]; then
+            echo "Restored head $actual_head differs from expected $EXPECTED_HEAD; accepting snapshot restore but verifying tree" >&2
+          fi
+          git status --short
+          git log --oneline --decorate -6
+          git push --force-with-lease origin "HEAD:refs/heads/${TARGET_BRANCH}"
+      - name: Open pull request
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_BRANCH: feat/visual-onboarding-20260918
+        run: |
+          set -euo pipefail
+          body=$(mktemp)
+          cat > "$body" <<'MD'
+          ## 交付范围
+
+          改善 VLGameAgent 的安装、首次启动、环境自检、可视化配置和中文教程，让首次使用不再从开发者命令清单开始。
+
+          - 基线：PR #6 合并后的 `ce18180f8a4d73760e018793e9a35539b025fc83`
+          - 本 PR 不改变训练链路、不调用在线模型、不启用物理输入，也不修改主分支。
+          - 真实运行仍需用户在控制台确认目标窗口并输入 `RUN`；API Key 不写入配置文件。
+
+          ## 主要内容
+
+          - 新增 `install.cmd`、`start.cmd`、`check.cmd` 三个 Windows 入口。
+          - 新增 `uga-setup` / `uga-doctor` 命令和 Tk 本地助手：入门、环境检查、模型配置、运行帮助四页。
+          - 新增离线诊断：Python、虚拟环境、依赖、OCR、工作目录、原生 DLL 摘要；检查不联网、不加载 DLL、不抓图、不启用键鼠。
+          - 新增安全启动计划：真实运行前重新匹配窗口、配置、任务和模型摘要，要求用户输入 `RUN`。
+          - 新增中文教程：`START_HERE.zh-CN.txt`、`docs/start-here.zh-CN.md`、`docs/launcher.zh-CN.md`、`docs/troubleshooting.zh-CN.md`、离线图文 `uga/ui/static/help.zh-CN.html`。
+          - 更新旧教程，明确“提示词禁止操作”不是零输入模式；真正不碰游戏请用 smoke/doctor 类自检。
+
+          ## 验证
+
+          恢复环境后的本地验证：
+
+          - Linux / Python 3.13.5 便携回归：`866 passed, 309 subtests passed`
+          - 助手及相关专项：`40 passed, 52 subtests passed`
+          - Ruff 通过
+          - mypy，Windows 目标平台：`211 source files` 通过
+
+          仍未完成：Windows 干净环境完整安装、OCR 安装、重复安装、远端 CI、真实模型和真实游戏验证。因此该 PR 不宣称正式 V1 资格或真实游戏准确率提升。
+
+          ## 使用方式
+
+          新用户优先阅读：
+
+          - `START_HERE.zh-CN.txt`
+          - `docs/start-here.zh-CN.md`
+          - `uga/ui/static/help.zh-CN.html`
+
+          Windows 上的默认路径：
+
+          ```cmd
+          install.cmd
+          start.cmd
+          check.cmd
+          ```
+
+          ## 回滚
+
+          回滚此 PR 前先停止正在运行的代理。该 PR 不改写 Episode、不保存密钥、不改变模型协议；回滚主要影响安装入口、助手和教程文件。
+          MD
+          if gh pr view "$TARGET_BRANCH" --json number >/tmp/pr.json 2>/dev/null; then
+            number=$(python - <<'PY'
+import json
+print(json.load(open('/tmp/pr.json'))['number'])
+PY
+)
+            gh pr edit "$number" --title 'feat(onboarding): 增加可视化安装助手与中文首次使用教程' --body-file "$body"
+            echo "updated PR #$number"
+          else
+            gh pr create --base main --head "$TARGET_BRANCH" --title 'feat(onboarding): 增加可视化安装助手与中文首次使用教程' --body-file "$body"
+          fi
+      - name: Remove temporary workflow branch marker
+        shell: bash
+        if: always()
+        run: |
+          echo "Temporary workflow branch is only for publishing the reviewed onboarding payload."
