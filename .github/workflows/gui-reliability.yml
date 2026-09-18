@@ -1,0 +1,86 @@
+name: Verify and publish GUI reliability
+on:
+  push:
+    branches: [automation/gui-reliability-20260918]
+    paths: [.github/workflows/gui-reliability.yml, .github/gui-reliability/**]
+permissions:
+  contents: read
+jobs:
+  verify:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    env:
+      OMP_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+      PYTHONUTF8: '1'
+    steps:
+      - name: Preserve source bytes
+        run: git config --global core.autocrlf false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          path: staging
+          persist-credentials: false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          path: work
+          ref: 6dbaa640710874a9fd8b2bfacb345c6ae13e8f65
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.11.9'
+      - name: Restore exact module commits
+        working-directory: work
+        run: python ../staging/.github/gui-reliability/apply.py
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
+        if: runner.os == 'Windows'
+        with:
+          toolchain: 1.97.1
+          components: clippy,rustfmt
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        if: runner.os == 'Windows'
+        with:
+          node-version: '24.15.0'
+      - name: Full locked validation and repeated GUI regressions
+        working-directory: work
+        run: python ../staging/.github/gui-reliability/validate.py
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: gui-reliability-${{ runner.os }}-evidence
+          path: ${{ runner.temp }}/gui-reliability-evidence
+          if-no-files-found: error
+          retention-days: 7
+  publish:
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          path: staging
+          persist-credentials: false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          path: work
+          ref: 6dbaa640710874a9fd8b2bfacb345c6ae13e8f65
+          persist-credentials: false
+      - name: Restore reviewed objects without running project code
+        working-directory: work
+        run: python ../staging/.github/gui-reliability/apply.py
+      - name: Publish non-forced feature branch only
+        working-directory: work
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python ../staging/.github/gui-reliability/publish.py
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: gui-reliability-publication
+          path: ${{ runner.temp }}/gui-publication.json
+          if-no-files-found: error
+          retention-days: 7
