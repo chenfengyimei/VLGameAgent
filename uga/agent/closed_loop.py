@@ -11,6 +11,7 @@ from dataclasses import dataclass, field, replace
 from difflib import SequenceMatcher
 from enum import StrEnum
 
+from uga.agent.gui_effects import GuiEffectTracker
 from uga.agent.progress import (
     LoopDetector,
     LoopFinding,
@@ -29,7 +30,7 @@ from uga.agent.session_state import (
     stable_anchor_tokens,
 )
 from uga.agent.task_graph import TaskGraph, TaskStatus
-from uga.capture.frame import BufferKind, Frame
+from uga.capture.frame import Frame
 from uga.control.execution_receipt import (
     ExecutionReceipt,
     aggregate_receipts,
@@ -50,6 +51,8 @@ from uga.perception.schema import (
     TextRegion,
     WaitReason,
 )
+from uga.perception.visual_digest import digest_difference as _digest_difference
+from uga.perception.visual_digest import region_digest
 from uga.policy.decision_journal import DecisionJournal, DecisionRecord
 from uga.safety.action_gate import (
     generations_consistent,
@@ -123,8 +126,7 @@ class _PendingAction:
     executed_at: UGATime | None = None
     completed_at: UGATime | None = None
     anchor_candidate_frame: str | None = None
-    effect_candidate_frame: str | None = None
-    effect_candidate_at: UGATime | None = None
+    effect_tracker: GuiEffectTracker | None = None
     pre_effect_text: frozenset[str] = field(default_factory=frozenset)
     execution_status: str | None = None
     execution_frame_id: str | None = None
@@ -511,35 +513,6 @@ class ActionValidator:
         return difference > 0.25
 
 
-def region_digest(frame: Frame, box: NormalizedBox) -> bytes:
-    if frame.buffer_handle.kind != BufferKind.CPU_BYTES:
-        raise ContractViolation("target verification requires a CPU-addressable frame")
-    payload = frame.buffer_handle.readonly_view()
-    left = max(0, int(box.left * frame.width))
-    right = min(frame.width, max(left + 1, int(box.right * frame.width)))
-    top = max(0, int(box.top * frame.height))
-    bottom = min(frame.height, max(top + 1, int(box.bottom * frame.height)))
-    # F07: the old [::16] byte stride sampled one colour channel of every
-    # fourth pixel, so a pure red or green state change stayed invisible to
-    # every freshness and effect comparison.  Two bytes per sampled pixel —
-    # luminance plus a channel XOR — always cover every colour channel while
-    # ignoring alpha and stride padding, and the deterministic spatial grid
-    # keeps the sampling bounded on huge regions.
-    width = right - left
-    step = max(1, math.isqrt(max(1, width * (bottom - top)) // 4096))
-    stride = frame.stride_bytes
-    digest = bytearray()
-    for row in range(top, bottom, step):
-        base = row * stride + left * 4
-        for offset in range(0, width * 4, step * 4):
-            blue = payload[base + offset]
-            green = payload[base + offset + 1]
-            red = payload[base + offset + 2]
-            digest.append((29 * blue + 150 * green + 77 * red) >> 8)
-            digest.append(blue ^ green ^ red)
-    return bytes(digest)
-
-
 class ClosedLoopSupervisor:
     """Stateful verifier between a VLM proposal and physical GUI input."""
 
@@ -798,6 +771,9 @@ class ClosedLoopSupervisor:
         sensitive = inspect_sensitive_page(snapshot.visible_text)
         if sensitive.requires_owner:
             self._goal.reset()
+            if self._pending is not None:
+                self._finish_trace(self._pending, "invalidated", sensitive.reason)
+                self._journal_effect(self._pending, "invalidated", sensitive.reason)
             self._pending = None
             self.last_effect_observed = None
             return EffectObservation(False, None, sensitive.reason)
@@ -905,96 +881,93 @@ class ClosedLoopSupervisor:
         # Page-header anchors (灵宠/召唤/布阵/主线 …) are the most stable page
         # transition signal; confirm a flip across two observations so a single
         # OCR miss cannot fake a page change.
-        current_anchors = page_anchor_signature(snapshot.visible_text)
-        anchor_flip = has_new_evidence and current_anchors != pending.anchors
-        anchor_confirmed = False
-        if anchor_flip and not semantic_changed and not target_changed:
-            if pending.anchor_candidate != current_anchors:
-                if not deadline_expired:
-                    pending.anchor_candidate = current_anchors
-                    pending.anchor_candidate_frame = snapshot.frame_id
-                    return EffectObservation(
-                        True, None, "waiting for the page anchor change to stabilize"
-                    )
-                # At the deadline an unconfirmed single-frame flip resolves
-                # honestly below instead of waiting for a confirming frame.
-            else:
-                anchor_confirmed = snapshot.frame_id != pending.anchor_candidate_frame
-        elif not anchor_flip:
-            pending.anchor_candidate = None
         persistent_target_change = False
-        target_still_grounded = (
-            ActionValidator._ocr_target_grounding(pending.action, snapshot) == "match"
-        )
-        if target_changed and not semantic_changed and not target_still_grounded:
-            if pending.pixel_change_candidate_at is None:
-                if not deadline_expired:
-                    pending.pixel_change_candidate_at = snapshot.captured_at
-                    pending.pixel_change_candidate_digest = current_digest
-                    return EffectObservation(
-                        True, None, "waiting for target pixel change to stabilize"
-                    )
-            else:
-                stable_ns = (
-                    snapshot.captured_at.value_ns
-                    - pending.pixel_change_candidate_at.value_ns
+        if pending.action.effect is not None:
+            assert pending.effect_tracker is not None
+            changed, effect_detail = pending.effect_tracker.consider(
+                snapshot, frame, new_evidence=(
+                    has_new_evidence and snapshot.captured_at.value_ns - (
+                        pending.completed_at.value_ns if pending.completed_at is not None
+                        else pending.issued_at.value_ns
+                    ) >= minimum_ns
                 )
-                candidate_stable = (
-                    _digest_difference(
-                        pending.pixel_change_candidate_digest, current_digest
-                    )
-                    <= 0.02
-                )
-                if not candidate_stable:
+            ) if elapsed_ns <= max(minimum_ns, timeout_ns) else (
+                False, "effect verification deadline expired"
+            )
+            persistent_target_change = changed and target_changed
+        else:
+            current_anchors = page_anchor_signature(snapshot.visible_text)
+            anchor_flip = has_new_evidence and current_anchors != pending.anchors
+            anchor_confirmed = False
+            if anchor_flip and not semantic_changed and not target_changed:
+                if pending.anchor_candidate != current_anchors:
                     if not deadline_expired:
-                        # Animated pages may refresh the stabilization window,
-                        # but never the absolute deadline: permanent animation
-                        # falls through to the timeout resolution below.
+                        pending.anchor_candidate = current_anchors
+                        pending.anchor_candidate_frame = snapshot.frame_id
+                        return EffectObservation(
+                            True, None, "waiting for the page anchor change to stabilize"
+                        )
+                    # At the deadline an unconfirmed single-frame flip resolves
+                    # honestly below instead of waiting for a confirming frame.
+                else:
+                    anchor_confirmed = snapshot.frame_id != pending.anchor_candidate_frame
+            elif not anchor_flip:
+                pending.anchor_candidate = None
+            target_still_grounded = (
+                ActionValidator._ocr_target_grounding(pending.action, snapshot) == "match"
+            )
+            if target_changed and not semantic_changed and not target_still_grounded:
+                if pending.pixel_change_candidate_at is None:
+                    if not deadline_expired:
                         pending.pixel_change_candidate_at = snapshot.captured_at
                         pending.pixel_change_candidate_digest = current_digest
                         return EffectObservation(
-                            True, None, "transient target pixels are still changing"
+                            True, None, "waiting for target pixel change to stabilize"
                         )
                 else:
-                    # A stable candidate is real evidence of change; the
-                    # persistence window cannot be extended past the deadline,
-                    # so an already-stable change resolves as persistent.
-                    persistent_target_change = (
-                        stable_ns >= minimum_ns
+                    stable_ns = (
+                        snapshot.captured_at.value_ns
+                        - pending.pixel_change_candidate_at.value_ns
                     )
-                    if not persistent_target_change and not deadline_expired:
-                        return EffectObservation(
-                            True, None, "waiting for target pixel change to persist"
+                    candidate_stable = (
+                        _digest_difference(
+                            pending.pixel_change_candidate_digest, current_digest
                         )
-        elif not target_changed or target_still_grounded:
-            pending.pixel_change_candidate_at = None
-            pending.pixel_change_candidate_digest = b""
-        changed = semantic_changed or persistent_target_change or anchor_confirmed
-        effect_detail = "observed GUI transition; goal completion is independently verified"
-        if pending.action.effect is not None:
-            condition, effect_detail = self._specified_effect(
-                pending, snapshot, frame, has_new_evidence,
-                persistent_target_change, ui_state,
-            )
-            if not condition:
-                pending.effect_candidate_frame = None
-                pending.effect_candidate_at = None
+                        <= 0.02
+                    )
+                    if not candidate_stable:
+                        if not deadline_expired:
+                            # Animated pages may refresh the stabilization window,
+                            # but never the absolute deadline: permanent animation
+                            # falls through to the timeout resolution below.
+                            pending.pixel_change_candidate_at = snapshot.captured_at
+                            pending.pixel_change_candidate_digest = current_digest
+                            return EffectObservation(
+                                True, None, "transient target pixels are still changing"
+                            )
+                    else:
+                        # A stable candidate is real evidence of change; the
+                        # persistence window cannot be extended past the deadline,
+                        # so an already-stable change resolves as persistent.
+                        persistent_target_change = (
+                            stable_ns >= minimum_ns
+                        )
+                        if not persistent_target_change and not deadline_expired:
+                            return EffectObservation(
+                                True, None, "waiting for target pixel change to persist"
+                            )
+            elif not target_changed or target_still_grounded:
+                pending.pixel_change_candidate_at = None
+                pending.pixel_change_candidate_digest = b""
+            changed = semantic_changed or persistent_target_change or anchor_confirmed
+            effect_detail = "observed GUI transition; goal completion is independently verified"
+            if (ActionValidator._ocr_target_grounding(pending.action, snapshot) == "match"
+                    and normalize_visible_text(pending.action.target_label)
+                    in pending.pre_effect_text
+                    and snapshot.mode == pending.mode and snapshot.goal_facts == pending.goal_facts
+                    and ui_state == pending.ui_state):
+                # Unchanged target plus unrelated notification is not its effect.
                 changed = False
-            elif pending.effect_candidate_frame is None:
-                pending.effect_candidate_frame = snapshot.frame_id
-                pending.effect_candidate_at = snapshot.captured_at
-                changed = False
-            else:
-                assert pending.effect_candidate_at is not None
-                changed = (snapshot.frame_id != pending.effect_candidate_frame
-                           and snapshot.captured_at.value_ns
-                           - pending.effect_candidate_at.value_ns >= 100_000_000)
-        elif (ActionValidator._ocr_target_grounding(pending.action, snapshot) == "match"
-              and normalize_visible_text(pending.action.target_label) in pending.pre_effect_text
-              and snapshot.mode == pending.mode and snapshot.goal_facts == pending.goal_facts
-              and ui_state == pending.ui_state):
-            # An unchanged target plus an unrelated notification is not its effect.
-            changed = False
         if changed:
             self._pending = None
             self.last_effect_observed = True
@@ -1779,37 +1752,6 @@ class ClosedLoopSupervisor:
             label,
         )
 
-    @staticmethod
-    def _specified_effect(
-        pending: _PendingAction, snapshot: PerceptionSnapshot, frame: Frame,
-        new_evidence: bool, target_changed: bool,
-        ui_state: tuple[tuple[str, bool, bool], ...],
-    ) -> tuple[bool, str]:
-        spec = pending.action.effect
-        assert spec is not None
-        if not new_evidence:
-            return False, "waiting for a frame captured after the complete operation"
-        observed = frozenset(normalize_visible_text(region.text)
-                             for region in snapshot.visible_text if region.confidence >= 0.65)
-        literal = normalize_visible_text(spec.text or "")
-        before = any(literal in text for text in pending.pre_effect_text) if literal else False
-        after = any(literal in text for text in observed) if literal else False
-        if spec.kind == "text_appears":
-            return not before and after, "observed stable new text: " + (spec.text or "")
-        if spec.kind == "text_disappears":
-            # Empty OCR is unknown, not proof that a label disappeared.
-            return before and not after and bool(observed), "observed text disappearance"
-        if spec.kind == "target_changes":
-            target = normalize_visible_text(pending.action.target_label)
-            old = tuple(item for item in pending.ui_state if item[0] == target)
-            new = tuple(item for item in ui_state if item[0] == target)
-            return target_changed or (bool(old) and old != new), "observed stable target change"
-        removed = pending.pre_effect_text - observed
-        added = observed - pending.pre_effect_text
-        substantial = len(removed) >= 2 and len(added) >= 2
-        return (snapshot.mode != pending.mode or (substantial and
-                len(removed) >= len(pending.pre_effect_text) / 2)), "observed stable scene change"
-
     def planner_feedback(self, task_generation: int | None = None) -> str:
         """Bounded executed/effect facts, available even without a game strategy."""
         records = [item for item in self._feedback
@@ -1994,6 +1936,9 @@ class ClosedLoopSupervisor:
             window_identity=snapshot.window_identity,
             geometry_generation=snapshot.geometry_generation,
             task_generation=snapshot.task_generation,
+            effect_tracker=(
+                GuiEffectTracker(action, snapshot, frame) if action.effect is not None else None
+            ),
             pre_effect_text=frozenset(normalize_visible_text(region.text)
                                      for region in snapshot.visible_text
                                      if region.confidence >= 0.65),
@@ -2217,12 +2162,6 @@ def _hotspot_box(hotspot: tuple[float, float]) -> NormalizedBox:
 
 def _box_tuple(box: NormalizedBox | None) -> tuple[float, float, float, float] | None:
     return None if box is None else (box.left, box.top, box.right, box.bottom)
-
-
-def _digest_difference(before: bytes, after: bytes) -> float:
-    if not before or len(before) != len(after):
-        return 1.0
-    return sum(a != b for a, b in zip(before, after, strict=True)) / len(before)
 
 
 def _meaningful_text_change(before: frozenset[str], after: frozenset[str]) -> bool:
