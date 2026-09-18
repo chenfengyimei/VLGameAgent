@@ -31,15 +31,27 @@ class Deadline:
     expires_at: float
     cancelled: Callable[[], bool] = lambda: False
     aborted: threading.Event = field(default_factory=threading.Event)
+    _started_at: float | None = field(default=None, init=False, repr=False)
+    _duration: float = field(default=math.inf, init=False, repr=False)
 
     @classmethod
     def after(cls, seconds: float, cancelled: Callable[[], bool] = lambda: False) -> Deadline:
         if isinstance(seconds, bool) or not math.isfinite(seconds) or seconds <= 0:
             raise ContractViolation("operation deadline must be finite and positive")
-        return cls(time.monotonic() + seconds, cancelled)
+        started_at = time.monotonic()
+        deadline = cls(started_at + seconds, cancelled)
+        deadline._started_at, deadline._duration = started_at, seconds
+        return deadline
 
     def remaining(self) -> float:
-        remaining = self.expires_at - time.monotonic()
+        now = time.monotonic()
+        remaining = self.expires_at - now
+        if self._started_at is not None:
+            # Subtracting two large absolute timestamps can round ABOVE the
+            # requested relative budget, especially within one Windows tick.
+            # Keep the original duration and deduct elapsed time directly too.
+            remaining = min(remaining, self._duration,
+                            self._duration - (now - self._started_at))
         if self.aborted.is_set() or remaining <= 0:
             raise DeadlineExceeded("operation exceeded its total deadline or was abandoned")
         return remaining

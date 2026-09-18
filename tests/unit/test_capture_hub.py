@@ -210,13 +210,27 @@ class CaptureHubTests(unittest.IsolatedAsyncioTestCase):
         stop = asyncio.Event()
         task = asyncio.create_task(hub.run(stop))
 
-        await asyncio.sleep(0.65)
-        stop.set()
-        await task
+        # This real-thread smoke test proves liveness and timestamp accounting,
+        # not a throughput guarantee from the Windows host scheduler. The
+        # virtual-clock tests below exercise the exact start-to-start cadence.
+        deadline = asyncio.get_running_loop().time() + 3.0
+        try:
+            while hub.stats().fallback_frames < 3:
+                if task.done():
+                    await task
+                if asyncio.get_running_loop().time() >= deadline:
+                    self.fail("fallback source did not publish three frames")
+                await asyncio.sleep(0.005)
+        finally:
+            stop.set()
+            await asyncio.wait_for(task, timeout=2.0)
 
         stats = hub.stats()
         self.assertGreaterEqual(stats.fallback_frames, 3)
-        self.assertLess(stats.max_gap_ns, 300_000_000)
+        timestamps = [item.frame.capture_timestamp.value_ns for item in hub._frames.snapshot()]
+        gaps = [right - left for left, right in zip(timestamps, timestamps[1:], strict=False)]
+        self.assertTrue(all(gap > 0 for gap in gaps))
+        self.assertEqual(stats.max_gap_ns, max(gaps))
 
     def test_gap_statistics_stay_bounded_over_long_runs(self) -> None:
         # F16 checks statistics retention, not Windows timer resolution or

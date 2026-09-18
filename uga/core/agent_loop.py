@@ -657,7 +657,6 @@ class RealtimeAgentLoop:
             # consumer must act on the SUPERVISED outcome.  Submitting the
             # raw planner proposal once sent a routed exit's original box —
             # parked on MuMu's own title-bar close button — to SendInput.
-            closed_loop.record_decision_feedback(supervised)
             outcome = supervised.outcome
             execution_item = latest_after_inference
             if supervised.disposition in {DecisionDisposition.EXECUTE, DecisionDisposition.RECOVER}:
@@ -683,10 +682,15 @@ class RealtimeAgentLoop:
                 )
                 sensitive = inspect_sensitive_page(final_perception.visible_text, outcome.action)
                 if sensitive.requires_owner:
+                    self._leases.revoke_all()
+                    self._scheduler.neutralize()
                     execution_fresh, execution_reason = False, sensitive.reason
                 if (execution_fresh and outcome.action is not None
                         and supervised.disposition == DecisionDisposition.EXECUTE):
-                    if outcome.action.target_box is not None:
+                    execution_fresh, execution_reason = ActionValidator.validate_fresh_target(
+                        outcome.action, fresh_perception, final_perception
+                    )
+                    if execution_fresh and outcome.action.target_box is not None:
                         verdict = point_is_clickable(
                             resolved_click_point(outcome.action),
                             no_click_regions=closed_loop.no_click_regions,
@@ -717,6 +721,9 @@ class RealtimeAgentLoop:
                     execution_item = current_item
                     latest_after_inference = current_item
                     fresh_perception = final_perception
+            # The final guard can downgrade a prior EXECUTE. Feedback must
+            # describe this final decision, not the stale pre-guard approval.
+            closed_loop.record_decision_feedback(supervised)
             supervision = supervised
             self._last_supervision_disposition = supervised.disposition.value
             self._last_supervision_reason = supervised.reason

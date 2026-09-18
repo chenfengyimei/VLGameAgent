@@ -200,3 +200,11 @@ These explain model families/interfaces; the bounded GUI schema, coordinate scal
 verification policy here are application contracts, not claims of provider-certified accuracy.
 Source Episodes remain immutable. This change neither migrates neural model artifacts nor
 promotes V1 qualification. Roll back the coherent code version only after stopping input.
+
+## Post-merge reliability follow-up
+
+The [GUI reliability review](../reviews/gui-reliability-2026-09-18.md) documents
+final target-state revalidation, local pixel evidence for explicit effects,
+acquisition-time settling and bounded baseline retention. No new launch flags
+are required; uncertain or contradictory evidence causes re-observation rather
+than an unconditional click or a false effect-success claim.
