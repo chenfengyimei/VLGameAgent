@@ -218,10 +218,16 @@ class OpenAICompatibleVisionClient:
         instruction: str,
         response_format: dict[str, Any] | None = None,
     ) -> str:
-        """Send one or more frames (oldest first) plus the instruction."""
+        """Send bounded images in the prompt's declared overview/detail order."""
         checkpoint()
         if not images or len(images) > request_policy(self._model).max_images:
             raise ContractViolation("vision client requires a bounded, non-empty image list")
+        if (not isinstance(instruction, str) or not instruction.strip()
+                or len(instruction) > 65536):
+            raise ContractViolation("vision instruction must contain 1..65536 characters")
+        if (any(not isinstance(image, bytes) or not 0 < len(image) <= 8 * 1024 * 1024
+                for image in images) or sum(map(len, images)) > 20 * 1024 * 1024):
+            raise ContractViolation("vision image bytes exceed per-image or request limits")
         content: list[dict[str, Any]] = [
             {
                 "type": "image_url",
@@ -246,9 +252,6 @@ class OpenAICompatibleVisionClient:
             # malformed string field from monopolising the single inference slot.
             "max_tokens": self._max_output_tokens,
         }
-        if self._disable_thinking:
-            # Zhipu-style switch: answer directly without a reasoning pass.
-            payload["thinking"] = {"type": "disabled"}
         if self._extra_body:
             # Provider-specific request fields, e.g. DashScope Qwen3
             # {"enable_thinking": false} or sampling overrides.
@@ -318,9 +321,12 @@ class OpenAICompatibleVisionClient:
             raise ProviderError(
                 ProviderErrorKind.MALFORMED_OUTPUT, "vision reply message is malformed"
             )
-        if body["choices"][0].get("finish_reason") in {"length", "content_filter"}:
+        if (body["choices"][0].get("finish_reason") in {
+            "length", "content_filter", "tool_calls", "function_call"
+        } or message.get("tool_calls") or message.get("function_call")):
             raise ProviderError(
-                ProviderErrorKind.MALFORMED_OUTPUT, "vision reply was truncated or filtered"
+                ProviderErrorKind.MALFORMED_OUTPUT,
+                "vision reply was truncated, filtered or requested unauthorized tools"
             )
         reply_text = message.get("content")
         if not isinstance(reply_text, str) or not reply_text.strip():

@@ -39,6 +39,13 @@ reference-only JSONL. Evidence coverage and active execution are reported as
 separate durations; neither uses action TTL. Both public run entries accept
 `--decision-timeout-seconds` and `--perception-timeout-seconds`.
 
+## GUI model closed loop
+
+The [GUI-first model guide](docs/guides/gui-model-closed-loop.md) covers Qwen3-VL-4B
+and GLM-4.6V, explicit coordinate scales, current/history/detail input roles,
+model-first planning, independent verification and receipt-backed postconditions.
+Use it for the live GUI path; neural motor training is a separate workflow.
+
 ## Optional neural motor development
 
 The [neural motor guide](docs/guides/neural-motor-training.md) adds a real

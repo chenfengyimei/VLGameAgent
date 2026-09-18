@@ -19,7 +19,10 @@ def strict_finite_number(value: Any) -> float:
     """A JSON number (never ``bool``, never ``str``) that must be finite."""
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise ValueError(f"expected a number, got {type(value).__name__}")
-    number = float(value)
+    try:
+        number = float(value)
+    except OverflowError as exc:
+        raise ValueError("number exceeds finite range") from exc
     if not math.isfinite(number):
         raise ValueError("number must be finite (NaN/Infinity rejected)")
     return number

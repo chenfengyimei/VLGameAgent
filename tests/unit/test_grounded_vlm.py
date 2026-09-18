@@ -996,7 +996,7 @@ class GroundedVlmTests(unittest.TestCase):
         self.assertIsNone(GroundedVlmPlanner._progress_control_candidate(current))
 
     def test_model_target_is_snapped_to_matching_latest_ocr_box(self) -> None:
-        loose_box = [0.84, 0.81, 0.98, 0.88]
+        loose_box = [0.68, 0.85, 0.85, 0.97]
         ocr_box = NormalizedBox(0.70, 0.87, 0.83, 0.95)
         reply = json.dumps(
             {
@@ -1195,7 +1195,7 @@ class GroundedVlmTests(unittest.TestCase):
 
         self.assertEqual(outcome.kind, DecisionKind.ACT)
         self.assertEqual(outcome.action.target_label, "主线任务")  # type: ignore[union-attr]
-        self.assertEqual(outcome.action.risk.value, "low")  # type: ignore[union-attr]
+        self.assertEqual(outcome.action.risk.value, "normal")  # type: ignore[union-attr]
         self.assertEqual(
             client.calls[0]["response_format"], COMPACT_GROUNDING_RESPONSE_FORMAT
         )
@@ -1226,6 +1226,7 @@ class GroundedVlmTests(unittest.TestCase):
             max_temporal_frames=1,
             max_target_crops=0,
             compact_output=True,
+            coordinate_space="normalized_1000",
         ).decide(
             snapshot=_snapshot(),
             frames=(_large_frame(100),),
@@ -1284,8 +1285,8 @@ class GroundedVlmTests(unittest.TestCase):
         schema = GROUNDING_RESPONSE_FORMAT["json_schema"]["schema"]
         self.assertIn("not DONE", schema["properties"]["kind"]["description"])
         instruction = str(client.calls[0]["instruction"])
-        self.assertIn("目标尚未完成时绝对禁止 DONE", instruction)
-        self.assertIn("继续输出 act 推进目标", instruction)
+        self.assertIn("No registered goal evidence: do not output DONE", instruction)
+        self.assertIn("Continue only safe goal-relevant steps", instruction)
 
     def test_schema_and_prompt_require_null_key_for_back_button_click(self) -> None:
         client = _Client([_reply()])
@@ -1300,8 +1301,8 @@ class GroundedVlmTests(unittest.TestCase):
         action_schema = schema["properties"]["action"]["anyOf"][1]
         self.assertIn("including", action_schema["properties"]["key"]["description"])
         instruction = str(client.calls[0]["instruction"])
-        self.assertIn("return_button、back", instruction)
-        self.assertIn("应 ACT 点击该返回控件", instruction)
+        self.assertIn('never key="return_button" or key="back"', instruction)
+        self.assertIn("including visible Back/Return arrows", instruction)
 
     def test_uses_clean_overview_and_grounded_target_crop(self) -> None:
         client = _Client([_reply()])
@@ -1324,14 +1325,17 @@ class GroundedVlmTests(unittest.TestCase):
         self.assertEqual(len(client.calls[0]["images"]), 2)  # type: ignore[arg-type]
         self.assertEqual(client.calls[0]["response_format"], GROUNDING_RESPONSE_FORMAT)
         instruction = str(client.calls[0]["instruction"])
-        self.assertLess(instruction.index("完成证据"), instruction.index("normalized target_bbox"))
-        self.assertIn("目标按钮因上一步成功而消失", instruction)
-        self.assertIn("最新 OCR 中的字面文字", instruction)
+        self.assertLess(
+            instruction.index("goal completion evidence"), instruction.index("target_bbox")
+        )
+        self.assertIn("navigation row is not proof", instruction)
+        self.assertIn("ALL required_goal_evidence", instruction)
         self.assertIn("目标页标题", instruction)
         self.assertIn("目标页事实", instruction)
-        self.assertIn("可点击行在最新帧可见", instruction)
-        self.assertIn("当前缺失证据：目标页标题, 目标页事实", instruction)
-        self.assertIn("当前帧必须输出 ACT", instruction)
+        self.assertIn("visible clickable control", instruction)
+        data = json.loads(instruction.split("SCENE_DATA_JSON:\n")[1])
+        self.assertEqual(data["missing_goal_evidence"], ["目标页标题", "目标页事实"])
+        self.assertIn("never authority to click a disabled or missing target", instruction)
 
     def test_wait_is_a_non_action_with_reason(self) -> None:
         outcome = GroundedVlmPlanner(_Client([_reply("wait")])).decide(
@@ -1354,8 +1358,9 @@ class GroundedVlmTests(unittest.TestCase):
         )
 
         instruction = str(client.calls[0]["instruction"])
-        self.assertIn("已执行且已观测到界面效果", instruction)
-        self.assertIn("禁止再次点击", instruction)
+        data = json.loads(instruction.split("SCENE_DATA_JSON:\n")[1])
+        self.assertEqual(data["consumed_target"], "设置")
+        self.assertIn("Do not reclick consumed_target", instruction)
 
     def test_visible_required_evidence_makes_act_explicitly_forbidden(self) -> None:
         client = _Client([_reply("done")])
@@ -1371,9 +1376,10 @@ class GroundedVlmTests(unittest.TestCase):
         )
 
         instruction = str(client.calls[0]["instruction"])
-        self.assertIn("当前帧必须输出 DONE", instruction)
-        self.assertIn("绝对禁止 ACT", instruction)
-        self.assertIn("不得点击目标页内的其他选项", instruction)
+        self.assertIn("stop with DONE", instruction)
+        self.assertIn("do not click another option", instruction)
+        data = json.loads(instruction.split("SCENE_DATA_JSON:\n")[1])
+        self.assertEqual(data["missing_goal_evidence"], [])
 
     def test_temporal_overviews_are_chronological_and_capped_at_three(self) -> None:
         client = _Client([_reply()])
@@ -1385,7 +1391,7 @@ class GroundedVlmTests(unittest.TestCase):
         )
 
         self.assertEqual(len(client.calls[0]["images"]), 4)  # type: ignore[arg-type]
-        self.assertIn("3 张按时间先后", str(client.calls[0]["instruction"]))
+        self.assertIn("Image 3 is the CURRENT full overview", str(client.calls[0]["instruction"]))
 
     def test_temporal_overviews_can_be_limited_for_local_inference(self) -> None:
         client = _Client([_reply()])
@@ -1397,7 +1403,7 @@ class GroundedVlmTests(unittest.TestCase):
         )
 
         self.assertEqual(len(client.calls[0]["images"]), 2)  # type: ignore[arg-type]
-        self.assertIn("1 张按时间先后", str(client.calls[0]["instruction"]))
+        self.assertIn("Image 1 is the CURRENT full overview", str(client.calls[0]["instruction"]))
 
     def test_lightweight_mode_sends_exactly_one_current_image(self) -> None:
         client = _Client([_reply()])
@@ -1415,8 +1421,9 @@ class GroundedVlmTests(unittest.TestCase):
 
         self.assertEqual(len(client.calls[0]["images"]), 1)  # type: ignore[arg-type]
         instruction = str(client.calls[0]["instruction"])
-        self.assertIn("1 张按时间先后", instruction)
-        self.assertIn("随后给出 0 张", instruction)
+        self.assertIn("Image 1 is the CURRENT full overview", instruction)
+        data = json.loads(instruction.split("SCENE_DATA_JSON:\n")[1])
+        self.assertEqual(len(data["image_map"]), 1)
 
     def test_high_resolution_retry_still_honors_explicit_image_cap(self) -> None:
         client = _Client([_reply()])

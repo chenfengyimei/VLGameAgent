@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import json
 import math
 import re
 import time
 import uuid
+from collections import deque
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
 from difflib import SequenceMatcher
@@ -118,6 +120,11 @@ class _PendingAction:
     receipts: list[ExecutionReceipt] = field(default_factory=list)
     executed_primitives: int = 0
     executed_at: UGATime | None = None
+    completed_at: UGATime | None = None
+    anchor_candidate_frame: str | None = None
+    effect_candidate_frame: str | None = None
+    effect_candidate_at: UGATime | None = None
+    pre_effect_text: frozenset[str] = field(default_factory=frozenset)
     execution_status: str | None = None
     execution_frame_id: str | None = None
     window_identity: WindowIdentity | None = None
@@ -386,19 +393,24 @@ class ActionValidator:
                 grounding == "missing"
                 and grounding_decided == "missing"
                 and action.confidence >= _VISUAL_CLICK_MIN_CONFIDENCE
-                and action.kind == GuiActionKind.CLICK
+                and action.kind in {GuiActionKind.CLICK, GuiActionKind.DOUBLE_CLICK,
+                                    GuiActionKind.RIGHT_CLICK, GuiActionKind.LONG_CLICK,
+                                    GuiActionKind.SCROLL}
             )
-            if not visual_only:
-                if (
-                    self._target_changed(action.target_box, decided_frame, fresh_frame)
-                    and grounding != "match"
-                ):
-                    return False, "target pixels changed while the model was deciding"
-                if not secondary_verified:
-                    if grounding == "missing":
-                        return False, "target no longer exists at the grounded OCR region"
-                    if grounding == "conflict":
-                        return False, "OCR and model target grounding conflict"
+            # A high-confidence icon is not exempt from visual freshness.
+            if (self._target_changed(action.target_box, decided_frame, fresh_frame)
+                    and grounding != "match"):
+                return False, "target pixels changed while the model was deciding"
+            if grounding != "match" and any(
+                normalize_visible_text(region.text) == normalized_target
+                and region.confidence >= 0.5 for region in fresh_snapshot.visible_text
+            ):
+                return False, "target text is visible elsewhere, not at the proposed location"
+            if not visual_only and not secondary_verified:
+                if grounding == "missing":
+                    return False, "target no longer exists at the grounded OCR region"
+                if grounding == "conflict":
+                    return False, "OCR and model target grounding conflict"
             for element in fresh_snapshot.ui_elements:
                 if (
                     action.target_box.intersection_ratio(element.box) >= 0.35
@@ -516,6 +528,8 @@ class ClosedLoopSupervisor:
         max_stuck_waits: int = 10,
         on_exit_executed: Callable[[], None] | None = None,
         max_execution_frame_age_ns: int = 1_000_000_000,
+        allow_calibrated_intents: bool = True,
+        verify_all_actions: bool = False,
     ) -> None:
         if not 0 <= max_recoveries <= 2:
             raise ContractViolation("closed-loop recoveries must be within [0, 2]")
@@ -550,6 +564,8 @@ class ClosedLoopSupervisor:
         self._clock = clock
         self._profile = profile
         self._verifier = verifier
+        self._allow_calibrated_intents = allow_calibrated_intents
+        self._verify_all_actions = verify_all_actions
         if back_hotspot is None:
             self._back_hotspot: tuple[float, float] | None = None
         else:
@@ -597,6 +613,7 @@ class ClosedLoopSupervisor:
         self._preferred_action_consumed = False
         self._consumed_target_rejections = 0
         self._validator = ActionValidator(profile)
+        self._feedback: deque[dict[str, object]] = deque(maxlen=6)
         self._pending: _PendingAction | None = None
         self._uncertain_retries = 0
         self._ineffective: dict[str, int] = {}
@@ -808,8 +825,8 @@ class ClosedLoopSupervisor:
                 )
             return EffectObservation(False, False, "action execution was never confirmed")
         elapsed_ns = observed_now_ns - (
-            pending.executed_at.value_ns
-            if pending.executed_at is not None
+            pending.completed_at.value_ns
+            if pending.completed_at is not None
             else pending.issued_at.value_ns
         )
         # Numeric-only OCR jitter (counters, timers, ratios) must never fake an
@@ -823,7 +840,7 @@ class ClosedLoopSupervisor:
         has_new_evidence = (
             snapshot.frame_id != pending.execution_frame_id
             and snapshot.captured_at.value_ns > (
-                pending.executed_at.value_ns if pending.executed_at is not None
+                pending.completed_at.value_ns if pending.completed_at is not None
                 else pending.issued_at.value_ns
             )
         )
@@ -858,13 +875,14 @@ class ClosedLoopSupervisor:
             if pending.anchor_candidate != current_anchors:
                 if not deadline_expired:
                     pending.anchor_candidate = current_anchors
+                    pending.anchor_candidate_frame = snapshot.frame_id
                     return EffectObservation(
                         True, None, "waiting for the page anchor change to stabilize"
                     )
                 # At the deadline an unconfirmed single-frame flip resolves
                 # honestly below instead of waiting for a confirming frame.
             else:
-                anchor_confirmed = True
+                anchor_confirmed = snapshot.frame_id != pending.anchor_candidate_frame
         elif not anchor_flip:
             pending.anchor_candidate = None
         persistent_target_change = False
@@ -915,6 +933,31 @@ class ClosedLoopSupervisor:
             pending.pixel_change_candidate_at = None
             pending.pixel_change_candidate_digest = b""
         changed = semantic_changed or persistent_target_change or anchor_confirmed
+        effect_detail = "observed GUI transition; goal completion is independently verified"
+        if pending.action.effect is not None:
+            condition, effect_detail = self._specified_effect(
+                pending, snapshot, frame, has_new_evidence,
+                persistent_target_change, ui_state,
+            )
+            if not condition:
+                pending.effect_candidate_frame = None
+                pending.effect_candidate_at = None
+                changed = False
+            elif pending.effect_candidate_frame is None:
+                pending.effect_candidate_frame = snapshot.frame_id
+                pending.effect_candidate_at = snapshot.captured_at
+                changed = False
+            else:
+                assert pending.effect_candidate_at is not None
+                changed = (snapshot.frame_id != pending.effect_candidate_frame
+                           and snapshot.captured_at.value_ns
+                           - pending.effect_candidate_at.value_ns >= 100_000_000)
+        elif (ActionValidator._ocr_target_grounding(pending.action, snapshot) == "match"
+              and normalize_visible_text(pending.action.target_label) in pending.pre_effect_text
+              and snapshot.mode == pending.mode and snapshot.goal_facts == pending.goal_facts
+              and ui_state == pending.ui_state):
+            # An unchanged target plus an unrelated notification is not its effect.
+            changed = False
         if changed:
             self._pending = None
             self.last_effect_observed = True
@@ -941,9 +984,9 @@ class ClosedLoopSupervisor:
                 self._recovery_in_progress = None
                 self._last_failed_action_key = None
             self._ineffective.pop(self._action_key(pending.action), None)
-            self._finish_trace(pending, "verified", str(pending.action.expected_effect))
-            self._journal_effect(pending, "verified", str(pending.action.expected_effect))
-            return EffectObservation(False, True, pending.action.expected_effect)
+            self._finish_trace(pending, "verified", effect_detail)
+            self._journal_effect(pending, "verified", effect_detail)
+            return EffectObservation(False, True, effect_detail)
         if elapsed_ns < max(minimum_ns, timeout_ns):
             return EffectObservation(True, None, "waiting for the expected visual effect")
         key = self._action_key(pending.action)
@@ -1253,6 +1296,7 @@ class ClosedLoopSupervisor:
                 or self._promote_hotspot is not None
             )
             and is_trusted_deterministic_source(decision_source)
+            and not self._verify_all_actions
         ):
             # A reserved label is display text, not a permission: it only
             # reaches this deterministic branch when trusted runtime rule code
@@ -1283,7 +1327,8 @@ class ClosedLoopSupervisor:
                 "deterministic exit control executed without OCR grounding",
                 outcome,
             )
-        if self._is_back_intent(outcome.action):
+        if (self._allow_calibrated_intents and not self._verify_all_actions
+                and self._is_back_intent(outcome.action)):
             # Graphical back/close controls carry no OCR text, so model boxes
             # on them can never pass OCR grounding and would block-loop the
             # cycle.  Route the model's exit *intent* through the user-
@@ -1341,7 +1386,7 @@ class ClosedLoopSupervisor:
                     outcome, "high-resolution recovery remained below confidence threshold"
                 )
             return self._retry_or_block(outcome, "decision confidence is at or below 0.55")
-        requires_verifier = confidence <= 0.85
+        requires_verifier = self._verify_all_actions or confidence <= 0.85
         secondary_verified = False
         if requires_verifier:
             if self._verifier is None:
@@ -1370,6 +1415,8 @@ class ClosedLoopSupervisor:
             if reason in {
                 "decision generation became stale",
                 "target no longer exists at the grounded OCR region",
+                "target text is visible elsewhere, not at the proposed location",
+                "target pixels changed while the model was deciding",
             }:
                 self._stale_results_discarded += 1
                 return SupervisedDecision(
@@ -1484,7 +1531,8 @@ class ClosedLoopSupervisor:
 
         Receipts for an already-completed or unknown action are ignored and
         each primitive is recorded at most once.  The FIRST executed receipt
-        anchors the effect clock; once every expected primitive has reported,
+        records execution start; the LAST executed receipt anchors effect
+        observation. Once every expected primitive has reported,
         the aggregate classifies the execution (executed / partial / rejected
         / expired / flushed) for trace honesty.
         """
@@ -1504,6 +1552,8 @@ class ClosedLoopSupervisor:
             pending.receipts.append(receipt)
             if receipt.executed:
                 pending.executed_primitives += 1
+                if pending.completed_at is None or receipt.at > pending.completed_at:
+                    pending.completed_at = receipt.at
                 if (
                     pending.executed_at is None
                     or receipt.at.value_ns < pending.executed_at.value_ns
@@ -1692,6 +1742,55 @@ class ClosedLoopSupervisor:
             label,
         )
 
+    @staticmethod
+    def _specified_effect(
+        pending: _PendingAction, snapshot: PerceptionSnapshot, frame: Frame,
+        new_evidence: bool, target_changed: bool,
+        ui_state: tuple[tuple[str, bool, bool], ...],
+    ) -> tuple[bool, str]:
+        spec = pending.action.effect
+        assert spec is not None
+        if not new_evidence:
+            return False, "waiting for a frame captured after the complete operation"
+        observed = frozenset(normalize_visible_text(region.text)
+                             for region in snapshot.visible_text if region.confidence >= 0.65)
+        literal = normalize_visible_text(spec.text or "")
+        before = any(literal in text for text in pending.pre_effect_text) if literal else False
+        after = any(literal in text for text in observed) if literal else False
+        if spec.kind == "text_appears":
+            return not before and after, "observed stable new text: " + (spec.text or "")
+        if spec.kind == "text_disappears":
+            # Empty OCR is unknown, not proof that a label disappeared.
+            return before and not after and bool(observed), "observed text disappearance"
+        if spec.kind == "target_changes":
+            target = normalize_visible_text(pending.action.target_label)
+            old = tuple(item for item in pending.ui_state if item[0] == target)
+            new = tuple(item for item in ui_state if item[0] == target)
+            return target_changed or (bool(old) and old != new), "observed stable target change"
+        removed = pending.pre_effect_text - observed
+        added = observed - pending.pre_effect_text
+        substantial = len(removed) >= 2 and len(added) >= 2
+        return (snapshot.mode != pending.mode or (substantial and
+                len(removed) >= len(pending.pre_effect_text) / 2)), "observed stable scene change"
+
+    def planner_feedback(self, task_generation: int | None = None) -> str:
+        """Bounded executed/effect facts, available even without a game strategy."""
+        records = [item for item in self._feedback
+                   if task_generation is None or item["task_generation"] == task_generation]
+        return json.dumps({"recent_actions": records, "effect_pending": self._pending is not None,
+                           "terminal": self.status.value},
+                          ensure_ascii=False, separators=(",", ":"))
+
+    def record_decision_feedback(self, decision: SupervisedDecision) -> None:
+        action = decision.outcome.action
+        if action is not None and decision.disposition not in {
+            DecisionDisposition.EXECUTE, DecisionDisposition.RECOVER
+        }:
+            self._feedback.append({"action": action.kind.value, "target": action.target_label[:80],
+                                   "status": decision.disposition.value,
+                                   "reason": decision.reason[:240],
+                                   "task_generation": decision.outcome.task_generation})
+
     def to_gui_action(
         self, outcome: PlannerOutcome, key_resolver: KeyResolver
     ) -> GuiAction:
@@ -1721,6 +1820,7 @@ class ClosedLoopSupervisor:
             x=min(1.0, max(0.0, center.x + action.pointer_offset_x)),
             y=min(1.0, max(0.0, center.y + action.pointer_offset_y)),
             confidence=min(outcome.confidence, action.confidence),
+            scroll_delta=action.scroll_delta,
         )
 
     def fail(self, reason: str) -> None:
@@ -1857,6 +1957,9 @@ class ClosedLoopSupervisor:
             window_identity=snapshot.window_identity,
             geometry_generation=snapshot.geometry_generation,
             task_generation=snapshot.task_generation,
+            pre_effect_text=frozenset(normalize_visible_text(region.text)
+                                     for region in snapshot.visible_text
+                                     if region.confidence >= 0.65),
         )
 
     def _stop_blocked(self, reason: str) -> None:
@@ -1944,6 +2047,11 @@ class ClosedLoopSupervisor:
         self, pending: _PendingAction, effect: str, detail: str
     ) -> None:
         trace_id = pending.action_id or "unknown-action"
+        self._feedback.append({
+            "action": pending.action.kind.value, "target": pending.action.target_label[:80],
+            "status": effect, "execution_status": pending.execution_status,
+            "reason": detail[:240], "task_generation": pending.task_generation,
+        })
         self._journal_row(
             "action_effect",
             f"{pending.action.kind.value}({pending.action.target_label})",
@@ -2009,12 +2117,12 @@ class ClosedLoopSupervisor:
         box = action.target_box
         location = "none" if box is None else f"{box.center.x:.2f},{box.center.y:.2f}"
         label = re.sub(r"\W+", "", action.target_label.casefold())
-        return f"{action.kind.value}:{label}:{location}"
+        return f"{action.kind.value}:{label}:{location}:{action.scroll_delta}"
 
     @staticmethod
     def _semantic_action_key(action: GroundedAction) -> str:
         label = re.sub(r"\W+", "", normalize_visible_text(action.target_label))
-        return f"{action.kind.value}:{label}:{action.key or ''}"
+        return f"{action.kind.value}:{label}:{action.key or ''}:{action.scroll_delta}"
 
     def _should_escape_repeated_action(self, action: GroundedAction) -> bool:
         if (

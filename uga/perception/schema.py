@@ -142,6 +142,23 @@ class PerceptionSnapshot(VersionedMixin):
 
 
 @dataclass(frozen=True, slots=True)
+class GuiEffect:
+    """An observable postcondition, not a model's self-reported success."""
+
+    kind: str
+    text: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.kind not in {"text_appears", "text_disappears", "target_changes", "scene_changes"}:
+            raise ContractViolation("unsupported GUI effect predicate")
+        if self.kind in {"text_appears", "text_disappears"}:
+            if not isinstance(self.text, str) or not self.text.strip() or len(self.text) > 80:
+                raise ContractViolation("text effect requires a literal string of 1..80 characters")
+        elif self.text is not None:
+            raise ContractViolation("non-text GUI effect requires text=null")
+
+
+@dataclass(frozen=True, slots=True)
 class GroundedAction:
     kind: GuiActionKind
     target_label: str
@@ -152,6 +169,8 @@ class GroundedAction:
     key: str | None = None
     pointer_offset_x: float = 0.0
     pointer_offset_y: float = 0.0
+    effect: GuiEffect | None = None
+    scroll_delta: int = 0
 
     def __post_init__(self) -> None:
         if not self.target_label.strip() or not self.expected_effect.strip():
@@ -163,6 +182,13 @@ class GroundedAction:
             for value in (self.pointer_offset_x, self.pointer_offset_y)
         ):
             raise ContractViolation("grounded pointer offsets must be finite and in [-0.25, 0.25]")
+        if type(self.scroll_delta) is not int:
+            raise ContractViolation("grounded scroll delta must be an integer")
+        if self.kind == GuiActionKind.SCROLL:
+            if not 0 < abs(self.scroll_delta) <= 480 or self.scroll_delta % 120:
+                raise ContractViolation("grounded scroll must be 1..4 wheel steps of 120 units")
+        elif self.scroll_delta != 0:
+            raise ContractViolation("only scroll actions may carry scroll_delta")
         pointer_kinds = {
             GuiActionKind.CLICK,
             GuiActionKind.LONG_CLICK,

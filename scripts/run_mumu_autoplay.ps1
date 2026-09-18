@@ -9,7 +9,14 @@ param(
     [int]$VisionTimeoutSeconds = 60,
     [int]$DecisionTimeoutSeconds = 60,
     [int]$MaxOutputTokens = 0,
-    [int]$MaxRestarts = 10
+    [int]$MaxRestarts = 10,
+    [ValidateSet("model-first", "rules-first")]
+    [string]$GuiPlanningMode = "model-first",
+    [ValidateSet("unit", "normalized_1000")]
+    [string]$GuiCoordinateSpace = "normalized_1000",
+    [ValidateRange(320, 1280)][int]$ImageWidth = 960,
+    [ValidateRange(1, 3)][int]$TemporalFrames = 1,
+    [ValidateRange(0, 2)][int]$TargetCrops = 1
 )
 
 $ErrorActionPreference = "Stop"
@@ -32,7 +39,7 @@ if ($DecisionTimeoutSeconds -lt 1 -or $MaxRestarts -lt 0) {
 }
 $requiresThinking = $Model -match '(?i)(^|/)glm-5\.3(-flash)?$'
 if ($MaxOutputTokens -eq 0) {
-    $MaxOutputTokens = if ($requiresThinking) { 4096 } else { 256 }
+    $MaxOutputTokens = if ($requiresThinking) { 4096 } else { 1024 }
 }
 if ($MaxOutputTokens -lt 64 -or $MaxOutputTokens -gt 16384) {
     throw "MaxOutputTokens must be within [64, 16384]"
@@ -185,11 +192,12 @@ $agentArgs = @(
     "--vlm-timeout-seconds", "$VisionTimeoutSeconds",
     "--vlm-max-output-tokens", "$MaxOutputTokens",
     "--decision-timeout-seconds", "$DecisionTimeoutSeconds",
-    "--vlm-temporal-frames", "1",
-    "--vlm-image-width", "640",
-    "--vlm-target-crops", "0",
+    "--vlm-temporal-frames", "$TemporalFrames",
+    "--vlm-image-width", "$ImageWidth",
+    "--vlm-target-crops", "$TargetCrops",
     "--vlm-compact-output",
-    "--vlm-ocr-task-fallback",
+    "--gui-planning-mode", "$GuiPlanningMode",
+    "--gui-coordinate-space", "$GuiCoordinateSpace",
     "--vision-mode", "local",
     "--ocr", "auto",
     "--max-recoveries", "2",
@@ -199,7 +207,10 @@ $agentArgs = @(
     "--capture-hz", "2",
     "--dashboard-port", "$DashboardPort"
 )
-if (-not $requiresThinking) {
+if ($GuiPlanningMode -eq "rules-first") {
+    $agentArgs += "--vlm-ocr-task-fallback"
+}
+if (-not $requiresThinking -and $Model -notmatch "(?i)qwen3-vl.*thinking") {
     $agentArgs += "--vlm-no-thinking"
 }
 if (-not $useLocalModel) {

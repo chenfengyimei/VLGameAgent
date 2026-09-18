@@ -314,7 +314,7 @@ class RealtimeAgentLoop:
 
     def _execution_is_current(
         self, stamp: RunStamp | None, validated: Frame, task_generation: int,
-        *, visual_stability: bool = False,
+        *, visual_stability: bool = False, target_box: NormalizedBox | None = None,
     ) -> bool:
         if not self._run_live(stamp):
             return False
@@ -332,7 +332,7 @@ class RealtimeAgentLoop:
             if not supervisor.validate_execution_context(validated, current.frame)[0]:
                 return False
             return not visual_stability or not ActionValidator._target_changed(
-                NormalizedBox(0, 0, 1, 1), validated, current.frame
+                target_box or NormalizedBox(0, 0, 1, 1), validated, current.frame
             )
         age = self._clock.now().value_ns - current.frame.capture_timestamp.value_ns
         return (
@@ -509,12 +509,14 @@ class RealtimeAgentLoop:
                 outcome = await self._bounded_call(self._model_worker, partial(
                     grounded_planner.decide,
                     snapshot=perception,
-                    frames=history[-3:],
+                    frames=history[-120:],
                     goal=observation.user_goal,
                     high_resolution_retry=closed_loop.high_resolution_retry,
                     preferred_action_available=closed_loop.preferred_action_available,
                     session_context=(
-                        None if session is None else session.context_summary()
+                        ((closed_loop.session.context_summary() or "") + "\n"
+                         if closed_loop.session is not None else "")
+                        + closed_loop.planner_feedback(self._task_generation)
                     ),
                     quest_target_level=(
                         None
@@ -655,6 +657,7 @@ class RealtimeAgentLoop:
             # consumer must act on the SUPERVISED outcome.  Submitting the
             # raw planner proposal once sent a routed exit's original box —
             # parked on MuMu's own title-bar close button — to SendInput.
+            closed_loop.record_decision_feedback(supervised)
             outcome = supervised.outcome
             execution_item = latest_after_inference
             if supervised.disposition in {DecisionDisposition.EXECUTE, DecisionDisposition.RECOVER}:
@@ -808,7 +811,11 @@ class RealtimeAgentLoop:
                     pre_action_observation_id=pre_action.observation_id,
                     pre_action_capture_ns=pre_action.latest_frame.capture_timestamp.value_ns,
                     execution_guard=lambda: self._execution_is_current(
-                        stamp, execution_item.frame, outcome.task_generation, visual_stability=True
+                        stamp, execution_item.frame, outcome.task_generation,
+                        visual_stability=True,
+                        target_box=(
+                            outcome.action.target_box if outcome.action is not None else None
+                        ),
                     ),
                 )
                 if gui_submission.decision is not None:
