@@ -402,6 +402,33 @@ class PlannerStrategyScopingTests(unittest.TestCase):
         self.assertEqual(outcome.action.pointer_offset_y, -0.06)
         self.assertEqual(planner.last_decision_source, "ocr_invasion_group_attack_fast")
 
+    def test_recorded_invasion_uses_hotspot_when_skill_caption_is_not_read(self) -> None:
+        planner = GroundedVlmPlanner(
+            _Client([]),
+            max_temporal_frames=1,
+            max_target_crops=0,
+            compact_output=True,
+            prefer_ocr_task_panel=True,
+            strategy_registry=MUMU_REGISTRY,
+            group_attack_hotspot=(0.770, 0.890),
+        )
+        snapshot = _onboarding_snapshot(
+            TextRegion(
+                "击败这些不速客 0/3",
+                NormalizedBox(0.04, 0.27, 0.20, 0.32),
+                0.99,
+            ),
+            TextRegion("黑衣人", NormalizedBox(0.32, 0.53, 0.40, 0.60), 0.99),
+        )
+
+        outcome = planner._ocr_fast_path(snapshot)  # type: ignore[attr-defined]
+
+        assert outcome is not None and outcome.action is not None
+        self.assertEqual(outcome.action.target_label, "ui_group_attack")
+        self.assertAlmostEqual(outcome.action.target_box.center.x, 0.770, places=3)
+        self.assertAlmostEqual(outcome.action.target_box.center.y, 0.890, places=3)
+        self.assertEqual(planner.last_decision_source, "ocr_invasion_group_attack_fast")
+
     def test_auto_navigation_waits_without_reclicking_the_task_tracker(self) -> None:
         planner = GroundedVlmPlanner(
             _Client([]),

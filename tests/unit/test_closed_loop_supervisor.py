@@ -402,6 +402,39 @@ class ClosedLoopSupervisorTests(unittest.TestCase):
         diagnostics = supervisor.diagnostics()
         self.assertEqual(diagnostics["ineffective_actions"], 1)
 
+    def test_local_dialogue_click_releases_effect_gate_within_half_second(self) -> None:
+        supervisor = ClosedLoopSupervisor(
+            self.clock, PerceptionProfile(action_effect_timeout_ms=3000)
+        )
+        current = snapshot(1, 0)
+        proposal = replace(
+            outcome(1),
+            action=GroundedAction(
+                GuiActionKind.CLICK,
+                "ui_dialogue_advance",
+                NormalizedBox(0.94, 0.89, 0.98, 0.94),
+                "the dialogue advances",
+                1.0,
+            ),
+        )
+        supervisor.start_action(
+            proposal,
+            current,
+            frame(1, 0),
+            source="ocr_dialogue_click_fast",
+        )
+
+        still_waiting = supervisor.observe(
+            snapshot(2, 300_000_000), frame(2, 300_000_000)
+        )
+        released = supervisor.observe(
+            snapshot(3, 500_000_000), frame(3, 500_000_000)
+        )
+
+        self.assertTrue(still_waiting.pending)
+        self.assertFalse(released.pending)
+        self.assertFalse(released.effect_observed)
+
     def test_wait_never_becomes_an_executable_action(self) -> None:
         current = snapshot(1, 0)
         decision = self.supervisor.assess(

@@ -113,6 +113,7 @@ class _PendingAction:
     semantic_state: SemanticState
     target_digest: bytes
     issued_at: UGATime
+    source: str = "model"
     anchors: frozenset[str] = field(default_factory=frozenset)
     action_id: str | None = None
     anchor_candidate: frozenset[str] | None = None
@@ -823,8 +824,20 @@ class ClosedLoopSupervisor:
             self._journal_effect(pending, "invalidated", detail)
             return EffectObservation(False, None, detail)
         observed_now_ns = max(snapshot.captured_at.value_ns, self._clock.now().value_ns)
-        minimum_ns = 250_000_000
+        fast_dialogue = pending.source == "ocr_dialogue_click_fast"
+        fast_combat = pending.source == "ocr_invasion_group_attack_fast"
+        minimum_ns = 100_000_000 if fast_dialogue else 250_000_000
         timeout_ns = self._profile.action_effect_timeout_ms * 1_000_000
+        if fast_dialogue:
+            # Dialogue is a repeatable, locally anchored click. Holding the
+            # planner for the generic 3 s effect window made a 0 ms OCR rule
+            # behave like a slow model call. The next click still requires the
+            # dialogue page anchor to remain visible.
+            timeout_ns = min(timeout_ns, 400_000_000)
+        elif fast_combat:
+            # The skill remains repeatable only while task + enemy anchors are
+            # visible, so its animation needs a short rather than generic wait.
+            timeout_ns = min(timeout_ns, 700_000_000)
         # D04: queued/accepted never substitutes for executed.  A click whose
         # primitives only partly reached the OS is PARTIAL, never a
         # completed action; until every expected primitive carries a terminal
@@ -1560,6 +1573,7 @@ class ClosedLoopSupervisor:
             action,
             snapshot,
             frame,
+            source=source or "model",
             action_id=trace_id,
             submitted_action_ids=submitted_action_ids,
             expected_primitives=expected_primitives,
@@ -1777,6 +1791,7 @@ class ClosedLoopSupervisor:
             action,
             snapshot,
             frame,
+            source="recovery_exit",
             action_id=trace_id,
             submitted_action_ids=submitted_action_ids,
             expected_primitives=expected_primitives,
@@ -1829,6 +1844,15 @@ class ClosedLoopSupervisor:
                                    "status": decision.disposition.value,
                                    "reason": decision.reason[:240],
                                    "task_generation": decision.outcome.task_generation})
+            self._journal_row(
+                "suppressed",
+                f"{action.kind.value}({action.target_label})",
+                (
+                    f"disposition={decision.disposition.value}; "
+                    f"reason={decision.reason}"
+                ),
+                action.target_label,
+            )
 
     def to_gui_action(
         self, outcome: PlannerOutcome, key_resolver: KeyResolver
@@ -1998,6 +2022,7 @@ class ClosedLoopSupervisor:
         snapshot: PerceptionSnapshot,
         frame: Frame,
         *,
+        source: str = "model",
         action_id: str | None = None,
         submitted_action_ids: frozenset[str] = frozenset(),
         expected_primitives: int = 0,
@@ -2015,6 +2040,7 @@ class ClosedLoopSupervisor:
             self._progress.state(snapshot),
             digest,
             self._clock.now(),
+            source=source,
             anchors=page_anchor_signature(snapshot.visible_text),
             action_id=action_id,
             submitted_action_ids=submitted_action_ids,

@@ -59,6 +59,13 @@ controls:
     x: 0.568
     y: 0.588
     confirmed: true
+  # 新手入侵战斗的右下群攻技能。技能图标/小字经常被特效遮挡，不能依赖
+  # OCR 读到“群攻”；仅在任务文字与敌人姓名同时出现时由快速规则点击。
+  ui_group_attack:
+    kind: normalized_hotspot
+    x: 0.770
+    y: 0.890
+    confirmed: true
   dialogue_advance: {kind: virtual_key, code: 32, confirmed: true}
 capabilities:
   realtime_3d: true

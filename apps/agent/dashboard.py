@@ -73,6 +73,7 @@ _PAGE = """<!doctype html>
  tr.kind-static_hold td:first-child {{ color:#d8c97c; }}
  tr.kind-stale_discard td:first-child {{ color:#ff9d7c; }}
  tr.kind-failure td:first-child, tr.kind-rate_limited td:first-child {{ color:#ff7c7c; }}
+ tr.kind-suppressed td:first-child {{ color:#ffb36b; }}
  code {{ background:#17243a; padding:1px 5px; border-radius:4px; }}
  details {{ margin-top:14px; }} pre {{ font-size:11px; color:#aab7cb; white-space:pre-wrap;
                                      overflow-wrap:anywhere; }}
@@ -100,6 +101,7 @@ _KIND_LABELS = {
     "stale_discard": "过期丢弃",
     "failure": "推理失败",
     "rate_limited": "限流退避",
+    "suppressed": "决策未提交",
     "action_submitted": "物理提交",
     "action_effect": "效果验证",
 }

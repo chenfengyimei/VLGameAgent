@@ -379,12 +379,14 @@ async def _run(args: argparse.Namespace) -> int:
     promote_hotspot: tuple[float, float] | None = None
     dialogue_hotspot: tuple[float, float] | None = None
     little_dragon_heal_hotspot: tuple[float, float] | None = None
+    group_attack_hotspot: tuple[float, float] | None = None
     for hotspot_name in (
         "ui_back",
         "ui_close",
         "ui_promote",
         "ui_dialogue_advance",
         "ui_little_dragon_heal",
+        "ui_group_attack",
     ):
         binding = profile.binding(hotspot_name)
         if binding is None:
@@ -400,8 +402,10 @@ async def _run(args: argparse.Namespace) -> int:
                 promote_hotspot = binding.hotspot
             elif hotspot_name == "ui_dialogue_advance":
                 dialogue_hotspot = binding.hotspot
-            else:
+            elif hotspot_name == "ui_little_dragon_heal":
                 little_dragon_heal_hotspot = binding.hotspot
+            else:
+                group_attack_hotspot = binding.hotspot
     available_keys = frozenset(
         binding.action
         for binding in profile.controls
@@ -449,6 +453,7 @@ async def _run(args: argparse.Namespace) -> int:
                 promote_hotspot=promote_hotspot,
                 dialogue_hotspot=dialogue_hotspot,
                 little_dragon_heal_hotspot=little_dragon_heal_hotspot,
+                group_attack_hotspot=group_attack_hotspot,
             )
             policy: ScriptedTapPolicy | None = None
         except BaseException:

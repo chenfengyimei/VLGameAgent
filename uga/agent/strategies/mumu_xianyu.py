@@ -38,8 +38,11 @@ _RULES: tuple[StrategyRule, ...] = (
         name="invasion_group_attack",
         source="ocr_invasion_group_attack_fast",
         game_id=GAME_ID,
-        summary="入侵袭击任务、黑衣人和右下 群攻 同时可见时，点群攻图标攻击。",
-        allowed_action="click(群攻 skill icon)",
+        summary=(
+            "入侵袭击/击败这些不速任务与黑衣人/恶灵同时可见时，直接点用户校准的"
+            "右下群攻热点；不要求 OCR 读到技能小字。"
+        ),
+        allowed_action="click(ui_group_attack hotspot)",
         risk="combat",
         effect="the black-clad enemies take damage and quest progress advances",
         cooldown_s=0.0,

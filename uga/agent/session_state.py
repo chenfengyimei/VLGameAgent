@@ -233,7 +233,7 @@ def invasion_group_attack_control(regions: Iterable[TextRegion]) -> TextRegion |
     visible = tuple(regions)
     invasion_task_active = any(
         "入侵袭击" in normalize_visible_text(region.text)
-        or "击败这些不速之客" in normalize_visible_text(region.text)
+        or "击败这些不速" in normalize_visible_text(region.text)
         for region in visible
     )
     enemy_visible = any(
@@ -254,6 +254,32 @@ def invasion_group_attack_control(regions: Iterable[TextRegion]) -> TextRegion |
         and 0.70 <= region.box.center.y <= 0.98
     ]
     return max(skills, key=lambda region: region.confidence) if skills else None
+
+
+def invasion_combat_active(regions: Iterable[TextRegion]) -> bool:
+    """The recorded invasion fight, independent of OCR on the skill icon.
+
+    Enemy names and the tracked quest are large, reliable anchors.  The tiny
+    ``群攻`` label is frequently hidden by combat effects, so it must not be a
+    prerequisite for using the owner-calibrated skill hotspot.
+    """
+    visible = tuple(regions)
+    task_active = any(
+        (
+            "入侵袭击" in normalize_visible_text(region.text)
+            or "击败这些不速" in normalize_visible_text(region.text)
+        )
+        and region.confidence >= 0.75
+        for region in visible
+    )
+    enemy_visible = any(
+        any(cue in normalize_visible_text(region.text) for cue in _ONBOARDING_HOSTILE_CUES)
+        and region.confidence >= 0.75
+        and 0.25 <= region.box.center.x <= 0.82
+        and 0.14 <= region.box.center.y <= 0.75
+        for region in visible
+    )
+    return task_active and enemy_visible
 
 
 def auto_navigation_active(regions: Iterable[TextRegion]) -> bool:

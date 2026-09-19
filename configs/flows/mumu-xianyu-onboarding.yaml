@@ -42,8 +42,8 @@ steps:
     order: 50
     evidence: docs/assets/mumu-xianyu/onboarding/05-invasion-group-attack.png
     source: ocr_invasion_group_attack_fast
-    recognize: {all: [入侵袭击, 群攻], any: [黑衣人, 恶灵]}
-    action: click_text_offset:群攻:up
+    recognize: {any_task: [入侵袭击, 击败这些不速], any_enemy: [黑衣人, 恶灵]}
+    action: click_hotspot:ui_group_attack
     expected: 敌人受击且任务进度增加
   - id: auto_navigation_wait
     order: 60
@@ -56,8 +56,8 @@ steps:
     order: 70
     evidence: docs/assets/mumu-xianyu/onboarding/07-evil-spirit-group-attack.png
     source: ocr_invasion_group_attack_fast
-    recognize: {all: [入侵袭击, 群攻], any: [黑衣人, 恶灵]}
-    action: click_text_offset:群攻:up
+    recognize: {any_task: [入侵袭击, 击败这些不速], any_enemy: [黑衣人, 恶灵]}
+    action: click_hotspot:ui_group_attack
     expected: 敌人被击败且战斗结束
   - id: refreshed_main_quest
     order: 80

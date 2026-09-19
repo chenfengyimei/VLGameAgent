@@ -20,6 +20,7 @@ from uga.agent.session_state import (
     find_close_glyph,
     find_market_entry,
     find_xiuxian_path_quest_line,
+    invasion_combat_active,
     invasion_group_attack_control,
     invasion_task_navigation_target,
     little_dragon_healing_active,
@@ -367,6 +368,7 @@ class GroundedVlmPlanner:
         promote_hotspot: tuple[float, float] | None = None,
         dialogue_hotspot: tuple[float, float] | None = None,
         little_dragon_heal_hotspot: tuple[float, float] | None = None,
+        group_attack_hotspot: tuple[float, float] | None = None,
         strategy_registry: StrategyRegistry | None = None,
         coordinate_space: str = "unit",
         enable_rule_fast_paths: bool = True,
@@ -393,6 +395,7 @@ class GroundedVlmPlanner:
             ("promote", promote_hotspot),
             ("dialogue", dialogue_hotspot),
             ("little-dragon heal", little_dragon_heal_hotspot),
+            ("group attack", group_attack_hotspot),
         ):
             if hotspot is not None and (
                 len(hotspot) != 2
@@ -431,6 +434,9 @@ class GroundedVlmPlanner:
             None
             if little_dragon_heal_hotspot is None
             else tuple(little_dragon_heal_hotspot)
+        )
+        self._group_attack_hotspot = (
+            None if group_attack_hotspot is None else tuple(group_attack_hotspot)
         )
         self._task_panel_cooldown_s = 25.0
         self._last_task_panel_click: tuple[str, float] | None = None
@@ -888,6 +894,22 @@ class GroundedVlmPlanner:
                 ),
                 action_kind=GuiActionKind.CLICK,
                 pointer_offset=(0.0, -0.06),
+            )
+        if (
+            invasion_combat_active(snapshot.visible_text)
+            and self._group_attack_hotspot is not None
+        ):
+            # The owner calibrated this exact skill during the tutorial.  Its
+            # icon is graphical and the tiny 群攻 caption commonly disappears
+            # under rain/combat effects, while quest + enemy names remain
+            # reliable.  Use the hotspot instead of clicking the tracker or
+            # enemy name when those two strong anchors establish combat.
+            return self._hotspot_click_action(
+                snapshot,
+                "ui_group_attack",
+                self._group_attack_hotspot,
+                "ocr_invasion_group_attack_fast",
+                "the black-clad enemies take damage and quest progress advances",
             )
         if auto_navigation_active(snapshot.visible_text):
             # The game already owns movement.  Re-clicking the tracker here

@@ -213,8 +213,11 @@ $agentArgs = @(
     "--max-recoveries", "2",
     "--duration-seconds", "0",
     "--continuous",
-    "--observation-hz", "1",
-    "--capture-hz", "2",
+    # Local OCR fast paths should not inherit model-speed cadence. Two
+    # observations per second keeps dialogue/combat responsive while model
+    # fallback remains bounded by --vlm-decision-interval.
+    "--observation-hz", "2",
+    "--capture-hz", "4",
     "--dashboard-port", "$DashboardPort"
 )
 if ($GuiPlanningMode -eq "rules-first") {

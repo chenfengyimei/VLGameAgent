@@ -135,7 +135,7 @@ class RealtimeAgentLoop:
         gui_controller: GuiActionController | None = None,
         key_resolver: KeyResolver | None = None,
         grounded_decision_interval_s: float = 0.0,
-        dialogue_decision_interval_s: float = 1.0,
+        dialogue_decision_interval_s: float = 0.25,
         continuous_grounded: bool = False,
         closed_loop_factory: Callable[[], ClosedLoopSupervisor] | None = None,
         run_context: RunContext | None = None,
@@ -605,7 +605,8 @@ class RealtimeAgentLoop:
             dialogue_cadence = (
                 outcome.kind == DecisionKind.ACT
                 and outcome.action is not None
-                and outcome.action.target_label in {"对话继续", "5秒后自动继续"}
+                and outcome.action.target_label
+                in {"对话继续", "5秒后自动继续", "ui_dialogue_advance"}
             )
             self._next_grounded_inference_ns = self._clock.now().value_ns + (
                 self._dialogue_decision_interval_ns
@@ -670,6 +671,7 @@ class RealtimeAgentLoop:
             execution_item = latest_after_inference
             target_was_locally_grounded = bool(
                 is_trusted_deterministic_source(decision_source)
+                or decision_source == "model_ocr_snap"
             )
             if supervised.disposition in {DecisionDisposition.EXECUTE, DecisionDisposition.RECOVER}:
                 current_item = self._frames.latest() or latest_after_inference
