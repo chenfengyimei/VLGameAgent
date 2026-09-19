@@ -358,6 +358,28 @@ def peach_tree_spirit_combat_active(regions: Iterable[TextRegion]) -> bool:
     return task_active and enemy_visible
 
 
+def raging_tree_spirit_combat_active(regions: Iterable[TextRegion]) -> bool:
+    """Recorded 狂暴树精 fight against the 千年桃木精 boss."""
+    visible = tuple(regions)
+    task_active = any(
+        any(
+            cue in normalize_visible_text(region.text)
+            for cue in ("狂暴树精", "制服狂暴的树精")
+        )
+        and region.confidence >= 0.75
+        and region.box.center.x <= 0.38
+        for region in visible
+    )
+    enemy_visible = any(
+        "千年桃木精" in normalize_visible_text(region.text)
+        and region.confidence >= 0.75
+        and 0.25 <= region.box.center.x <= 0.85
+        and 0.08 <= region.box.center.y <= 0.75
+        for region in visible
+    )
+    return task_active and enemy_visible
+
+
 def auto_navigation_active(regions: Iterable[TextRegion]) -> bool:
     """Whether the game is already carrying the character to a quest target."""
     return any(

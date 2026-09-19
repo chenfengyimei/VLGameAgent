@@ -16,6 +16,7 @@ from uga.agent.session_state import (
     peach_tree_spirit_combat_active,
     quest_level_target,
     quest_page_keyword,
+    raging_tree_spirit_combat_active,
     red_dust_auto_enable_ready,
     stable_anchor_tokens,
     xiuxian_path_objective_goto,
@@ -88,6 +89,10 @@ class QuestMemoryTests(unittest.TestCase):
         )
         self.assertTrue(demonized_spirit_combat_active(demonized))
         self.assertTrue(peach_tree_spirit_combat_active(peach_tree))
+        raging_tree = regions("狂暴树精", "制服狂暴的树精") + (
+            TextRegion("千年桃木精 Lv.7", NormalizedBox(0.35, 0.08, 0.60, 0.14), 0.99),
+        )
+        self.assertTrue(raging_tree_spirit_combat_active(raging_tree))
 
     def setUp(self) -> None:
         self.state = GameSessionState()

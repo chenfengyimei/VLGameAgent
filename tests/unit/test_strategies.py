@@ -38,7 +38,7 @@ class StrategyRegistryTests(unittest.TestCase):
         root = Path(__file__).parents[2]
         flow = load_recorded_flow(root / "configs/flows/mumu-xianyu-onboarding.yaml")
         self.assertEqual(flow.game_id, MUMU_REGISTRY.game_id)
-        self.assertEqual(len(flow.steps), 31)
+        self.assertEqual(len(flow.steps), 36)
         self.assertEqual(
             {Path(step.evidence).name for step in flow.steps},
             {f"{index:02d}-{name}" for index, name in enumerate((
@@ -73,6 +73,11 @@ class StrategyRegistryTests(unittest.TestCase):
                 "rescue-cutscene-skip.png",
                 "rescue-dialogue.png",
                 "peach-tree-spirit-combat.png",
+                "rescue-villager-dialogue.png",
+                "continue-forward-quest.png",
+                "raging-tree-spirit-combat.png",
+                "ask-reason-quest.png",
+                "little-tree-spirit-dialogue.png",
             ), start=1)},
         )
         for step in flow.steps:
@@ -161,6 +166,7 @@ class StrategyRegistryTests(unittest.TestCase):
             "ocr_invasion_group_attack_fast",
             "ocr_demonized_spirit_group_attack_fast",
             "ocr_peach_tree_spirit_group_attack_fast",
+            "ocr_raging_tree_spirit_group_attack_fast",
             "ocr_red_dust_auto_once_fast",
             "ocr_onboarding_joystick_forward_fast",
             "ocr_character_creation_customize_fast",
@@ -497,6 +503,37 @@ class PlannerStrategyScopingTests(unittest.TestCase):
         self.assertEqual(
             labels,
             ["ui_pet_group_attack", "ui_secondary_group_attack", "ui_group_attack"],
+        )
+
+    def test_raging_tree_boss_rotates_the_two_recorded_purple_attacks(self) -> None:
+        planner = GroundedVlmPlanner(
+            _Client([]),
+            max_temporal_frames=1,
+            max_target_crops=0,
+            compact_output=True,
+            prefer_ocr_task_panel=True,
+            strategy_registry=MUMU_REGISTRY,
+            secondary_group_attack_hotspot=(0.790, 0.745),
+            group_attack_hotspot=(0.770, 0.890),
+        )
+        snapshot = _onboarding_snapshot(
+            TextRegion("狂暴树精", NormalizedBox(0.04, 0.22, 0.18, 0.27), 0.99),
+            TextRegion(
+                "制服狂暴的树精",
+                NormalizedBox(0.04, 0.27, 0.24, 0.32),
+                0.99,
+            ),
+            TextRegion("千年桃木精 Lv.7", NormalizedBox(0.34, 0.08, 0.58, 0.14), 0.99),
+        )
+
+        labels = []
+        for _ in range(2):
+            outcome = planner._ocr_fast_path(snapshot)  # type: ignore[attr-defined]
+            assert outcome is not None and outcome.action is not None
+            labels.append(outcome.action.target_label)
+        self.assertEqual(labels, ["ui_secondary_group_attack", "ui_group_attack"])
+        self.assertEqual(
+            planner.last_decision_source, "ocr_raging_tree_spirit_group_attack_fast"
         )
 
     def test_red_dust_auto_is_suppressed_after_the_persisted_once_flag(self) -> None:

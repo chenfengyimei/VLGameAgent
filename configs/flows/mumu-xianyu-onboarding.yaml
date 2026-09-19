@@ -227,3 +227,38 @@ steps:
     recognize: {any_task: [暴虐精怪, 制服桃木精], any_enemy: [桃木精]}
     action: cycle_hotspots:[ui_pet_group_attack,ui_secondary_group_attack,ui_group_attack]
     expected: 轮换三个已标注群攻技能直至击败桃木精
+  - id: rescue_villager_dialogue
+    order: 320
+    evidence: docs/assets/mumu-xianyu/onboarding/32-rescue-villager-dialogue.png
+    source: ocr_dialogue_click_fast
+    recognize: {all: [回顾剧情]}
+    action: click_hotspot:ui_dialogue_advance
+    expected: 推进获救村民剧情对话
+  - id: continue_forward_quest
+    order: 330
+    evidence: docs/assets/mumu-xianyu/onboarding/33-continue-forward-quest.png
+    source: ocr_task_panel_fast
+    recognize: {all: [主线], any: [继续前行, 与师姐往桃夭村去]}
+    action: click_task_tracker
+    expected: 与师姐自动寻路前往桃夭村
+  - id: raging_tree_spirit_combat
+    order: 340
+    evidence: docs/assets/mumu-xianyu/onboarding/34-raging-tree-spirit-combat.png
+    source: ocr_raging_tree_spirit_group_attack_fast
+    recognize: {any_task: [狂暴树精, 制服狂暴的树精], any_enemy: [千年桃木精]}
+    action: cycle_hotspots:[ui_secondary_group_attack,ui_group_attack]
+    expected: 轮换两个已标注紫色群攻技能直至击败千年桃木精
+  - id: ask_reason_quest
+    order: 350
+    evidence: docs/assets/mumu-xianyu/onboarding/35-ask-reason-quest.png
+    source: ocr_task_panel_fast
+    recognize: {all: [主线], any: [问清缘由, 与小树精对话]}
+    action: click_task_tracker
+    expected: 自动寻路到小树精并进入对话
+  - id: little_tree_spirit_dialogue
+    order: 360
+    evidence: docs/assets/mumu-xianyu/onboarding/36-little-tree-spirit-dialogue.png
+    source: ocr_dialogue_click_fast
+    recognize: {all: [回顾剧情]}
+    action: click_hotspot:ui_dialogue_advance
+    expected: 快速推进小树精剧情对话

@@ -33,6 +33,7 @@ from uga.agent.session_state import (
     peach_tree_spirit_combat_active,
     quest_is_market_task,
     quest_page_keyword,
+    raging_tree_spirit_combat_active,
     real_name_gate_active,
     realm_promotion_ready,
     red_dust_auto_enable_ready,
@@ -441,6 +442,7 @@ class GroundedVlmPlanner:
         self._secondary_group_attack_hotspot = secondary_group_attack_hotspot
         self._auto_combat_hotspot = auto_combat_hotspot
         self._peach_combat_skill_index = 0
+        self._raging_tree_combat_skill_index = 0
         self._task_panel_cooldown_s = 25.0
         self._last_task_panel_click: tuple[str, float] | None = None
         self._last_stall_item_click: float | None = None
@@ -946,6 +948,27 @@ class GroundedVlmPlanner:
                     hotspot,
                     "ocr_peach_tree_spirit_group_attack_fast",
                     "the peach-tree spirits take damage and quest progress advances",
+                )
+        if raging_tree_spirit_combat_active(snapshot.visible_text):
+            skills = tuple(
+                (label, hotspot)
+                for label, hotspot in (
+                    ("ui_secondary_group_attack", self._secondary_group_attack_hotspot),
+                    ("ui_group_attack", self._group_attack_hotspot),
+                )
+                if hotspot is not None
+            )
+            if skills:
+                label, hotspot = skills[
+                    self._raging_tree_combat_skill_index % len(skills)
+                ]
+                self._raging_tree_combat_skill_index += 1
+                return self._hotspot_click_action(
+                    snapshot,
+                    label,
+                    hotspot,
+                    "ocr_raging_tree_spirit_group_attack_fast",
+                    "the raging thousand-year tree spirit takes damage",
                 )
         auto_combat_enabled = bool(
             session_context and "auto_combat_enabled=true" in session_context

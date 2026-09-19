@@ -71,6 +71,18 @@ _RULES: tuple[StrategyRule, ...] = (
         cooldown_s=0.0,
     ),
     StrategyRule(
+        name="raging_tree_spirit_group_attack",
+        source="ocr_raging_tree_spirit_group_attack_fast",
+        game_id=GAME_ID,
+        summary=(
+            "狂暴树精任务与千年桃木精同时可见时，轮换上、下两个紫色群攻技能。"
+        ),
+        allowed_action="click(ui_secondary_group_attack/ui_group_attack rotation)",
+        risk="combat",
+        effect="the raging thousand-year tree spirit takes damage",
+        cooldown_s=0.0,
+    ),
+    StrategyRule(
         name="red_dust_auto_once",
         source="ocr_red_dust_auto_once_fast",
         game_id=GAME_ID,
