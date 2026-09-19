@@ -38,7 +38,7 @@ class StrategyRegistryTests(unittest.TestCase):
         root = Path(__file__).parents[2]
         flow = load_recorded_flow(root / "configs/flows/mumu-xianyu-onboarding.yaml")
         self.assertEqual(flow.game_id, MUMU_REGISTRY.game_id)
-        self.assertEqual(len(flow.steps), 48)
+        self.assertEqual(len(flow.steps), 54)
         self.assertEqual(
             {Path(step.evidence).name for step in flow.steps},
             {f"{index:02d}-{name}" for index, name in enumerate((
@@ -90,6 +90,12 @@ class StrategyRegistryTests(unittest.TestCase):
                 "strange-villager-dialogue.png",
                 "hua-jie-dialogue.png",
                 "villager-investigation-dialogue.png",
+                "strange-fairy-quest.png",
+                "xiaohu-dialogue.png",
+                "fairy-trail-quest.png",
+                "fairy-trail-dialogue.png",
+                "follow-fairy-quest.png",
+                "follow-fairy-dialogue.png",
             ), start=1)},
         )
         for step in flow.steps:

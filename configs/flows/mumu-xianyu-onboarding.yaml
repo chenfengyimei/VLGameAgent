@@ -346,3 +346,45 @@ steps:
     recognize: {all: [回顾剧情]}
     action: click_hotspot:ui_dialogue_advance
     expected: 快速推进村民调查剧情对话
+  - id: strange_fairy_quest
+    order: 490
+    evidence: docs/assets/mumu-xianyu/onboarding/49-strange-fairy-quest.png
+    source: ocr_task_panel_fast
+    recognize: {all: [主线], any: [古怪仙灵, 寻那飘忽的仙灵]}
+    action: click_task_tracker
+    expected: 自动导航到仙灵相关剧情地点
+  - id: xiaohu_dialogue
+    order: 500
+    evidence: docs/assets/mumu-xianyu/onboarding/50-xiaohu-dialogue.png
+    source: ocr_dialogue_click_fast
+    recognize: {all: [回顾剧情]}
+    action: click_hotspot:ui_dialogue_advance
+    expected: 快速推进与小虎的剧情对话
+  - id: fairy_trail_quest
+    order: 510
+    evidence: docs/assets/mumu-xianyu/onboarding/51-fairy-trail-quest.png
+    source: ocr_task_panel_fast
+    recognize: {all: [主线], any: [仙灵踪迹, 跟随小虎寻找仙灵]}
+    action: click_task_tracker
+    expected: 自动跟随小虎寻找仙灵
+  - id: fairy_trail_dialogue
+    order: 520
+    evidence: docs/assets/mumu-xianyu/onboarding/52-fairy-trail-dialogue.png
+    source: ocr_dialogue_click_fast
+    recognize: {all: [回顾剧情]}
+    action: click_hotspot:ui_dialogue_advance
+    expected: 快速推进仙灵踪迹剧情对话
+  - id: follow_fairy_quest
+    order: 530
+    evidence: docs/assets/mumu-xianyu/onboarding/53-follow-fairy-quest.png
+    source: ocr_task_panel_fast
+    recognize: {all: [主线], any: [跟随仙灵, 仙灵似乎在引领我去哪里]}
+    action: click_task_tracker
+    expected: 自动跟随仙灵前往下一剧情地点
+  - id: follow_fairy_dialogue
+    order: 540
+    evidence: docs/assets/mumu-xianyu/onboarding/54-follow-fairy-dialogue.png
+    source: ocr_dialogue_click_fast
+    recognize: {all: [回顾剧情]}
+    action: click_hotspot:ui_dialogue_advance
+    expected: 快速推进跟随仙灵后的师姐对话
