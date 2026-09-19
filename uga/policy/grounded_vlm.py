@@ -31,6 +31,7 @@ from uga.agent.session_state import (
     onboarding_joystick_tutorial_active,
     page_has_action_button,
     page_level_value,
+    peach_talisman_barrier_active,
     peach_talisman_continue_control,
     peach_tree_spirit_combat_active,
     pet_information_tab_control,
@@ -855,6 +856,64 @@ class GroundedVlmPlanner:
                 explanation=(
                     "ocr_onboarding_joystick_forward_fast dragged the calibrated "
                     "left joystick upward"
+                ),
+            )
+        if peach_talisman_barrier_active(snapshot.visible_text):
+            barrier_dragged = bool(
+                session_context
+                and "peach_talisman_barrier_dragged=true" in session_context
+            )
+            if barrier_dragged:
+                self._last_decision_source = "ocr_peach_talisman_barrier_wait"
+                return PlannerOutcome(
+                    uuid.uuid4().hex,
+                    snapshot.frame_id,
+                    snapshot.frame_sequence,
+                    snapshot.window_identity.window_generation,
+                    snapshot.geometry_generation,
+                    snapshot.task_generation,
+                    DecisionKind.WAIT,
+                    "the peach talisman is already centered and the barrier is completing",
+                    snapshot.text,
+                    GoalStatus.IN_PROGRESS,
+                    1.0,
+                    None,
+                    WaitReason.ANIMATION,
+                    explanation=(
+                        "the receipt-backed drag flag is set; wait for the visible "
+                        "barrier countdown instead of dragging again"
+                    ),
+                )
+            # Start inside the owner-marked gem at the upper right.  The
+            # schema limits offsets to 0.25, so this narrow source box places
+            # its centre at x=.77 and the (-.25,+.25) endpoint at (.52,.49),
+            # safely inside the central seal.
+            self._last_decision_source = "ocr_peach_talisman_barrier_drag_fast"
+            return PlannerOutcome(
+                uuid.uuid4().hex,
+                snapshot.frame_id,
+                snapshot.frame_sequence,
+                snapshot.window_identity.window_generation,
+                snapshot.geometry_generation,
+                snapshot.task_generation,
+                DecisionKind.ACT,
+                "the peach-talisman barrier interaction is visible",
+                snapshot.text,
+                GoalStatus.IN_PROGRESS,
+                0.99,
+                GroundedAction(
+                    GuiActionKind.DRAG,
+                    "peach talisman gem",
+                    NormalizedBox(0.74, 0.17, 0.80, 0.31),
+                    "the peach talisman is held and dragged into the barrier centre",
+                    0.99,
+                    ActionRisk.LOW,
+                    pointer_offset_x=-0.25,
+                    pointer_offset_y=0.25,
+                ),
+                explanation=(
+                    "ocr_peach_talisman_barrier_drag_fast held the owner-calibrated "
+                    "gem and dragged it into the central seal"
                 ),
             )
         cutscene_skip = cutscene_skip_control(snapshot.visible_text)

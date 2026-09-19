@@ -38,7 +38,7 @@ class StrategyRegistryTests(unittest.TestCase):
         root = Path(__file__).parents[2]
         flow = load_recorded_flow(root / "configs/flows/mumu-xianyu-onboarding.yaml")
         self.assertEqual(flow.game_id, MUMU_REGISTRY.game_id)
-        self.assertEqual(len(flow.steps), 75)
+        self.assertEqual(len(flow.steps), 76)
         self.assertEqual(
             {Path(step.evidence).name for step in flow.steps},
             {f"{index:02d}-{name}" for index, name in enumerate((
@@ -117,12 +117,15 @@ class StrategyRegistryTests(unittest.TestCase):
                 "skill-treatment-node.png",
                 "skill-learn.png",
                 "skill-training-exit.png",
+                "peach-talisman-barrier-drag.png",
             ), start=1)},
         )
         for step in flow.steps:
             with self.subTest(step=step.step_id):
                 self.assertTrue((root / step.evidence).is_file())
                 self.assertTrue(MUMU_REGISTRY.allows(step.source))
+        result_evidence = flow.steps[-1].recognize["result_evidence"]
+        self.assertTrue((root / result_evidence).is_file())
 
     def test_recorded_hotspots_match_the_confirmed_game_profile(self) -> None:
         root = Path(__file__).parents[2]
@@ -232,6 +235,8 @@ class StrategyRegistryTests(unittest.TestCase):
             "ocr_little_dragon_heal_fast",
             "ocr_narrative_continue_fast",
             "ocr_peach_talisman_continue_fast",
+            "ocr_peach_talisman_barrier_drag_fast",
+            "ocr_peach_talisman_barrier_wait",
             "ocr_close_glyph_fast",
             "ocr_task_panel_fast",
             "ocr_progress_control_fast",
@@ -656,6 +661,59 @@ class PlannerStrategyScopingTests(unittest.TestCase):
         # never emit after the persisted flag is true.
         if suppressed is not None and suppressed.action is not None:
             self.assertNotEqual(suppressed.action.target_label, "ui_auto_combat")
+
+    def test_peach_talisman_is_held_to_centre_once_then_waits(self) -> None:
+        planner = GroundedVlmPlanner(
+            _Client([]),
+            max_temporal_frames=1,
+            max_target_crops=0,
+            compact_output=True,
+            prefer_ocr_task_panel=True,
+            strategy_registry=MUMU_REGISTRY,
+        )
+        snapshot = _onboarding_snapshot(
+            TextRegion(
+                "用桃天符印开启结界",
+                NormalizedBox(0.40, 0.86, 0.62, 0.92),
+                0.99,
+            ),
+            TextRegion(
+                "27秒后将自动完成",
+                NormalizedBox(0.42, 0.92, 0.61, 0.98),
+                0.99,
+            ),
+        )
+
+        outcome = planner._ocr_fast_path(  # type: ignore[attr-defined]
+            snapshot,
+            session_context="peach_talisman_barrier_dragged=false",
+        )
+        assert outcome is not None and outcome.action is not None
+        action = outcome.action
+        self.assertEqual(action.kind, GuiActionKind.DRAG)
+        self.assertEqual(action.target_label, "peach talisman gem")
+        self.assertAlmostEqual(action.target_box.center.x, 0.77)
+        self.assertAlmostEqual(action.target_box.center.y, 0.24)
+        self.assertAlmostEqual(action.pointer_offset_x, -0.25)
+        self.assertAlmostEqual(action.pointer_offset_y, 0.25)
+        self.assertAlmostEqual(action.target_box.center.x + action.pointer_offset_x, 0.52)
+        self.assertAlmostEqual(action.target_box.center.y + action.pointer_offset_y, 0.49)
+        self.assertEqual(
+            planner.last_decision_source,
+            "ocr_peach_talisman_barrier_drag_fast",
+        )
+
+        waiting = planner._ocr_fast_path(  # type: ignore[attr-defined]
+            snapshot,
+            session_context="peach_talisman_barrier_dragged=true",
+        )
+        assert waiting is not None
+        self.assertEqual(waiting.kind, DecisionKind.WAIT)
+        self.assertIsNone(waiting.action)
+        self.assertEqual(
+            planner.last_decision_source,
+            "ocr_peach_talisman_barrier_wait",
+        )
 
     def test_pet_upgrade_flow_enters_info_upgrades_once_then_exits(self) -> None:
         planner = GroundedVlmPlanner(

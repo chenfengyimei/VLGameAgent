@@ -893,6 +893,28 @@ def peach_talisman_continue_control(regions: Iterable[TextRegion]) -> TextRegion
     return max(candidates, key=lambda region: region.confidence) if candidates else None
 
 
+def peach_talisman_barrier_active(regions: Iterable[TextRegion]) -> bool:
+    """Whether the 桃天符印 drag-to-centre barrier interaction is visible.
+
+    The gem and magic-circle centre are graphical, so the drag is calibrated
+    from the owner's screenshots.  Requiring both instruction and countdown
+    anchors keeps that graphical gesture confined to this one mini-game.
+    """
+    visible = tuple(regions)
+    has_instruction = any(
+        "用桃天符印开启结界" in normalize_visible_text(region.text)
+        and region.confidence >= 0.80
+        for region in visible
+    )
+    has_countdown = any(
+        "秒后将自动完成" in normalize_visible_text(region.text)
+        and region.confidence >= 0.75
+        and region.box.center.y >= 0.75
+        for region in visible
+    )
+    return has_instruction and has_countdown
+
+
 def find_xiuxian_path_quest_line(regions: Iterable[TextRegion]) -> TextRegion | None:
     """The clickable 修仙之路 quest-tracker line (clicking it auto-navigates).
 
@@ -1345,6 +1367,10 @@ class GameSessionState:
     # The user-confirmed bottom-centre 自动 toggle is a one-shot onboarding
     # action. It is persisted only after every click primitive reaches the OS.
     auto_combat_enabled: bool = False
+    # The barrier page keeps the same OCR anchors after the gem reaches the
+    # centre. Persist this receipt-backed flag so that the held drag is not
+    # repeated while the page's completion countdown continues.
+    peach_talisman_barrier_dragged: bool = False
 
     @property
     def restored_task_unverified(self) -> bool:
@@ -1393,6 +1419,9 @@ class GameSessionState:
             canonical = None if raw is None else str(payload.get("canonical_text") or raw)
             generation = int(payload.get("generation", 0))
             auto_combat_enabled = bool(payload.get("auto_combat_enabled", False))
+            peach_talisman_barrier_dragged = bool(
+                payload.get("peach_talisman_barrier_dragged", False)
+            )
         except (OSError, ValueError, KeyError, TypeError) as exc:
             self._isolate_corrupt_state(path, f"corrupt state file: {exc}")
             return
@@ -1410,6 +1439,7 @@ class GameSessionState:
                 verified_frames=0,
             )
         self.auto_combat_enabled = auto_combat_enabled
+        self.peach_talisman_barrier_dragged = peach_talisman_barrier_dragged
         self.restored_from_disk = True
 
     def _isolate_corrupt_state(self, path: Path, why: str) -> None:
@@ -1436,6 +1466,9 @@ class GameSessionState:
                     "canonical_text": None if quest is None else quest.canonical_text,
                     "generation": 0 if quest is None else quest.generation,
                     "auto_combat_enabled": self.auto_combat_enabled,
+                    "peach_talisman_barrier_dragged": (
+                        self.peach_talisman_barrier_dragged
+                    ),
                     "saved_at_ns": time.time_ns(),
                 },
                 ensure_ascii=False,
@@ -1461,15 +1494,19 @@ class GameSessionState:
             return
         self._last_observed_frame = marker
         # A newly opened character-creation page starts a fresh onboarding
-        # run. Re-arm the one-shot Auto action even when the profile state was
-        # restored from an older character.
-        if self.auto_combat_enabled and any(
+        # run. Re-arm persisted one-shot actions even when the profile state
+        # was restored from an older character.
+        new_character_visible = any(
             normalize_visible_text(region.text) == "创角"
             and region.confidence >= 0.85
             and region.box.center.y <= 0.20
             for region in snapshot.visible_text
+        )
+        if new_character_visible and (
+            self.auto_combat_enabled or self.peach_talisman_barrier_dragged
         ):
             self.auto_combat_enabled = False
+            self.peach_talisman_barrier_dragged = False
             self._save_quest_memory()
         self._update_quest_memory(snapshot, captured_at_ns)
         self._classify_screen(snapshot)
@@ -1479,6 +1516,13 @@ class GameSessionState:
         if self.auto_combat_enabled:
             return
         self.auto_combat_enabled = True
+        self._save_quest_memory()
+
+    def mark_peach_talisman_barrier_dragged(self) -> None:
+        """Persist the barrier drag only after every OS primitive executes."""
+        if self.peach_talisman_barrier_dragged:
+            return
+        self.peach_talisman_barrier_dragged = True
         self._save_quest_memory()
 
     def record_trace(self, trace: ActionTrace) -> None:
@@ -1661,6 +1705,14 @@ class GameSessionState:
                 else "auto_combat_enabled=false"
             )
         )
+        lines.append(
+            "桃天符印结界拖拽状态："
+            + (
+                "peach_talisman_barrier_dragged=true"
+                if self.peach_talisman_barrier_dragged
+                else "peach_talisman_barrier_dragged=false"
+            )
+        )
         recent = [
             trace
             for trace in reversed(self.recent_actions)
@@ -1694,6 +1746,7 @@ class GameSessionState:
             "feature_page": self.feature_page,
             "dialogue_active": self.dialogue_active,
             "auto_combat_enabled": self.auto_combat_enabled,
+            "peach_talisman_barrier_dragged": self.peach_talisman_barrier_dragged,
             "recent_actions": [
                 {
                     "action_id": trace.action_id,

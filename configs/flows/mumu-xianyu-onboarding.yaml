@@ -535,3 +535,12 @@ steps:
     recognize: {all: [升级, 技能点, 花语素心, 1级]}
     action: click_hotspot:ui_back
     expected: 学习完成后退出技能界面并禁止继续升级
+  - id: peach_talisman_barrier_drag
+    order: 760
+    evidence: docs/assets/mumu-xianyu/onboarding/76-peach-talisman-barrier-drag.png
+    source: ocr_peach_talisman_barrier_drag_fast
+    recognize:
+      all: [用桃天符印开启结界, 秒后将自动完成]
+      result_evidence: docs/assets/mumu-xianyu/onboarding/76-peach-talisman-barrier-result.png
+    action: held_drag:peach_talisman_gem->barrier_center
+    expected: 长按右上桃天符印宝石并拖到法阵中央，倒计时期间不重复拖拽

@@ -14,6 +14,7 @@ from uga.agent.session_state import (
     mumu_close_dialog_cancel,
     page_anchor_signature,
     page_level_value,
+    peach_talisman_barrier_active,
     peach_tree_spirit_combat_active,
     pet_information_tab_control,
     pet_training_entry_control,
@@ -125,6 +126,32 @@ class QuestMemoryTests(unittest.TestCase):
         )
         self.assertTrue(demon_sect_disciple_combat_active(demon_sect))
         self.assertFalse(demon_sect_disciple_combat_active(regions("孤身应战")))
+
+    def test_peach_talisman_barrier_requires_instruction_and_countdown(self) -> None:
+        instruction = TextRegion(
+            "用桃天符印开启结界",
+            NormalizedBox(0.40, 0.86, 0.62, 0.92),
+            0.99,
+        )
+        countdown = TextRegion(
+            "27秒后将自动完成",
+            NormalizedBox(0.42, 0.92, 0.61, 0.98),
+            0.99,
+        )
+        self.assertTrue(peach_talisman_barrier_active((instruction, countdown)))
+        self.assertFalse(peach_talisman_barrier_active((instruction,)))
+        self.assertFalse(
+            peach_talisman_barrier_active(
+                (
+                    instruction,
+                    TextRegion(
+                        "27秒后将自动完成",
+                        NormalizedBox(0.42, 0.30, 0.61, 0.36),
+                        0.99,
+                    ),
+                )
+            )
+        )
 
     def setUp(self) -> None:
         self.state = GameSessionState()
@@ -458,10 +485,13 @@ class SessionPersistenceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             first = self._persisted_state(tmp, profile_id="mumu-xianyu")
             first.mark_auto_combat_enabled()
+            first.mark_peach_talisman_barrier_dragged()
             self.assertTrue(first.auto_combat_enabled)
+            self.assertTrue(first.peach_talisman_barrier_dragged)
 
             restored = self._persisted_state(tmp, profile_id="mumu-xianyu")
             self.assertTrue(restored.auto_combat_enabled)
+            self.assertTrue(restored.peach_talisman_barrier_dragged)
             restored.observe_snapshot(
                 snapshot(
                     1,
@@ -471,9 +501,11 @@ class SessionPersistenceTests(unittest.TestCase):
                 100,
             )
             self.assertFalse(restored.auto_combat_enabled)
+            self.assertFalse(restored.peach_talisman_barrier_dragged)
 
             reloaded = self._persisted_state(tmp, profile_id="mumu-xianyu")
             self.assertFalse(reloaded.auto_combat_enabled)
+            self.assertFalse(reloaded.peach_talisman_barrier_dragged)
 
     def test_restored_task_verifies_after_two_fresh_frames(self) -> None:
         import tempfile

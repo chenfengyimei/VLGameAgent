@@ -1677,12 +1677,14 @@ class ClosedLoopSupervisor:
                 pending.execution_status = aggregate_receipts(tuple(pending.receipts))
                 if (
                     pending.execution_status == "executed"
-                    and pending.source == "ocr_red_dust_auto_once_fast"
                     and self._session is not None
                 ):
-                    # The one-shot flag follows physical OS evidence, not the
+                    # One-shot flags follow physical OS evidence, not the
                     # earlier planner decision or scheduler acceptance.
-                    self._session.mark_auto_combat_enabled()
+                    if pending.source == "ocr_red_dust_auto_once_fast":
+                        self._session.mark_auto_combat_enabled()
+                    elif pending.source == "ocr_peach_talisman_barrier_drag_fast":
+                        self._session.mark_peach_talisman_barrier_dragged()
 
     def validate_execution_context(
         self, validated_frame: Frame, execution_frame: Frame

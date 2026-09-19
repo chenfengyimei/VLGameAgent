@@ -320,6 +320,36 @@ class SupervisorExecutionEvidenceTests(unittest.TestCase):
             )
             self.assertTrue(restored.auto_combat_enabled)
 
+    def test_peach_talisman_once_flag_requires_all_drag_receipts(self) -> None:
+        session = GameSessionState()
+        supervisor = ClosedLoopSupervisor(
+            self.clock,
+            PerceptionProfile(action_effect_timeout_ms=1000),
+            session=session,
+        )
+        supervisor.start_action(
+            outcome(1),
+            snapshot(1, 0),
+            frame(1, 0),
+            source="ocr_peach_talisman_barrier_drag_fast",
+            submitted_action_ids=frozenset(
+                {"a:move", "a:down", "a:drag", "a:up"}
+            ),
+            expected_primitives=4,
+        )
+        supervisor.record_execution_receipts(
+            (
+                _receipt("a:move", ExecutionPrimitiveStatus.EXECUTED),
+                _receipt("a:down", ExecutionPrimitiveStatus.EXECUTED),
+                _receipt("a:drag", ExecutionPrimitiveStatus.EXECUTED),
+            )
+        )
+        self.assertFalse(session.peach_talisman_barrier_dragged)
+        supervisor.record_execution_receipts(
+            (_receipt("a:up", ExecutionPrimitiveStatus.EXECUTED),)
+        )
+        self.assertTrue(session.peach_talisman_barrier_dragged)
+
 
 if __name__ == "__main__":
     unittest.main()

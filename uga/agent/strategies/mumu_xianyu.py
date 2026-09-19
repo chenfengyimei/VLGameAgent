@@ -236,6 +236,29 @@ _RULES: tuple[StrategyRule, ...] = (
         cooldown_s=0.0,
     ),
     StrategyRule(
+        name="peach_talisman_barrier_drag",
+        source="ocr_peach_talisman_barrier_drag_fast",
+        game_id=GAME_ID,
+        summary=(
+            "同时识别 用桃天符印开启结界 与自动完成倒计时后，长按右上粉色宝石"
+            "并拖到法阵中央；全部拖拽回执成功后持久标记，倒计时期间不重复拖。"
+        ),
+        allowed_action="held drag(peach talisman gem to barrier centre once)",
+        risk="progression",
+        effect="the peach talisman is placed in the central barrier seal",
+        cooldown_s=0.0,
+    ),
+    StrategyRule(
+        name="peach_talisman_barrier_wait",
+        source="ocr_peach_talisman_barrier_wait",
+        game_id=GAME_ID,
+        summary="桃天符印已由完整物理回执确认拖入中央后，等待页面倒计时完成。",
+        allowed_action="wait",
+        risk="low",
+        effect="the barrier countdown completes without a duplicate drag",
+        cooldown_s=0.0,
+    ),
+    StrategyRule(
         name="pet_training_entry",
         source="ocr_pet_training_entry_fast",
         game_id=GAME_ID,
