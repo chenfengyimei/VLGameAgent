@@ -381,12 +381,18 @@ def raging_tree_spirit_combat_active(regions: Iterable[TextRegion]) -> bool:
 
 
 def pet_training_entry_control(regions: Iterable[TextRegion]) -> TextRegion | None:
-    """Right-side 灵宠 entry for the recorded 小龙升级 task."""
+    """Right-side 灵宠 entry for the recorded upgrade/star-up tasks."""
     visible = tuple(regions)
     task_active = any(
         any(
             cue in normalize_visible_text(region.text)
-            for cue in ("小龙升级", "拥有1只灵宠达到2级")
+            for cue in (
+                "小龙升级",
+                "拥有1只灵宠达到2级",
+                "小龙合体",
+                "灵宠达到4星",
+                "灵宠达到四星",
+            )
         )
         and region.confidence >= 0.75
         and region.box.center.x <= 0.38
@@ -467,6 +473,179 @@ def pet_upgrade_control(
         and region.confidence >= 0.80
         and region.box.center.x >= 0.75
         and 0.12 <= region.box.center.y <= 0.48
+    ]
+    return max(candidates, key=lambda region: region.confidence) if candidates else None
+
+
+def quest_is_pet_star_task(quest_text: str | None) -> bool:
+    """Whether the durable tracked task is the recorded four-star pet task."""
+    if not quest_text:
+        return False
+    normalized = normalize_visible_text(quest_text)
+    return any(
+        cue in normalized
+        for cue in ("小龙合体", "灵宠达到4星", "灵宠达到四星")
+    )
+
+
+def pet_star_menu_control(regions: Iterable[TextRegion]) -> TextRegion | None:
+    """Collapsed world-page menu for the recorded four-star pet task."""
+    visible = tuple(regions)
+    task_active = any(
+        any(
+            cue in normalize_visible_text(region.text)
+            for cue in ("小龙合体", "灵宠达到4星", "灵宠达到四星")
+        )
+        and region.confidence >= 0.75
+        and region.box.center.x <= 0.38
+        for region in visible
+    )
+    if not task_active:
+        return None
+    candidates = [
+        region
+        for region in visible
+        if normalize_visible_text(region.text) == "菜单"
+        and region.confidence >= 0.80
+        and region.box.center.x >= 0.85
+        and 0.20 <= region.box.center.y <= 0.55
+    ]
+    return max(candidates, key=lambda region: region.confidence) if candidates else None
+
+
+def _pet_title_visible(regions: Iterable[TextRegion]) -> bool:
+    return any(
+        normalize_visible_text(region.text) == "灵宠"
+        and region.confidence >= 0.80
+        and region.box.center.x <= 0.25
+        and region.box.center.y <= 0.18
+        for region in regions
+    )
+
+
+def _pet_star_page_visible(regions: Iterable[TextRegion]) -> bool:
+    visible = tuple(regions)
+    return _pet_title_visible(visible) and any(
+        cue in normalize_visible_text(region.text)
+        and region.confidence >= 0.75
+        for region in visible
+        for cue in ("技能升级", "成长率")
+    )
+
+
+def pet_star_tab_control(
+    regions: Iterable[TextRegion], *, task_active: bool
+) -> TextRegion | None:
+    """Right-side 升星 tab before the star-up page itself is active."""
+    if not task_active:
+        return None
+    visible = tuple(regions)
+    if not _pet_title_visible(visible) or _pet_star_page_visible(visible):
+        return None
+    candidates = [
+        region
+        for region in visible
+        if normalize_visible_text(region.text) == "升星"
+        and region.confidence >= 0.80
+        and region.box.center.x >= 0.90
+        and 0.25 <= region.box.center.y <= 0.70
+    ]
+    return max(candidates, key=lambda region: region.confidence) if candidates else None
+
+
+def pet_star_action_control(
+    regions: Iterable[TextRegion], *, task_active: bool
+) -> TextRegion | None:
+    """Bottom 升星 action on the active star-up page.
+
+    This control is deliberately separate from the same-labelled right-side
+    tab.  It is valid both before material selection and after the 3/3
+    selection has been confirmed.
+    """
+    if not task_active:
+        return None
+    visible = tuple(regions)
+    if not _pet_star_page_visible(visible):
+        return None
+    candidates = [
+        region
+        for region in visible
+        if normalize_visible_text(region.text) == "升星"
+        and region.confidence >= 0.80
+        and 0.65 <= region.box.center.x <= 0.90
+        and region.box.center.y >= 0.70
+    ]
+    return max(candidates, key=lambda region: region.confidence) if candidates else None
+
+
+def pet_star_material_control(
+    regions: Iterable[TextRegion], *, task_active: bool
+) -> tuple[str, TextRegion] | None:
+    """Material-dialog action: first 一键放入, then 确定 at 3/3."""
+    if not task_active:
+        return None
+    visible = tuple(regions)
+    has_dialog_title = any(
+        normalize_visible_text(region.text) == "升星"
+        and region.confidence >= 0.80
+        and region.box.center.x <= 0.40
+        and 0.15 <= region.box.center.y <= 0.40
+        for region in visible
+    )
+    has_material_requirement = any(
+        "需要" in normalize_visible_text(region.text)
+        and "灵宠" in normalize_visible_text(region.text)
+        and region.confidence >= 0.75
+        for region in visible
+    )
+    if not has_dialog_title or not has_material_requirement:
+        return None
+    selected_all = any(
+        (
+            re.search(r"3\s*[/／]\s*3", region.text)
+            or "已选中33" in normalize_visible_text(region.text)
+        )
+        and region.confidence >= 0.75
+        for region in visible
+    )
+    target = "确定" if selected_all else "一键放入"
+    candidates = [
+        region
+        for region in visible
+        if normalize_visible_text(region.text) == target
+        and region.confidence >= 0.80
+        and 0.25 <= region.box.center.x <= 0.80
+        and region.box.center.y >= 0.65
+    ]
+    if not candidates:
+        return None
+    return (
+        "confirm" if selected_all else "autofill",
+        max(candidates, key=lambda region: region.confidence),
+    )
+
+
+def pet_star_success_continue_control(
+    regions: Iterable[TextRegion], *, task_active: bool
+) -> TextRegion | None:
+    """The single dismiss click on the four-star success presentation."""
+    if not task_active:
+        return None
+    visible = tuple(regions)
+    success = any(
+        "升星成功" in normalize_visible_text(region.text)
+        and region.confidence >= 0.80
+        for region in visible
+    )
+    if not success:
+        return None
+    candidates = [
+        region
+        for region in visible
+        if "点击任意" in normalize_visible_text(region.text)
+        and "关闭" in normalize_visible_text(region.text)
+        and region.confidence >= 0.75
+        and region.box.center.y >= 0.70
     ]
     return max(candidates, key=lambda region: region.confidence) if candidates else None
 
@@ -825,6 +1004,8 @@ _ACTION_BUTTON_TERMS = (
     "挑战",
     "强化",
     "升级",
+    "升星",
+    "一键放入",
     "购买",
     "使用",
     "前往",

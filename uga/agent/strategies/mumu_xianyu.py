@@ -216,10 +216,79 @@ _RULES: tuple[StrategyRule, ...] = (
         name="pet_training_entry",
         source="ocr_pet_training_entry_fast",
         game_id=GAME_ID,
-        summary="小龙升级/灵宠达到2级任务可见时，点击右侧灵宠入口打开培养界面。",
+        summary=(
+            "小龙升级/达到2级或小龙合体/达到4星任务可见时，点击展开菜单中的"
+            "右侧灵宠入口打开培养界面。"
+        ),
         allowed_action="click(right-side 灵宠 entry)",
         risk="navigation",
         effect="the pet formation interface opens",
+        cooldown_s=0.0,
+    ),
+    StrategyRule(
+        name="pet_star_menu",
+        source="ocr_pet_star_menu_fast",
+        game_id=GAME_ID,
+        summary="小龙合体/灵宠达到4星任务可见且灵宠入口未展开时，点击右侧菜单。",
+        allowed_action="click(菜单)",
+        risk="navigation",
+        effect="the expanded game menu reveals the pet entry",
+        cooldown_s=0.0,
+    ),
+    StrategyRule(
+        name="pet_star_tab",
+        source="ocr_pet_star_tab_fast",
+        game_id=GAME_ID,
+        summary=(
+            "持久任务为灵宠达到4星，灵宠页尚未出现成长率/技能升级锚点时，"
+            "仅点击最右侧升星页签。"
+        ),
+        allowed_action="click(right-side 升星 tab)",
+        risk="navigation",
+        effect="the pet star-up page opens",
+        cooldown_s=0.0,
+    ),
+    StrategyRule(
+        name="pet_star_action",
+        source="ocr_pet_star_action_fast",
+        game_id=GAME_ID,
+        summary=(
+            "灵宠达到4星任务的升星页已由成长率/技能升级锚定时，仅点击右下升星；"
+            "材料确认前后各执行一次。"
+        ),
+        allowed_action="click(bottom 升星 action)",
+        risk="progression",
+        effect="the pet star-up flow advances",
+        cooldown_s=0.0,
+    ),
+    StrategyRule(
+        name="pet_star_autofill",
+        source="ocr_pet_star_autofill_fast",
+        game_id=GAME_ID,
+        summary="升星材料弹窗显示需求且未选满3/3时，点击一键放入。",
+        allowed_action="click(一键放入)",
+        risk="progression",
+        effect="three eligible pet materials are selected",
+        cooldown_s=0.0,
+    ),
+    StrategyRule(
+        name="pet_star_confirm",
+        source="ocr_pet_star_confirm_fast",
+        game_id=GAME_ID,
+        summary="升星材料弹窗明确显示已选中3/3时，点击确定提交材料。",
+        allowed_action="click(确定 at selected 3/3)",
+        risk="progression",
+        effect="the selected star-up materials are committed to the pet",
+        cooldown_s=0.0,
+    ),
+    StrategyRule(
+        name="pet_star_success_continue",
+        source="ocr_pet_star_success_continue_fast",
+        game_id=GAME_ID,
+        summary="升星成功页显示点击任意位置关闭时，只点击一次关闭提示。",
+        allowed_action="click(点击任意位置处关闭)",
+        risk="low",
+        effect="the star-up success presentation closes",
         cooldown_s=0.0,
     ),
     StrategyRule(

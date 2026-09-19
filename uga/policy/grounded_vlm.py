@@ -32,9 +32,15 @@ from uga.agent.session_state import (
     page_level_value,
     peach_tree_spirit_combat_active,
     pet_information_tab_control,
+    pet_star_action_control,
+    pet_star_material_control,
+    pet_star_menu_control,
+    pet_star_success_continue_control,
+    pet_star_tab_control,
     pet_training_entry_control,
     pet_upgrade_control,
     quest_is_market_task,
+    quest_is_pet_star_task,
     quest_page_keyword,
     raging_tree_spirit_combat_active,
     real_name_gate_active,
@@ -896,6 +902,80 @@ class GroundedVlmPlanner:
                 pet_entry,
                 source="ocr_pet_training_entry_fast",
                 expected_effect="the pet formation interface opens",
+                action_kind=GuiActionKind.CLICK,
+            )
+        pet_star_menu = pet_star_menu_control(snapshot.visible_text)
+        if pet_star_menu is not None:
+            self._last_decision_source = "ocr_pet_star_menu_fast"
+            return self._ocr_action(
+                snapshot,
+                pet_star_menu,
+                source="ocr_pet_star_menu_fast",
+                expected_effect="the expanded game menu reveals the pet entry",
+                action_kind=GuiActionKind.CLICK,
+            )
+        pet_star_task = quest_is_pet_star_task(quest_text)
+        pet_star_material = pet_star_material_control(
+            snapshot.visible_text,
+            task_active=pet_star_task,
+        )
+        if pet_star_material is not None:
+            material_step, control = pet_star_material
+            source, expected_effect = {
+                "autofill": (
+                    "ocr_pet_star_autofill_fast",
+                    "three eligible pet materials are selected",
+                ),
+                "confirm": (
+                    "ocr_pet_star_confirm_fast",
+                    "the selected star-up materials are committed to the pet",
+                ),
+            }[material_step]
+            self._last_decision_source = source
+            return self._ocr_action(
+                snapshot,
+                control,
+                source=source,
+                expected_effect=expected_effect,
+                action_kind=GuiActionKind.CLICK,
+            )
+        pet_star_success = pet_star_success_continue_control(
+            snapshot.visible_text,
+            task_active=pet_star_task,
+        )
+        if pet_star_success is not None:
+            self._last_decision_source = "ocr_pet_star_success_continue_fast"
+            return self._ocr_action(
+                snapshot,
+                pet_star_success,
+                source="ocr_pet_star_success_continue_fast",
+                expected_effect="the star-up success presentation closes",
+                action_kind=GuiActionKind.CLICK,
+            )
+        pet_star_tab = pet_star_tab_control(
+            snapshot.visible_text,
+            task_active=pet_star_task,
+        )
+        if pet_star_tab is not None:
+            self._last_decision_source = "ocr_pet_star_tab_fast"
+            return self._ocr_action(
+                snapshot,
+                pet_star_tab,
+                source="ocr_pet_star_tab_fast",
+                expected_effect="the pet star-up page opens",
+                action_kind=GuiActionKind.CLICK,
+            )
+        pet_star_action = pet_star_action_control(
+            snapshot.visible_text,
+            task_active=pet_star_task,
+        )
+        if pet_star_action is not None:
+            self._last_decision_source = "ocr_pet_star_action_fast"
+            return self._ocr_action(
+                snapshot,
+                pet_star_action,
+                source="ocr_pet_star_action_fast",
+                expected_effect="the pet star-up flow advances",
                 action_kind=GuiActionKind.CLICK,
             )
         pet_information = pet_information_tab_control(snapshot.visible_text)

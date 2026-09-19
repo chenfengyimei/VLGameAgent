@@ -38,7 +38,7 @@ class StrategyRegistryTests(unittest.TestCase):
         root = Path(__file__).parents[2]
         flow = load_recorded_flow(root / "configs/flows/mumu-xianyu-onboarding.yaml")
         self.assertEqual(flow.game_id, MUMU_REGISTRY.game_id)
-        self.assertEqual(len(flow.steps), 54)
+        self.assertEqual(len(flow.steps), 63)
         self.assertEqual(
             {Path(step.evidence).name for step in flow.steps},
             {f"{index:02d}-{name}" for index, name in enumerate((
@@ -96,6 +96,15 @@ class StrategyRegistryTests(unittest.TestCase):
                 "fairy-trail-dialogue.png",
                 "follow-fairy-quest.png",
                 "follow-fairy-dialogue.png",
+                "pet-star-menu.png",
+                "pet-star-entry.png",
+                "pet-star-tab.png",
+                "pet-star-start.png",
+                "pet-star-autofill.png",
+                "pet-star-confirm.png",
+                "pet-star-commit.png",
+                "pet-star-success-continue.png",
+                "pet-star-exit.png",
             ), start=1)},
         )
         for step in flow.steps:
@@ -189,6 +198,12 @@ class StrategyRegistryTests(unittest.TestCase):
             "ocr_pet_training_entry_fast",
             "ocr_pet_information_tab_fast",
             "ocr_pet_upgrade_once_fast",
+            "ocr_pet_star_menu_fast",
+            "ocr_pet_star_tab_fast",
+            "ocr_pet_star_action_fast",
+            "ocr_pet_star_autofill_fast",
+            "ocr_pet_star_confirm_fast",
+            "ocr_pet_star_success_continue_fast",
             "ocr_onboarding_joystick_forward_fast",
             "ocr_character_creation_customize_fast",
             "ocr_character_preset_start_fast",
@@ -652,6 +667,120 @@ class PlannerStrategyScopingTests(unittest.TestCase):
         assert outcome is not None and outcome.action is not None
         self.assertEqual(outcome.action.target_label, "ui_back")
         self.assertEqual(planner.last_decision_source, "ocr_quest_satisfied_back_fast")
+
+    def test_pet_star_flow_uses_each_recorded_control_then_exits(self) -> None:
+        planner = GroundedVlmPlanner(
+            _Client([]),
+            max_temporal_frames=1,
+            max_target_crops=0,
+            compact_output=True,
+            prefer_ocr_task_panel=True,
+            strategy_registry=MUMU_REGISTRY,
+            back_hotspot=(0.060, 0.080),
+        )
+        quest = "有1只灵宠达到4星 0/1"
+
+        menu = _onboarding_snapshot(
+            TextRegion("小龙合体", NormalizedBox(0.04, 0.22, 0.18, 0.27), 0.99),
+            TextRegion(quest, NormalizedBox(0.04, 0.27, 0.28, 0.32), 0.99),
+            TextRegion("菜单", NormalizedBox(0.93, 0.29, 0.99, 0.39), 0.99),
+        )
+        outcome = planner._ocr_fast_path(menu, quest_text=quest)  # type: ignore[attr-defined]
+        assert outcome is not None and outcome.action is not None
+        self.assertEqual(outcome.action.target_label, "菜单")
+        self.assertEqual(planner.last_decision_source, "ocr_pet_star_menu_fast")
+
+        entry = _onboarding_snapshot(
+            TextRegion("小龙合体", NormalizedBox(0.04, 0.22, 0.18, 0.27), 0.99),
+            TextRegion(quest, NormalizedBox(0.04, 0.27, 0.28, 0.32), 0.99),
+            TextRegion("灵宠", NormalizedBox(0.92, 0.36, 0.99, 0.48), 0.99),
+        )
+        outcome = planner._ocr_fast_path(entry, quest_text=quest)  # type: ignore[attr-defined]
+        assert outcome is not None and outcome.action is not None
+        self.assertEqual(outcome.action.target_label, "灵宠")
+        self.assertEqual(planner.last_decision_source, "ocr_pet_training_entry_fast")
+
+        tab = _onboarding_snapshot(
+            TextRegion("灵宠", NormalizedBox(0.05, 0.06, 0.14, 0.12), 0.99),
+            TextRegion("布阵目标", NormalizedBox(0.70, 0.17, 0.82, 0.23), 0.99),
+            TextRegion("信息", NormalizedBox(0.93, 0.30, 0.99, 0.42), 0.99),
+            TextRegion("升星", NormalizedBox(0.93, 0.43, 0.99, 0.55), 0.99),
+        )
+        outcome = planner._ocr_fast_path(tab, quest_text=quest)  # type: ignore[attr-defined]
+        assert outcome is not None and outcome.action is not None
+        self.assertEqual(outcome.action.target_label, "升星")
+        self.assertEqual(outcome.action.target_box, tab.visible_text[-1].box)
+        self.assertEqual(planner.last_decision_source, "ocr_pet_star_tab_fast")
+
+        star_page = _onboarding_snapshot(
+            TextRegion("灵宠", NormalizedBox(0.05, 0.06, 0.14, 0.12), 0.99),
+            TextRegion("技能升级", NormalizedBox(0.62, 0.41, 0.76, 0.47), 0.99),
+            TextRegion("成长率", NormalizedBox(0.62, 0.59, 0.73, 0.65), 0.99),
+            TextRegion("升星", NormalizedBox(0.93, 0.43, 0.99, 0.55), 0.99),
+            TextRegion("升星", NormalizedBox(0.70, 0.82, 0.84, 0.92), 0.99),
+        )
+        outcome = planner._ocr_fast_path(star_page, quest_text=quest)  # type: ignore[attr-defined]
+        assert outcome is not None and outcome.action is not None
+        self.assertEqual(outcome.action.target_box, star_page.visible_text[-1].box)
+        self.assertEqual(planner.last_decision_source, "ocr_pet_star_action_fast")
+
+        autofill = _onboarding_snapshot(
+            TextRegion("升星", NormalizedBox(0.20, 0.19, 0.29, 0.27), 0.99),
+            TextRegion(
+                "需要3个3星妖系灵宠", NormalizedBox(0.39, 0.31, 0.61, 0.37), 0.99
+            ),
+            TextRegion("已选中: 0/3", NormalizedBox(0.56, 0.67, 0.70, 0.73), 0.99),
+            TextRegion("一键放入", NormalizedBox(0.30, 0.72, 0.45, 0.82), 0.99),
+        )
+        outcome = planner._ocr_fast_path(autofill, quest_text=quest)  # type: ignore[attr-defined]
+        assert outcome is not None and outcome.action is not None
+        self.assertEqual(outcome.action.target_label, "一键放入")
+        self.assertEqual(planner.last_decision_source, "ocr_pet_star_autofill_fast")
+
+        confirm = _onboarding_snapshot(
+            TextRegion("升星", NormalizedBox(0.20, 0.19, 0.29, 0.27), 0.99),
+            TextRegion(
+                "需要3个3星妖系灵宠", NormalizedBox(0.39, 0.31, 0.61, 0.37), 0.99
+            ),
+            TextRegion("已选中: 3/3", NormalizedBox(0.56, 0.67, 0.70, 0.73), 0.99),
+            TextRegion("确定", NormalizedBox(0.56, 0.72, 0.70, 0.82), 0.99),
+        )
+        outcome = planner._ocr_fast_path(confirm, quest_text=quest)  # type: ignore[attr-defined]
+        assert outcome is not None and outcome.action is not None
+        self.assertEqual(outcome.action.target_label, "确定")
+        self.assertEqual(planner.last_decision_source, "ocr_pet_star_confirm_fast")
+
+        outcome = planner._ocr_fast_path(star_page, quest_text=quest)  # type: ignore[attr-defined]
+        assert outcome is not None and outcome.action is not None
+        self.assertEqual(planner.last_decision_source, "ocr_pet_star_action_fast")
+
+        success = _onboarding_snapshot(
+            TextRegion("升星成功", NormalizedBox(0.10, 0.15, 0.38, 0.25), 0.99),
+            TextRegion(
+                "点击任意位置处关闭", NormalizedBox(0.39, 0.88, 0.59, 0.94), 0.99
+            ),
+        )
+        outcome = planner._ocr_fast_path(success, quest_text=quest)  # type: ignore[attr-defined]
+        assert outcome is not None and outcome.action is not None
+        self.assertEqual(outcome.action.target_label, "点击任意位置处关闭")
+        self.assertEqual(
+            planner.last_decision_source, "ocr_pet_star_success_continue_fast"
+        )
+
+        completed = _onboarding_snapshot(
+            TextRegion("灵宠", NormalizedBox(0.05, 0.06, 0.14, 0.12), 0.99),
+            TextRegion("技能升级", NormalizedBox(0.62, 0.41, 0.76, 0.47), 0.99),
+            TextRegion("成长率", NormalizedBox(0.62, 0.59, 0.73, 0.65), 0.99),
+            TextRegion(
+                "该灵宠已培养至进化上限",
+                NormalizedBox(0.65, 0.70, 0.91, 0.77),
+                0.99,
+            ),
+        )
+        outcome = planner._ocr_fast_path(completed, quest_text=quest)  # type: ignore[attr-defined]
+        assert outcome is not None and outcome.action is not None
+        self.assertEqual(outcome.action.target_label, "ui_back")
+        self.assertEqual(planner.last_decision_source, "ocr_completed_panel_back_fast")
 
     def test_auto_navigation_waits_without_reclicking_the_task_tracker(self) -> None:
         planner = GroundedVlmPlanner(

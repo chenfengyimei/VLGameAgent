@@ -388,3 +388,66 @@ steps:
     recognize: {all: [回顾剧情]}
     action: click_hotspot:ui_dialogue_advance
     expected: 快速推进跟随仙灵后的师姐对话
+  - id: pet_star_menu
+    order: 550
+    evidence: docs/assets/mumu-xianyu/onboarding/55-pet-star-menu.png
+    source: ocr_pet_star_menu_fast
+    recognize: {any_task: [小龙合体, 有1只灵宠达到4星], control: 菜单, region: game_right}
+    action: click_text:菜单
+    expected: 展开右侧功能菜单并显示灵宠入口
+  - id: pet_star_entry
+    order: 560
+    evidence: docs/assets/mumu-xianyu/onboarding/56-pet-star-entry.png
+    source: ocr_pet_training_entry_fast
+    recognize: {any_task: [小龙合体, 有1只灵宠达到4星], control: 灵宠, region: game_right}
+    action: click_text:灵宠
+    expected: 打开灵宠培养界面
+  - id: pet_star_tab
+    order: 570
+    evidence: docs/assets/mumu-xianyu/onboarding/57-pet-star-tab.png
+    source: ocr_pet_star_tab_fast
+    recognize: {all: [灵宠], quest_memory: 有1只灵宠达到4星, control: 右侧升星页签}
+    action: click_text:升星页签
+    expected: 切换到灵宠升星界面
+  - id: pet_star_start
+    order: 580
+    evidence: docs/assets/mumu-xianyu/onboarding/58-pet-star-start.png
+    source: ocr_pet_star_action_fast
+    recognize: {all: [灵宠, 技能升级, 成长率], control: 右下升星}
+    action: click_text:升星
+    expected: 打开升星材料选择弹窗
+  - id: pet_star_autofill
+    order: 590
+    evidence: docs/assets/mumu-xianyu/onboarding/59-pet-star-autofill.png
+    source: ocr_pet_star_autofill_fast
+    recognize: {all: [升星, 需要3个3星妖系灵宠], control: 一键放入}
+    action: click_text:一键放入
+    expected: 自动选入三只符合条件的升星材料
+  - id: pet_star_confirm
+    order: 600
+    evidence: docs/assets/mumu-xianyu/onboarding/60-pet-star-confirm.png
+    source: ocr_pet_star_confirm_fast
+    recognize: {all: [升星, 已选中3/3], control: 确定}
+    action: click_text:确定
+    expected: 确认使用已选中的升星材料
+  - id: pet_star_commit
+    order: 610
+    evidence: docs/assets/mumu-xianyu/onboarding/61-pet-star-commit.png
+    source: ocr_pet_star_action_fast
+    recognize: {all: [灵宠, 技能升级, 成长率, 3/3], control: 右下升星}
+    action: click_text:升星
+    expected: 执行最终升星操作
+  - id: pet_star_success_continue
+    order: 620
+    evidence: docs/assets/mumu-xianyu/onboarding/62-pet-star-success-continue.png
+    source: ocr_pet_star_success_continue_fast
+    recognize: {all: [升星成功, 点击任意位置处关闭]}
+    action: click_text:点击任意位置处关闭
+    expected: 点击一次关闭升星成功展示页
+  - id: pet_star_exit
+    order: 630
+    evidence: docs/assets/mumu-xianyu/onboarding/63-pet-star-exit.png
+    source: ocr_completed_panel_back_fast
+    recognize: {all: [灵宠, 4星, 该灵宠已培养至进化上限]}
+    action: click_hotspot:ui_back
+    expected: 从已完成的灵宠升星界面返回世界页
