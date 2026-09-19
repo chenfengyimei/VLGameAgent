@@ -1610,6 +1610,27 @@ class ClosedLoopSupervisor:
             action.target_label,
         )
 
+    def record_dialogue_burst_result(
+        self,
+        *,
+        action_id: str,
+        physical_point: tuple[float, float] | None,
+        primitives: tuple[str, ...],
+        executed: bool,
+        detail: str,
+    ) -> None:
+        """Expose each GUI-only dialogue click as an honest physical event."""
+        kind = "action_submitted" if executed else "suppressed"
+        self._journal_row(
+            kind,
+            "click(ui_dialogue_advance)",
+            (
+                f"id={action_id}; source=gui_dialogue_burst; physical={physical_point}; "
+                f"primitives={','.join(primitives)}; executed={executed}; {detail}"
+            ),
+            "ui_dialogue_advance",
+        )
+
     def record_execution_receipts(self, receipts: Sequence[ExecutionReceipt]) -> None:
         """Feed the scheduler's terminal primitive receipts into the pending action.
 

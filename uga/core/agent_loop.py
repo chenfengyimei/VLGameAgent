@@ -23,16 +23,19 @@ from uga.agent.session_state import quest_level_target
 from uga.capture.frame import Frame
 from uga.capture.ring_buffer import FrameRingBuffer, LatestFrameSlot, SequencedFrame
 from uga.control.arbiter import ArbiterDecision
+from uga.control.execution_receipt import ExecutionReceipt
 from uga.control.lease import ControlMode, ControlOwner
 from uga.control.lease_manager import ControlLeaseManager
+from uga.control.lifetime import ActionLifetime
 from uga.control.physical import AbsolutePointerAction, PhysicalAction
 from uga.control.scheduler import ActionScheduler, SchedulerStats
-from uga.core.errors import BackendUnavailableError, ContractViolation
+from uga.core.errors import BackendUnavailableError, ContractViolation, LeaseDeniedError
 from uga.core.events import Event, EventBus, EventType
 from uga.core.run_context import RunContext, RunStamp
 from uga.environment.adapter import EnvironmentAdapter
 from uga.gui.controller import GuiActionController, GuiActionSubmission
-from uga.gui.schema import GuiActionKind
+from uga.gui.dialogue_burst import DialogueBurstGate, DialogueBurstPermit
+from uga.gui.schema import GuiAction, GuiActionKind
 from uga.observation.buffer import TemporalObservationBuffer
 from uga.observation.builder import ObservationBuilder
 from uga.observation.schema import Observation
@@ -51,7 +54,7 @@ from uga.safety.action_gate import (
     resolved_click_point,
 )
 from uga.safety.sensitive_page import inspect_sensitive_page
-from uga.time.clock import ClockBackend
+from uga.time.clock import ClockBackend, UGATime
 from uga.windows.coordinates import CoordinateTransform, Rect
 
 _T = TypeVar("_T")
@@ -227,6 +230,12 @@ class RealtimeAgentLoop:
         self._task_generation = 1
         self._geometry_generation = 0
         self._geometry_key: tuple[object, ...] | None = None
+        # Dialogue clicks are locally grounded once by OCR, then repeated by a
+        # bounded GUI-only loop.  OCR remains the authority that refreshes or
+        # revokes the burst; the vision model is never involved.
+        self._dialogue_burst = DialogueBurstGate()
+        self._dialogue_burst_executed = 0
+        self._dialogue_burst_suppressed = 0
         self._slot = LatestFrameSlot()
         if recorder is not None:
             events.subscribe(self._record_event)
@@ -267,6 +276,9 @@ class RealtimeAgentLoop:
                 "last_planner_input_frame_id": self._last_planner_input_frame_id,
                 "last_planner_input_age_ns": self._last_planner_input_age_ns,
                 "safety_discarded_results": self._safety_discards,
+                "dialogue_burst_active": self._dialogue_burst.active,
+                "dialogue_burst_executed": self._dialogue_burst_executed,
+                "dialogue_burst_suppressed": self._dialogue_burst_suppressed,
             }
         )
         return diagnostics
@@ -297,13 +309,14 @@ class RealtimeAgentLoop:
             },
         )
 
-    def drain_execution_receipts(self) -> None:
+    def drain_execution_receipts(self) -> tuple[ExecutionReceipt, ...]:
         """One receipt pump for observation, error teardown and finalization."""
         receipts = self._scheduler.drain_receipts()
         if self._recorder is not None:
             self._recorder.record_execution_receipts(receipts)
         if self._closed_loop is not None:
             self._closed_loop.record_execution_receipts(receipts)
+        return receipts
 
     def _pre_action_observation(self, item: SequencedFrame) -> Observation:
         history = tuple(
@@ -414,6 +427,12 @@ class RealtimeAgentLoop:
             if self._closed_loop.session is not None:
                 self._task_generation = self._closed_loop.session.task_generation
                 perception = replace(perception, task_generation=self._task_generation)
+                self._dialogue_burst.refresh(
+                    dialogue_active=self._closed_loop.session.dialogue_active,
+                    validated_frame=pending.frame,
+                    task_generation=self._task_generation,
+                    now=self._clock.now(),
+                )
         observation = self._observation_builder.build(
             pending.frame,
             history,
@@ -491,6 +510,7 @@ class RealtimeAgentLoop:
             and closed_loop is not None
             and perception is not None
             and not effect_pending
+            and not self._dialogue_burst.active
             and not closed_loop.is_terminal
             and transition is None
             and self._clock.now().value_ns >= self._next_grounded_inference_ns
@@ -602,6 +622,11 @@ class RealtimeAgentLoop:
             self._last_planner_error = None
             self._consecutive_planner_failures = 0
             planner_outcome = outcome
+            decision_source = getattr(grounded_planner, "last_decision_source", None)
+            deterministic_fast_path = is_trusted_deterministic_source(decision_source)
+            target_was_locally_grounded = bool(
+                deterministic_fast_path or decision_source == "model_ocr_snap"
+            )
             dialogue_cadence = (
                 outcome.kind == DecisionKind.ACT
                 and outcome.action is not None
@@ -613,7 +638,17 @@ class RealtimeAgentLoop:
                 if dialogue_cadence
                 else self._grounded_decision_interval_ns
             )
-            latest_after_inference = self._frames.latest() or pending
+            # A deterministic OCR/hotspot action was decided synchronously
+            # from this frame.  Re-running full-screen OCR merely because the
+            # 4 Hz capture thread published another animation frame turns a
+            # zero-latency rule into a multi-second GUI path.  Keep the
+            # semantic snapshot and let the final window/geometry guard check
+            # the latest physical frame instead.
+            latest_after_inference = (
+                pending
+                if deterministic_fast_path
+                else self._frames.latest() or pending
+            )
             if latest_after_inference.sequence == pending.sequence:
                 fresh_perception = perception
             else:
@@ -646,7 +681,7 @@ class RealtimeAgentLoop:
                 pending.frame,
                 latest_after_inference.frame,
                 observation.user_goal,
-                decision_source=getattr(grounded_planner, "last_decision_source", None),
+                decision_source=decision_source,
             ), budget)
             if not self._run_live(stamp):
                 await self._discard_stale_result(
@@ -667,16 +702,14 @@ class RealtimeAgentLoop:
             # raw planner proposal once sent a routed exit's original box —
             # parked on MuMu's own title-bar close button — to SendInput.
             outcome = supervised.outcome
-            decision_source = getattr(grounded_planner, "last_decision_source", None)
             execution_item = latest_after_inference
-            target_was_locally_grounded = bool(
-                is_trusted_deterministic_source(decision_source)
-                or decision_source == "model_ocr_snap"
-            )
             if supervised.disposition in {DecisionDisposition.EXECUTE, DecisionDisposition.RECOVER}:
                 current_item = self._frames.latest() or latest_after_inference
                 final_perception = fresh_perception
-                if current_item.sequence != latest_after_inference.sequence:
+                if (
+                    current_item.sequence != latest_after_inference.sequence
+                    and not deterministic_fast_path
+                ):
                     assert self._perception_builder is not None
                     final_perception = await self._bounded_call(self._perception_worker, partial(
                         self._perception_builder.build, current_item, self._mode_router.current,
@@ -887,6 +920,19 @@ class RealtimeAgentLoop:
                             ),
                             expected_primitives=len(gui_submission.physical_actions),
                         )
+                        if (
+                            decision_source == "ocr_dialogue_click_fast"
+                            and gui_action.kind == GuiActionKind.CLICK
+                            and gui_action.x is not None
+                            and gui_action.y is not None
+                        ):
+                            self._dialogue_burst.arm(
+                                x=gui_action.x,
+                                y=gui_action.y,
+                                validated_frame=execution_item.frame,
+                                task_generation=fresh_perception.task_generation,
+                                now=self._clock.now(),
+                            )
                     else:
                         closed_loop.fail("grounded GUI proposal was rejected")
             elif supervised.disposition == DecisionDisposition.RECOVER:
@@ -1105,6 +1151,113 @@ class RealtimeAgentLoop:
             supervision,
         )
 
+    async def _submit_dialogue_burst(self, permit: DialogueBurstPermit) -> None:
+        """Submit one OCR-authorized dialogue click without another OCR/model pass."""
+        closed_loop = self._closed_loop
+        gui_controller = self._gui_controller
+        session = None if closed_loop is None else closed_loop.session
+        now = self._clock.now()
+        current_item = self._frames.latest()
+        if (
+            closed_loop is None
+            or gui_controller is None
+            or session is None
+            or not session.dialogue_active
+            or current_item is None
+            or not self._dialogue_burst.permit_is_current(permit, now)
+            or self._run_cancelled()
+        ):
+            self._dialogue_burst.disarm()
+            return
+        context_live, _reason = closed_loop.validate_execution_context(
+            permit.validated_frame, current_item.frame
+        )
+        if not context_live:
+            self._dialogue_burst.disarm()
+            self._dialogue_burst_suppressed += 1
+            return
+
+        lifetime = ActionLifetime(now, now, UGATime(now.value_ns + 600_000_000))
+        gui_action = GuiAction(
+            f"dialogue-burst-{uuid.uuid4().hex[:16]}",
+            GuiActionKind.CLICK,
+            lifetime,
+            x=permit.x,
+            y=permit.y,
+            confidence=1.0,
+        )
+        try:
+            lease = self._leases.grant(
+                ControlOwner.GUI_AGENT,
+                ControlMode.GUI,
+                lifetime.expires_at.value_ns - now.value_ns,
+                confidence=1.0,
+                reason="OCR-confirmed dialogue burst click",
+            )
+        except LeaseDeniedError:
+            self._dialogue_burst.disarm()
+            self._dialogue_burst_suppressed += 1
+            return
+        pre_action = self._pre_action_observation(current_item)
+        stamp = self._run_context.stamp() if self._run_context is not None else None
+        submission = gui_controller.submit(
+            gui_action,
+            self._coordinate_transform(current_item.frame),
+            current_item.frame.window_identity,
+            lease,
+            observation_id=pre_action.observation_id,
+            policy_version="dialogue-burst-1.0.0",
+            pre_action_observation_id=pre_action.observation_id,
+            pre_action_capture_ns=current_item.frame.capture_timestamp.value_ns,
+            execution_guard=lambda: (
+                self._dialogue_burst.permit_is_current(permit, self._clock.now())
+                and self._closed_loop is closed_loop
+                and closed_loop.session is not None
+                and closed_loop.session.dialogue_active
+                and self._execution_is_current(
+                    stamp,
+                    permit.validated_frame,
+                    permit.task_generation,
+                    visual_stability=False,
+                )
+            ),
+        )
+        decision = submission.decision
+        if decision is None:
+            self._dialogue_burst_suppressed += 1
+            return
+
+        # Execute immediately in this latency domain. The regular 30 Hz task
+        # remains a fallback, while this tick makes GUI burst latency
+        # independent of the observation/OCR loop.
+        self._scheduler.tick()
+        receipts = self.drain_execution_receipts()
+        submitted_ids = {item.action_id for item in submission.physical_actions}
+        matched = tuple(item for item in receipts if item.action_id in submitted_ids)
+        executed = bool(
+            decision.accepted
+            and len(matched) == submission.scheduled_physical_actions
+            and submission.scheduled_physical_actions > 0
+            and all(item.executed for item in matched)
+        )
+        detail = (
+            "executed all GUI primitives"
+            if executed
+            else "GUI burst was rejected or did not execute every primitive"
+        )
+        closed_loop.record_dialogue_burst_result(
+            action_id=gui_action.action_id,
+            physical_point=_physical_pointer_point(submission.physical_actions),
+            primitives=tuple(type(item).__name__ for item in submission.physical_actions),
+            executed=executed,
+            detail=detail,
+        )
+        if executed:
+            self._dialogue_burst_executed += 1
+        else:
+            self._dialogue_burst_suppressed += 1
+        await self._publish_decision(decision)
+
     async def run(
         self,
         stop: asyncio.Event,
@@ -1223,6 +1376,15 @@ class RealtimeAgentLoop:
                 with contextlib.suppress(TimeoutError):
                     await asyncio.wait_for(stop.wait(), timeout=period_s)
 
+        async def dialogue_burst() -> None:
+            poll_s = min(0.05, self._dialogue_burst.interval_ns / 4_000_000_000)
+            while not stop.is_set():
+                permit = self._dialogue_burst.take_due(self._clock.now())
+                if permit is not None:
+                    await self._submit_dialogue_burst(permit)
+                with contextlib.suppress(TimeoutError):
+                    await asyncio.wait_for(stop.wait(), timeout=poll_s)
+
         try:
             async with asyncio.TaskGroup() as tasks:
                 if isinstance(self._capture, ContinuousCaptureSource):
@@ -1232,6 +1394,8 @@ class RealtimeAgentLoop:
                         stop, frequency_hz=scheduler_hz, heartbeat=self._control_heartbeat
                     )
                 )
+                if self._gui_controller is not None and self._closed_loop is not None:
+                    tasks.create_task(dialogue_burst())
                 observation_task = tasks.create_task(observe())
 
                 async def cancel_on_stop() -> None:
@@ -1241,6 +1405,7 @@ class RealtimeAgentLoop:
 
                 tasks.create_task(cancel_on_stop())
         finally:
+            self._dialogue_burst.disarm()
             self._leases.revoke_all(notify=False)
             try:
                 self._scheduler.neutralize()

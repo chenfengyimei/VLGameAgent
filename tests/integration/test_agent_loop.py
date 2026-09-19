@@ -8,6 +8,7 @@ from tests.helpers import frame, identity
 from tests.integration.test_baseline_agent import FakeIntegrity, FakeWindows, profile
 from uga.agent.closed_loop import ClosedLoopSupervisor, DecisionDisposition
 from uga.agent.mode_router import ModeRouter, RuleModeClassifier
+from uga.agent.session_state import GameSessionState
 from uga.capture.frame import Frame
 from uga.capture.ring_buffer import FrameRingBuffer, SequencedFrame
 from uga.control.arbiter import ActionArbiter
@@ -34,6 +35,7 @@ from uga.perception.schema import (
     NormalizedBox,
     PerceptionSnapshot,
     PlannerOutcome,
+    TextRegion,
 )
 from uga.perception.text import NullTextProvider
 from uga.policy.action_chunk import ActionChunk
@@ -173,6 +175,35 @@ class GroundedClickPlanner:
                 "settings opens",
                 0.95,
             ),
+        )
+
+
+class DialogueClickPlanner(GroundedClickPlanner):
+    last_decision_source = "ocr_dialogue_click_fast"
+
+    def decide(self, **kwargs: object) -> PlannerOutcome:
+        outcome = super().decide(**kwargs)
+        return replace(
+            outcome,
+            action=GroundedAction(
+                GuiActionKind.CLICK,
+                "ui_dialogue_advance",
+                NormalizedBox(0.94, 0.89, 0.98, 0.94),
+                "the dialogue advances",
+                1.0,
+            ),
+        )
+
+
+class DialogueTextProvider:
+    @property
+    def available(self) -> bool:
+        return True
+
+    def recognize(self, source: Frame) -> tuple[TextRegion, ...]:
+        del source
+        return (
+            TextRegion("回顾剧情", NormalizedBox(0.02, 0.30, 0.10, 0.60), 0.99),
         )
 
 
@@ -327,6 +358,74 @@ class AgentLoopTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.gui_submission.scheduled_physical_actions, 3)
         self.assertEqual(result.scheduler_stats.executed, 3)
         self.assertEqual(len(backend.actions), 3)
+
+    async def test_dialogue_burst_submits_without_another_planner_pass(self) -> None:
+        clock = ManualClock(100)
+        target = identity()
+        frames = FrameRingBuffer()
+        events = EventBus(clock)
+        leases = ControlLeaseManager(clock)
+        backend = DryRunInputBackend()
+        scheduler = ActionScheduler(
+            clock,
+            InputExecutor(
+                clock,
+                backend,
+                FocusGuard(
+                    FakeWindows(target), FakeIntegrity(), leases, AgentEnableState(True)
+                ),
+                leases,
+            ),
+            leases,
+        )
+        arbiter = ActionArbiter(clock, leases)
+        fixture_profile = profile()
+        session = GameSessionState()
+        loop = RealtimeAgentLoop(
+            clock=clock,
+            capture=FakeCaptureSource(frames),
+            frames=frames,
+            observation_builder=ObservationBuilder(
+                clock, "fixture-game", ObservationInputs("advance dialogue")
+            ),
+            observations=TemporalObservationBuffer(),
+            environment=GenericEnvironment(fixture_profile),
+            mode_classifier=RuleModeClassifier(),
+            mode_router=ModeRouter(
+                ControlMode.GUI, confirmation_frames=1, started_at=UGATime(0)
+            ),
+            policy=None,
+            leases=leases,
+            controller=ActionChunkController(
+                GenericEnvironment(fixture_profile), arbiter, scheduler
+            ),
+            scheduler=scheduler,
+            events=events,
+            grounded_planner=DialogueClickPlanner(),
+            perception_builder=PerceptionBuilder(DialogueTextProvider()),
+            closed_loop=ClosedLoopSupervisor(
+                clock, fixture_profile.perception, session=session
+            ),
+            gui_controller=GuiActionController(arbiter, scheduler),
+            key_resolver=lambda _: None,
+        )
+
+        first = await loop.step()
+        self.assertIsNotNone(first.gui_submission)
+        self.assertEqual(len(backend.actions), 3)
+        diagnostics = loop.closed_loop_diagnostics
+        assert diagnostics is not None
+        self.assertTrue(diagnostics["dialogue_burst_active"])
+
+        clock.advance(250_000_000)
+        permit = loop._dialogue_burst.take_due(clock.now())  # noqa: SLF001
+        assert permit is not None
+        await loop._submit_dialogue_burst(permit)  # noqa: SLF001
+
+        self.assertEqual(len(backend.actions), 6)
+        diagnostics = loop.closed_loop_diagnostics
+        assert diagnostics is not None
+        self.assertEqual(diagnostics["dialogue_burst_executed"], 1)
 
     async def test_execution_receipts_feed_effect_verification(self) -> None:
         # D04: arbiter acceptance only queues work.  The pending action's
