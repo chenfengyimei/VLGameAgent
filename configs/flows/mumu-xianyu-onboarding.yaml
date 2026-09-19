@@ -164,3 +164,66 @@ steps:
     recognize: {all: [点击任意处继续]}
     action: click_text:点击任意处继续
     expected: 关闭结契完成页并继续主线
+  - id: little_dragon_bond_quest
+    order: 230
+    evidence: docs/assets/mumu-xianyu/onboarding/23-little-dragon-bond-quest.png
+    source: ocr_task_panel_fast
+    recognize: {all: [主线], any: [小龙结缘, 桃源居内一片安逸]}
+    action: click_task_tracker
+    expected: 自动寻路到魔化精怪战斗
+  - id: demonized_spirit_pet_group_attack
+    order: 240
+    evidence: docs/assets/mumu-xianyu/onboarding/24-demonized-spirit-pet-group-attack.png
+    source: ocr_demonized_spirit_group_attack_fast
+    recognize: {any_task: [魔化精怪, 制服魔化妖灵], any_enemy: [魔化妖灵, 魔化猪猪]}
+    action: click_hotspot:ui_pet_group_attack
+    expected: 使用小青龙群攻推进战斗进度
+  - id: demonized_spirit_dialogue
+    order: 250
+    evidence: docs/assets/mumu-xianyu/onboarding/25-demonized-spirit-dialogue.png
+    source: ocr_dialogue_click_fast
+    recognize: {all: [回顾剧情]}
+    action: click_hotspot:ui_dialogue_advance
+    expected: 快速推进战斗后的剧情对话
+  - id: red_dust_auto_once
+    order: 260
+    evidence: docs/assets/mumu-xianyu/onboarding/26-red-dust-auto-once.png
+    source: ocr_red_dust_auto_once_fast
+    recognize: {all: [红尘入世, 与师姐一起], persistent_guard: auto_combat_enabled=false}
+    action: click_hotspot_once:ui_auto_combat
+    expected: 开启自动模式并在物理回执成功后持久记录，后续不再点击
+  - id: red_dust_cutscene_skip
+    order: 270
+    evidence: docs/assets/mumu-xianyu/onboarding/27-red-dust-cutscene-skip.png
+    source: ocr_cutscene_skip_fast
+    recognize: {all: [跳过], region: game_top_right}
+    action: click_text:跳过
+    expected: 结束红尘入世过场动画
+  - id: rescue_cry_quest
+    order: 280
+    evidence: docs/assets/mumu-xianyu/onboarding/28-rescue-cry-quest.png
+    source: ocr_task_panel_fast
+    recognize: {all: [主线, 红尘入世], any: [有人在呼救, 似乎有人]}
+    action: click_task_tracker
+    expected: 自动寻路到呼救地点并进入剧情
+  - id: rescue_cutscene_skip
+    order: 290
+    evidence: docs/assets/mumu-xianyu/onboarding/29-rescue-cutscene-skip.png
+    source: ocr_cutscene_skip_fast
+    recognize: {all: [跳过], region: game_top_right}
+    action: click_text:跳过
+    expected: 结束呼救剧情过场动画
+  - id: rescue_dialogue
+    order: 300
+    evidence: docs/assets/mumu-xianyu/onboarding/30-rescue-dialogue.png
+    source: ocr_dialogue_click_fast
+    recognize: {all: [回顾剧情]}
+    action: click_hotspot:ui_dialogue_advance
+    expected: 快速推进呼救剧情对话
+  - id: peach_tree_spirit_combat
+    order: 310
+    evidence: docs/assets/mumu-xianyu/onboarding/31-peach-tree-spirit-combat.png
+    source: ocr_peach_tree_spirit_group_attack_fast
+    recognize: {any_task: [暴虐精怪, 制服桃木精], any_enemy: [桃木精]}
+    action: cycle_hotspots:[ui_pet_group_attack,ui_secondary_group_attack,ui_group_attack]
+    expected: 轮换三个已标注群攻技能直至击败桃木精

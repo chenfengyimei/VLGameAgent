@@ -55,6 +55,8 @@ _PAGE_LEVEL_RE = re.compile(r"等级\D{0,3}(\d+)")
 _QUEST_PROGRESS_RE = re.compile(r"\d+/\d+")
 _CHARACTER_NAME_LENGTH_RE = re.compile(r"([1-7])\s*[/／]\s*7")
 _ONBOARDING_HOSTILE_CUES = ("黑衣人", "恶灵")
+_DEMONIZED_SPIRIT_CUES = ("魔化妖灵", "魔化猪猪", "魔化精怪")
+_PEACH_TREE_SPIRIT_CUES = ("桃木精",)
 _LOADING_CUES = ("加载中", "正在加载", "loading")
 _POPUP_CUES = ("确定", "领取", "关闭")
 _TITLE_BAND_MAX_CENTER_X = 0.30
@@ -276,6 +278,80 @@ def invasion_combat_active(regions: Iterable[TextRegion]) -> bool:
         any(cue in normalize_visible_text(region.text) for cue in _ONBOARDING_HOSTILE_CUES)
         and region.confidence >= 0.75
         and 0.25 <= region.box.center.x <= 0.82
+        and 0.14 <= region.box.center.y <= 0.75
+        for region in visible
+    )
+    return task_active and enemy_visible
+
+
+def red_dust_auto_enable_ready(regions: Iterable[TextRegion]) -> bool:
+    """Whether the recorded 红尘入世 step is asking to enable ``自动`` once.
+
+    The Auto control itself is graphical and remains visible after it is
+    enabled, so the narrow first subquest (红尘入世 + 与师姐一起) is the page
+    anchor. Persistent session state prevents a later subquest from clicking
+    the same toggle again.
+    """
+    visible = tuple(regions)
+    task_regions = tuple(
+        region
+        for region in visible
+        if region.confidence >= 0.75
+        and region.box.center.x <= 0.35
+        and 0.14 <= region.box.center.y <= 0.45
+    )
+    has_red_dust = any(
+        "红尘入世" in normalize_visible_text(region.text) for region in task_regions
+    )
+    has_senior_sister_step = any(
+        "与师姐一起" in normalize_visible_text(region.text)
+        or (
+            "师姐" in normalize_visible_text(region.text)
+            and "一起" in normalize_visible_text(region.text)
+        )
+        for region in task_regions
+    )
+    return has_red_dust and has_senior_sister_step
+
+
+def demonized_spirit_combat_active(regions: Iterable[TextRegion]) -> bool:
+    """Recorded 魔化精怪 fight whose first action is the pet group skill."""
+    visible = tuple(regions)
+    task_active = any(
+        any(
+            cue in normalize_visible_text(region.text)
+            for cue in ("魔化精怪", "制服魔化妖灵")
+        )
+        and region.confidence >= 0.75
+        and region.box.center.x <= 0.38
+        for region in visible
+    )
+    enemy_visible = any(
+        any(cue in normalize_visible_text(region.text) for cue in _DEMONIZED_SPIRIT_CUES)
+        and region.confidence >= 0.75
+        and 0.25 <= region.box.center.x <= 0.85
+        and 0.14 <= region.box.center.y <= 0.75
+        for region in visible
+    )
+    return task_active and enemy_visible
+
+
+def peach_tree_spirit_combat_active(regions: Iterable[TextRegion]) -> bool:
+    """Recorded 暴虐精怪 fight with 桃木精 enemies on screen."""
+    visible = tuple(regions)
+    task_active = any(
+        any(
+            cue in normalize_visible_text(region.text)
+            for cue in ("暴虐精怪", "制服桃木精")
+        )
+        and region.confidence >= 0.75
+        and region.box.center.x <= 0.38
+        for region in visible
+    )
+    enemy_visible = any(
+        any(cue in normalize_visible_text(region.text) for cue in _PEACH_TREE_SPIRIT_CUES)
+        and region.confidence >= 0.75
+        and 0.25 <= region.box.center.x <= 0.90
         and 0.14 <= region.box.center.y <= 0.75
         for region in visible
     )
@@ -815,6 +891,9 @@ class GameSessionState:
     profile_id: str | None = None
     last_persistence_error: str | None = None
     restored_from_disk: bool = False
+    # The user-confirmed bottom-centre 自动 toggle is a one-shot onboarding
+    # action. It is persisted only after every click primitive reaches the OS.
+    auto_combat_enabled: bool = False
 
     @property
     def restored_task_unverified(self) -> bool:
@@ -858,24 +937,28 @@ class GameSessionState:
                     f"state file belongs to profile {stored_profile!r}; ignored"
                 )
                 return
-            raw = str(payload["raw_text"])
-            canonical = str(payload.get("canonical_text") or raw)
+            raw_value = payload.get("raw_text")
+            raw = None if raw_value is None else str(raw_value)
+            canonical = None if raw is None else str(payload.get("canonical_text") or raw)
             generation = int(payload.get("generation", 0))
+            auto_combat_enabled = bool(payload.get("auto_combat_enabled", False))
         except (OSError, ValueError, KeyError, TypeError) as exc:
             self._isolate_corrupt_state(path, f"corrupt state file: {exc}")
             return
-        self.latest_main_task = MainQuestSnapshot(
-            raw_text=raw,
-            canonical_text=canonical,
-            box=NormalizedBox(0.06, _QUEST_MIN_CENTER_Y, 0.22, 0.30),
-            confidence=0.5,
-            first_seen_frame_id="restored",
-            last_seen_frame_id="restored",
-            observed_at_ns=0,
-            generation=generation,
-            restored=True,
-            verified_frames=0,
-        )
+        if raw is not None and canonical is not None:
+            self.latest_main_task = MainQuestSnapshot(
+                raw_text=raw,
+                canonical_text=canonical,
+                box=NormalizedBox(0.06, _QUEST_MIN_CENTER_Y, 0.22, 0.30),
+                confidence=0.5,
+                first_seen_frame_id="restored",
+                last_seen_frame_id="restored",
+                observed_at_ns=0,
+                generation=generation,
+                restored=True,
+                verified_frames=0,
+            )
+        self.auto_combat_enabled = auto_combat_enabled
         self.restored_from_disk = True
 
     def _isolate_corrupt_state(self, path: Path, why: str) -> None:
@@ -889,7 +972,7 @@ class GameSessionState:
 
     def _save_quest_memory(self) -> None:
         quest = self.latest_main_task
-        if self.persistence_path is None or quest is None:
+        if self.persistence_path is None:
             return
         try:
             import json
@@ -898,9 +981,10 @@ class GameSessionState:
                 {
                     "schema": _STATE_SCHEMA,
                     "profile_id": self.profile_id,
-                    "raw_text": quest.raw_text,
-                    "canonical_text": quest.canonical_text,
-                    "generation": quest.generation,
+                    "raw_text": None if quest is None else quest.raw_text,
+                    "canonical_text": None if quest is None else quest.canonical_text,
+                    "generation": 0 if quest is None else quest.generation,
+                    "auto_combat_enabled": self.auto_combat_enabled,
                     "saved_at_ns": time.time_ns(),
                 },
                 ensure_ascii=False,
@@ -925,8 +1009,26 @@ class GameSessionState:
         if self._last_observed_frame == marker:
             return
         self._last_observed_frame = marker
+        # A newly opened character-creation page starts a fresh onboarding
+        # run. Re-arm the one-shot Auto action even when the profile state was
+        # restored from an older character.
+        if self.auto_combat_enabled and any(
+            normalize_visible_text(region.text) == "创角"
+            and region.confidence >= 0.85
+            and region.box.center.y <= 0.20
+            for region in snapshot.visible_text
+        ):
+            self.auto_combat_enabled = False
+            self._save_quest_memory()
         self._update_quest_memory(snapshot, captured_at_ns)
         self._classify_screen(snapshot)
+
+    def mark_auto_combat_enabled(self) -> None:
+        """Persist completion of the one-time Auto click after OS receipts."""
+        if self.auto_combat_enabled:
+            return
+        self.auto_combat_enabled = True
+        self._save_quest_memory()
 
     def record_trace(self, trace: ActionTrace) -> None:
         self.recent_actions.append(trace)
@@ -1100,6 +1202,14 @@ class GameSessionState:
             ScreenType.UNKNOWN: "未知页面",
         }[self.screen_type]
         lines.append(f"当前页面：{page}")
+        lines.append(
+            "自动战斗状态："
+            + (
+                "auto_combat_enabled=true"
+                if self.auto_combat_enabled
+                else "auto_combat_enabled=false"
+            )
+        )
         recent = [
             trace
             for trace in reversed(self.recent_actions)
@@ -1132,6 +1242,7 @@ class GameSessionState:
             "screen_type": self.screen_type.value,
             "feature_page": self.feature_page,
             "dialogue_active": self.dialogue_active,
+            "auto_combat_enabled": self.auto_combat_enabled,
             "recent_actions": [
                 {
                     "action_id": trace.action_id,

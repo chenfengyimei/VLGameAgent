@@ -66,6 +66,25 @@ controls:
     x: 0.770
     y: 0.890
     confirmed: true
+  # 小青龙/灵宠的蓝色群攻技能（右侧上方）。仅在用户记录的魔化妖灵或
+  # 桃木精战斗任务与敌人名称同时可见时点击。
+  ui_pet_group_attack:
+    kind: normalized_hotspot
+    x: 0.950
+    y: 0.500
+    confirmed: true
+  # 桃木精战斗中第二个紫色群攻技能；与上方灵宠群攻、下方群攻轮换。
+  ui_secondary_group_attack:
+    kind: normalized_hotspot
+    x: 0.790
+    y: 0.745
+    confirmed: true
+  # 红尘入世第一段的底部 自动 开关：每个新角色只物理点击一次。
+  ui_auto_combat:
+    kind: normalized_hotspot
+    x: 0.585
+    y: 0.803
+    confirmed: true
   dialogue_advance: {kind: virtual_key, code: 32, confirmed: true}
 capabilities:
   realtime_3d: true

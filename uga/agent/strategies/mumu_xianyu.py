@@ -48,6 +48,42 @@ _RULES: tuple[StrategyRule, ...] = (
         cooldown_s=0.0,
     ),
     StrategyRule(
+        name="demonized_spirit_group_attack",
+        source="ocr_demonized_spirit_group_attack_fast",
+        game_id=GAME_ID,
+        summary="魔化精怪任务和魔化妖灵/魔化猪猪同时可见时，点击右侧蓝色灵宠群攻。",
+        allowed_action="click(ui_pet_group_attack hotspot)",
+        risk="combat",
+        effect="the demonized spirits take damage and quest progress advances",
+        cooldown_s=0.0,
+    ),
+    StrategyRule(
+        name="peach_tree_spirit_group_attack",
+        source="ocr_peach_tree_spirit_group_attack_fast",
+        game_id=GAME_ID,
+        summary=(
+            "暴虐精怪任务和桃木精同时可见时，依次轮换蓝色灵宠群攻、"
+            "上方紫色群攻和下方紫色群攻。"
+        ),
+        allowed_action="click(recorded group-attack hotspot rotation)",
+        risk="combat",
+        effect="the peach-tree spirits take damage and quest progress advances",
+        cooldown_s=0.0,
+    ),
+    StrategyRule(
+        name="red_dust_auto_once",
+        source="ocr_red_dust_auto_once_fast",
+        game_id=GAME_ID,
+        summary=(
+            "红尘入世第一段 与师姐一起 任务出现时点击底部 自动 一次；"
+            "仅在全部物理点击回执成功后持久标记，后续不再点击。"
+        ),
+        allowed_action="click(ui_auto_combat hotspot once per character)",
+        risk="progression",
+        effect="automatic combat is enabled for the remaining onboarding flow",
+        cooldown_s=0.0,
+    ),
+    StrategyRule(
         name="onboarding_joystick_forward",
         source="ocr_onboarding_joystick_forward_fast",
         game_id=GAME_ID,

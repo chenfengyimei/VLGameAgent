@@ -825,7 +825,11 @@ class ClosedLoopSupervisor:
             return EffectObservation(False, None, detail)
         observed_now_ns = max(snapshot.captured_at.value_ns, self._clock.now().value_ns)
         fast_dialogue = pending.source == "ocr_dialogue_click_fast"
-        fast_combat = pending.source == "ocr_invasion_group_attack_fast"
+        fast_combat = pending.source in {
+            "ocr_invasion_group_attack_fast",
+            "ocr_demonized_spirit_group_attack_fast",
+            "ocr_peach_tree_spirit_group_attack_fast",
+        }
         minimum_ns = 100_000_000 if fast_dialogue else 250_000_000
         timeout_ns = self._profile.action_effect_timeout_ms * 1_000_000
         if fast_dialogue:
@@ -1669,6 +1673,14 @@ class ClosedLoopSupervisor:
                 and len(pending.receipts) >= pending.expected_primitives
             ):
                 pending.execution_status = aggregate_receipts(tuple(pending.receipts))
+                if (
+                    pending.execution_status == "executed"
+                    and pending.source == "ocr_red_dust_auto_once_fast"
+                    and self._session is not None
+                ):
+                    # The one-shot flag follows physical OS evidence, not the
+                    # earlier planner decision or scheduler acceptance.
+                    self._session.mark_auto_combat_enabled()
 
     def validate_execution_context(
         self, validated_frame: Frame, execution_frame: Frame

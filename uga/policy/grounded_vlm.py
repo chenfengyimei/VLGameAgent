@@ -16,6 +16,7 @@ from uga.agent.session_state import (
     character_creation_name_prompt_active,
     close_glyph_aim,
     cutscene_skip_control,
+    demonized_spirit_combat_active,
     dialogue_review_visible,
     find_close_glyph,
     find_market_entry,
@@ -29,10 +30,12 @@ from uga.agent.session_state import (
     onboarding_joystick_tutorial_active,
     page_has_action_button,
     page_level_value,
+    peach_tree_spirit_combat_active,
     quest_is_market_task,
     quest_page_keyword,
     real_name_gate_active,
     realm_promotion_ready,
+    red_dust_auto_enable_ready,
     rescue_little_dragon_choice,
     stall_sell_item_cell,
     xiuxian_path_objective_goto,
@@ -369,6 +372,9 @@ class GroundedVlmPlanner:
         dialogue_hotspot: tuple[float, float] | None = None,
         little_dragon_heal_hotspot: tuple[float, float] | None = None,
         group_attack_hotspot: tuple[float, float] | None = None,
+        pet_group_attack_hotspot: tuple[float, float] | None = None,
+        secondary_group_attack_hotspot: tuple[float, float] | None = None,
+        auto_combat_hotspot: tuple[float, float] | None = None,
         strategy_registry: StrategyRegistry | None = None,
         coordinate_space: str = "unit",
         enable_rule_fast_paths: bool = True,
@@ -396,6 +402,9 @@ class GroundedVlmPlanner:
             ("dialogue", dialogue_hotspot),
             ("little-dragon heal", little_dragon_heal_hotspot),
             ("group attack", group_attack_hotspot),
+            ("pet group attack", pet_group_attack_hotspot),
+            ("secondary group attack", secondary_group_attack_hotspot),
+            ("auto combat", auto_combat_hotspot),
         ):
             if hotspot is not None and (
                 len(hotspot) != 2
@@ -422,22 +431,16 @@ class GroundedVlmPlanner:
         self._journal = journal or NullJournal()
         self._required_goal_evidence = evidence
         self._preferred_action_target = action_target
-        self._back_hotspot = None if back_hotspot is None else tuple(back_hotspot)
-        self._close_hotspot = None if close_hotspot is None else tuple(close_hotspot)
-        self._promote_hotspot = (
-            None if promote_hotspot is None else tuple(promote_hotspot)
-        )
-        self._dialogue_hotspot = (
-            None if dialogue_hotspot is None else tuple(dialogue_hotspot)
-        )
-        self._little_dragon_heal_hotspot = (
-            None
-            if little_dragon_heal_hotspot is None
-            else tuple(little_dragon_heal_hotspot)
-        )
-        self._group_attack_hotspot = (
-            None if group_attack_hotspot is None else tuple(group_attack_hotspot)
-        )
+        self._back_hotspot = back_hotspot
+        self._close_hotspot = close_hotspot
+        self._promote_hotspot = promote_hotspot
+        self._dialogue_hotspot = dialogue_hotspot
+        self._little_dragon_heal_hotspot = little_dragon_heal_hotspot
+        self._group_attack_hotspot = group_attack_hotspot
+        self._pet_group_attack_hotspot = pet_group_attack_hotspot
+        self._secondary_group_attack_hotspot = secondary_group_attack_hotspot
+        self._auto_combat_hotspot = auto_combat_hotspot
+        self._peach_combat_skill_index = 0
         self._task_panel_cooldown_s = 25.0
         self._last_task_panel_click: tuple[str, float] | None = None
         self._last_stall_item_click: float | None = None
@@ -531,6 +534,7 @@ class GroundedVlmPlanner:
             snapshot,
             quest_target_level=quest_target_level,
             quest_text=quest_text,
+            session_context=session_context,
         )
         if fast_outcome is not None:
             # Deterministic, freshly grounded controls should not wait behind a slow
@@ -696,6 +700,7 @@ class GroundedVlmPlanner:
         *,
         quest_target_level: int | None = None,
         quest_text: str | None = None,
+        session_context: str | None = None,
     ) -> PlannerOutcome | None:
         if real_name_gate_active(snapshot.visible_text):
             # 实名登记表单（姓名/证件号=个人身份信息）：代理绝不代填也不
@@ -910,6 +915,52 @@ class GroundedVlmPlanner:
                 self._group_attack_hotspot,
                 "ocr_invasion_group_attack_fast",
                 "the black-clad enemies take damage and quest progress advances",
+            )
+        if (
+            demonized_spirit_combat_active(snapshot.visible_text)
+            and self._pet_group_attack_hotspot is not None
+        ):
+            return self._hotspot_click_action(
+                snapshot,
+                "ui_pet_group_attack",
+                self._pet_group_attack_hotspot,
+                "ocr_demonized_spirit_group_attack_fast",
+                "the demonized spirits take damage and quest progress advances",
+            )
+        if peach_tree_spirit_combat_active(snapshot.visible_text):
+            skills = tuple(
+                (label, hotspot)
+                for label, hotspot in (
+                    ("ui_pet_group_attack", self._pet_group_attack_hotspot),
+                    ("ui_secondary_group_attack", self._secondary_group_attack_hotspot),
+                    ("ui_group_attack", self._group_attack_hotspot),
+                )
+                if hotspot is not None
+            )
+            if skills:
+                label, hotspot = skills[self._peach_combat_skill_index % len(skills)]
+                self._peach_combat_skill_index += 1
+                return self._hotspot_click_action(
+                    snapshot,
+                    label,
+                    hotspot,
+                    "ocr_peach_tree_spirit_group_attack_fast",
+                    "the peach-tree spirits take damage and quest progress advances",
+                )
+        auto_combat_enabled = bool(
+            session_context and "auto_combat_enabled=true" in session_context
+        )
+        if (
+            not auto_combat_enabled
+            and red_dust_auto_enable_ready(snapshot.visible_text)
+            and self._auto_combat_hotspot is not None
+        ):
+            return self._hotspot_click_action(
+                snapshot,
+                "ui_auto_combat",
+                self._auto_combat_hotspot,
+                "ocr_red_dust_auto_once_fast",
+                "automatic combat is enabled for the remaining onboarding flow",
             )
         if auto_navigation_active(snapshot.visible_text):
             # The game already owns movement.  Re-clicking the tracker here

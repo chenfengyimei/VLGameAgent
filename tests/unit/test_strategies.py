@@ -38,7 +38,7 @@ class StrategyRegistryTests(unittest.TestCase):
         root = Path(__file__).parents[2]
         flow = load_recorded_flow(root / "configs/flows/mumu-xianyu-onboarding.yaml")
         self.assertEqual(flow.game_id, MUMU_REGISTRY.game_id)
-        self.assertEqual(len(flow.steps), 22)
+        self.assertEqual(len(flow.steps), 31)
         self.assertEqual(
             {Path(step.evidence).name for step in flow.steps},
             {f"{index:02d}-{name}" for index, name in enumerate((
@@ -64,6 +64,15 @@ class StrategyRegistryTests(unittest.TestCase):
                 "little-dragon-dialogue-task.png",
                 "little-dragon-dialogue.png",
                 "contract-continue.png",
+                "little-dragon-bond-quest.png",
+                "demonized-spirit-pet-group-attack.png",
+                "demonized-spirit-dialogue.png",
+                "red-dust-auto-once.png",
+                "red-dust-cutscene-skip.png",
+                "rescue-cry-quest.png",
+                "rescue-cutscene-skip.png",
+                "rescue-dialogue.png",
+                "peach-tree-spirit-combat.png",
             ), start=1)},
         )
         for step in flow.steps:
@@ -91,6 +100,10 @@ class StrategyRegistryTests(unittest.TestCase):
         assert dragon is not None and dragon.hotspot is not None
         self.assertAlmostEqual(dragon.hotspot[0], 0.568, places=3)
         self.assertAlmostEqual(dragon.hotspot[1], 0.588, places=3)
+        auto = profile.binding("ui_auto_combat")
+        assert auto is not None and auto.hotspot is not None
+        self.assertAlmostEqual(auto.hotspot[0], 0.585, places=3)
+        self.assertAlmostEqual(auto.hotspot[1], 0.803, places=3)
 
     def test_known_game_resolves_to_a_populated_registry(self) -> None:
         registry = registry_for("mumu-xianyu")
@@ -146,6 +159,9 @@ class StrategyRegistryTests(unittest.TestCase):
             "ocr_auto_navigation_wait",
             "ocr_invasion_task_navigate_fast",
             "ocr_invasion_group_attack_fast",
+            "ocr_demonized_spirit_group_attack_fast",
+            "ocr_peach_tree_spirit_group_attack_fast",
+            "ocr_red_dust_auto_once_fast",
             "ocr_onboarding_joystick_forward_fast",
             "ocr_character_creation_customize_fast",
             "ocr_character_preset_start_fast",
@@ -428,6 +444,91 @@ class PlannerStrategyScopingTests(unittest.TestCase):
         self.assertAlmostEqual(outcome.action.target_box.center.x, 0.770, places=3)
         self.assertAlmostEqual(outcome.action.target_box.center.y, 0.890, places=3)
         self.assertEqual(planner.last_decision_source, "ocr_invasion_group_attack_fast")
+
+    def test_demonized_spirit_fight_uses_the_blue_pet_group_attack(self) -> None:
+        planner = GroundedVlmPlanner(
+            _Client([]),
+            max_temporal_frames=1,
+            max_target_crops=0,
+            compact_output=True,
+            prefer_ocr_task_panel=True,
+            strategy_registry=MUMU_REGISTRY,
+            pet_group_attack_hotspot=(0.950, 0.500),
+        )
+        snapshot = _onboarding_snapshot(
+            TextRegion("魔化精怪", NormalizedBox(0.04, 0.22, 0.18, 0.27), 0.99),
+            TextRegion("制服魔化妖灵 0/4", NormalizedBox(0.04, 0.27, 0.23, 0.32), 0.99),
+            TextRegion("魔化猪猪", NormalizedBox(0.42, 0.38, 0.53, 0.44), 0.99),
+        )
+
+        outcome = planner._ocr_fast_path(snapshot)  # type: ignore[attr-defined]
+
+        assert outcome is not None and outcome.action is not None
+        self.assertEqual(outcome.action.target_label, "ui_pet_group_attack")
+        self.assertAlmostEqual(outcome.action.target_box.center.x, 0.950, places=3)
+        self.assertAlmostEqual(outcome.action.target_box.center.y, 0.500, places=3)
+        self.assertEqual(
+            planner.last_decision_source, "ocr_demonized_spirit_group_attack_fast"
+        )
+
+    def test_peach_tree_fight_rotates_all_three_recorded_group_attacks(self) -> None:
+        planner = GroundedVlmPlanner(
+            _Client([]),
+            max_temporal_frames=1,
+            max_target_crops=0,
+            compact_output=True,
+            prefer_ocr_task_panel=True,
+            strategy_registry=MUMU_REGISTRY,
+            pet_group_attack_hotspot=(0.950, 0.500),
+            secondary_group_attack_hotspot=(0.790, 0.745),
+            group_attack_hotspot=(0.770, 0.890),
+        )
+        snapshot = _onboarding_snapshot(
+            TextRegion("暴虐精怪", NormalizedBox(0.04, 0.22, 0.18, 0.27), 0.99),
+            TextRegion("制服桃木精 0/3", NormalizedBox(0.04, 0.27, 0.22, 0.32), 0.99),
+            TextRegion("桃木精", NormalizedBox(0.42, 0.30, 0.50, 0.36), 0.99),
+        )
+
+        labels = []
+        for _ in range(3):
+            outcome = planner._ocr_fast_path(snapshot)  # type: ignore[attr-defined]
+            assert outcome is not None and outcome.action is not None
+            labels.append(outcome.action.target_label)
+        self.assertEqual(
+            labels,
+            ["ui_pet_group_attack", "ui_secondary_group_attack", "ui_group_attack"],
+        )
+
+    def test_red_dust_auto_is_suppressed_after_the_persisted_once_flag(self) -> None:
+        planner = GroundedVlmPlanner(
+            _Client([]),
+            max_temporal_frames=1,
+            max_target_crops=0,
+            compact_output=True,
+            prefer_ocr_task_panel=True,
+            strategy_registry=MUMU_REGISTRY,
+            auto_combat_hotspot=(0.585, 0.803),
+        )
+        snapshot = _onboarding_snapshot(
+            TextRegion("主线", NormalizedBox(0.04, 0.16, 0.11, 0.21), 0.99),
+            TextRegion("红尘入世", NormalizedBox(0.04, 0.22, 0.18, 0.27), 0.99),
+            TextRegion("与师姐一起下山", NormalizedBox(0.04, 0.27, 0.24, 0.32), 0.99),
+        )
+
+        outcome = planner._ocr_fast_path(  # type: ignore[attr-defined]
+            snapshot, session_context="auto_combat_enabled=false"
+        )
+        assert outcome is not None and outcome.action is not None
+        self.assertEqual(outcome.action.target_label, "ui_auto_combat")
+        self.assertEqual(planner.last_decision_source, "ocr_red_dust_auto_once_fast")
+
+        suppressed = planner._ocr_fast_path(  # type: ignore[attr-defined]
+            snapshot, session_context="auto_combat_enabled=true"
+        )
+        # The generic task rule may navigate, but the one-shot Auto rule must
+        # never emit after the persisted flag is true.
+        if suppressed is not None and suppressed.action is not None:
+            self.assertNotEqual(suppressed.action.target_label, "ui_auto_combat")
 
     def test_auto_navigation_waits_without_reclicking_the_task_tracker(self) -> None:
         planner = GroundedVlmPlanner(

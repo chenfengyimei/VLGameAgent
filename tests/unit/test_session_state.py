@@ -8,12 +8,15 @@ from uga.agent.session_state import (
     ActionTrace,
     GameSessionState,
     ScreenType,
+    demonized_spirit_combat_active,
     find_xiuxian_path_quest_line,
     mumu_close_dialog_cancel,
     page_anchor_signature,
     page_level_value,
+    peach_tree_spirit_combat_active,
     quest_level_target,
     quest_page_keyword,
+    red_dust_auto_enable_ready,
     stable_anchor_tokens,
     xiuxian_path_objective_goto,
 )
@@ -68,6 +71,24 @@ def quest_frame(
 
 
 class QuestMemoryTests(unittest.TestCase):
+    def test_recorded_red_dust_and_combat_anchors_are_narrow(self) -> None:
+        def regions(*labels: str) -> tuple[TextRegion, ...]:
+            return tuple(
+                TextRegion(label, NormalizedBox(0.04, 0.22, 0.30, 0.32), 0.99)
+                for label in labels
+            )
+
+        self.assertTrue(red_dust_auto_enable_ready(regions("红尘入世", "与师姐一起下山")))
+        self.assertFalse(red_dust_auto_enable_ready(regions("红尘入世", "似乎有人呼救")))
+        demonized = regions("魔化精怪", "制服魔化妖灵") + (
+            TextRegion("魔化猪猪", NormalizedBox(0.40, 0.30, 0.55, 0.38), 0.99),
+        )
+        peach_tree = regions("暴虐精怪", "制服桃木精") + (
+            TextRegion("桃木精", NormalizedBox(0.40, 0.30, 0.55, 0.38), 0.99),
+        )
+        self.assertTrue(demonized_spirit_combat_active(demonized))
+        self.assertTrue(peach_tree_spirit_combat_active(peach_tree))
+
     def setUp(self) -> None:
         self.state = GameSessionState()
 
@@ -393,6 +414,29 @@ class SessionPersistenceTests(unittest.TestCase):
             summary = restored.context_summary()
             assert summary is not None
             self.assertIn("未在本次运行中证实", summary)
+
+    def test_auto_combat_once_flag_persists_and_new_character_rearms_it(self) -> None:
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            first = self._persisted_state(tmp, profile_id="mumu-xianyu")
+            first.mark_auto_combat_enabled()
+            self.assertTrue(first.auto_combat_enabled)
+
+            restored = self._persisted_state(tmp, profile_id="mumu-xianyu")
+            self.assertTrue(restored.auto_combat_enabled)
+            restored.observe_snapshot(
+                snapshot(
+                    1,
+                    100,
+                    visible_text=(("创角", (0.05, 0.06, 0.15, 0.12), 0.99),),
+                ),
+                100,
+            )
+            self.assertFalse(restored.auto_combat_enabled)
+
+            reloaded = self._persisted_state(tmp, profile_id="mumu-xianyu")
+            self.assertFalse(reloaded.auto_combat_enabled)
 
     def test_restored_task_verifies_after_two_fresh_frames(self) -> None:
         import tempfile

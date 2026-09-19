@@ -14,6 +14,7 @@ from tests.helpers import frame, identity
 from tests.unit.test_closed_loop_supervisor import outcome, snapshot
 from tests.unit.test_control_runtime import FakeIntegrity, FakeWindows
 from uga.agent.closed_loop import ClosedLoopSupervisor
+from uga.agent.session_state import GameSessionState
 from uga.control.arbiter import ActionArbiter
 from uga.control.execution_receipt import (
     ExecutionPrimitiveStatus,
@@ -278,6 +279,46 @@ class SupervisorExecutionEvidenceTests(unittest.TestCase):
         )
         waiting = self.supervisor.observe(snapshot(2, 150), frame(2, 150))
         self.assertTrue(waiting.pending)
+
+    def test_auto_once_flag_requires_all_physical_click_receipts(self) -> None:
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as tmp:
+            session = GameSessionState()
+            session.set_persistence(
+                Path(tmp) / "session_state.json", profile_id="mumu-xianyu"
+            )
+            supervisor = ClosedLoopSupervisor(
+                self.clock,
+                PerceptionProfile(action_effect_timeout_ms=1000),
+                session=session,
+            )
+            supervisor.start_action(
+                outcome(1),
+                snapshot(1, 0),
+                frame(1, 0),
+                source="ocr_red_dust_auto_once_fast",
+                submitted_action_ids=_SUBMITTED,
+                expected_primitives=3,
+            )
+            supervisor.record_execution_receipts(
+                (
+                    _receipt("a:move", ExecutionPrimitiveStatus.EXECUTED),
+                    _receipt("a:down", ExecutionPrimitiveStatus.EXECUTED),
+                )
+            )
+            self.assertFalse(session.auto_combat_enabled)
+            supervisor.record_execution_receipts(
+                (_receipt("a:up", ExecutionPrimitiveStatus.EXECUTED),)
+            )
+            self.assertTrue(session.auto_combat_enabled)
+
+            restored = GameSessionState()
+            restored.set_persistence(
+                Path(tmp) / "session_state.json", profile_id="mumu-xianyu"
+            )
+            self.assertTrue(restored.auto_combat_enabled)
 
 
 if __name__ == "__main__":
