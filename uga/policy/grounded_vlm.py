@@ -16,6 +16,7 @@ from uga.agent.session_state import (
     character_creation_name_prompt_active,
     close_glyph_aim,
     cutscene_skip_control,
+    demon_sect_disciple_combat_active,
     demonized_spirit_combat_active,
     dialogue_review_visible,
     find_close_glyph,
@@ -30,6 +31,7 @@ from uga.agent.session_state import (
     onboarding_joystick_tutorial_active,
     page_has_action_button,
     page_level_value,
+    peach_talisman_continue_control,
     peach_tree_spirit_combat_active,
     pet_information_tab_control,
     pet_star_action_control,
@@ -452,6 +454,7 @@ class GroundedVlmPlanner:
         self._auto_combat_hotspot = auto_combat_hotspot
         self._peach_combat_skill_index = 0
         self._raging_tree_combat_skill_index = 0
+        self._demon_sect_combat_skill_index = 0
         self._task_panel_cooldown_s = 25.0
         self._last_task_panel_click: tuple[str, float] | None = None
         self._last_stall_item_click: float | None = None
@@ -894,6 +897,16 @@ class GroundedVlmPlanner:
                 ),
                 action_kind=GuiActionKind.CLICK,
             )
+        peach_talisman_continue = peach_talisman_continue_control(snapshot.visible_text)
+        if peach_talisman_continue is not None:
+            self._last_decision_source = "ocr_peach_talisman_continue_fast"
+            return self._ocr_action(
+                snapshot,
+                peach_talisman_continue,
+                source="ocr_peach_talisman_continue_fast",
+                expected_effect="the peach-talisman reward presentation closes",
+                action_kind=GuiActionKind.CLICK,
+            )
         pet_entry = pet_training_entry_control(snapshot.visible_text)
         if pet_entry is not None:
             self._last_decision_source = "ocr_pet_training_entry_fast"
@@ -1085,6 +1098,28 @@ class GroundedVlmPlanner:
                     hotspot,
                     "ocr_raging_tree_spirit_group_attack_fast",
                     "the raging thousand-year tree spirit takes damage",
+                )
+        if demon_sect_disciple_combat_active(snapshot.visible_text):
+            skills = tuple(
+                (label, hotspot)
+                for label, hotspot in (
+                    ("ui_pet_group_attack", self._pet_group_attack_hotspot),
+                    ("ui_secondary_group_attack", self._secondary_group_attack_hotspot),
+                    ("ui_group_attack", self._group_attack_hotspot),
+                )
+                if hotspot is not None
+            )
+            if skills:
+                label, hotspot = skills[
+                    self._demon_sect_combat_skill_index % len(skills)
+                ]
+                self._demon_sect_combat_skill_index += 1
+                return self._hotspot_click_action(
+                    snapshot,
+                    label,
+                    hotspot,
+                    "ocr_demon_sect_disciple_group_attack_fast",
+                    "the demon-sect disciples take damage and quest progress advances",
                 )
         auto_combat_enabled = bool(
             session_context and "auto_combat_enabled=true" in session_context

@@ -83,6 +83,19 @@ _RULES: tuple[StrategyRule, ...] = (
         cooldown_s=0.0,
     ),
     StrategyRule(
+        name="demon_sect_disciple_group_attack",
+        source="ocr_demon_sect_disciple_group_attack_fast",
+        game_id=GAME_ID,
+        summary=(
+            "孤身应战/击败魔宗门徒任务与魔宗门徒敌人同时可见时，依次轮换"
+            "蓝色灵宠群攻、上方紫色群攻和下方紫色群攻。"
+        ),
+        allowed_action="click(recorded group-attack hotspot rotation)",
+        risk="combat",
+        effect="the demon-sect disciples take damage and quest progress advances",
+        cooldown_s=0.0,
+    ),
+    StrategyRule(
         name="red_dust_auto_once",
         source="ocr_red_dust_auto_once_fast",
         game_id=GAME_ID,
@@ -210,6 +223,16 @@ _RULES: tuple[StrategyRule, ...] = (
         allowed_action="click(点击任意处继续)",
         risk="low",
         effect="the story-completion page closes and the next quest becomes visible",
+        cooldown_s=0.0,
+    ),
+    StrategyRule(
+        name="peach_talisman_continue",
+        source="ocr_peach_talisman_continue_fast",
+        game_id=GAME_ID,
+        summary="桃妖符印奖励页显示点击任意处关闭时，直接点击提示关闭奖励展示。",
+        allowed_action="click(点击任意处关闭)",
+        risk="low",
+        effect="the peach-talisman reward presentation closes",
         cooldown_s=0.0,
     ),
     StrategyRule(

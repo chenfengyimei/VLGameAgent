@@ -451,3 +451,59 @@ steps:
     recognize: {all: [灵宠, 4星, 该灵宠已培养至进化上限]}
     action: click_hotspot:ui_back
     expected: 从已完成的灵宠升星界面返回世界页
+  - id: fairy_report_dialogue
+    order: 640
+    evidence: docs/assets/mumu-xianyu/onboarding/64-fairy-report-dialogue.png
+    source: ocr_dialogue_click_fast
+    recognize: {all: [回顾剧情], any: [秒后自动继续, 师姐]}
+    action: click_hotspot:ui_dialogue_advance
+    expected: 快速推进师姐询问村中发现的剧情
+  - id: follow_fairy_continued_quest
+    order: 650
+    evidence: docs/assets/mumu-xianyu/onboarding/65-follow-fairy-continued-quest.png
+    source: ocr_task_panel_fast
+    recognize: {all: [主线], any: [跟随仙灵, 继续跟随仙灵]}
+    action: click_task_tracker
+    expected: 自动继续跟随仙灵
+  - id: discover_trail_quest
+    order: 660
+    evidence: docs/assets/mumu-xianyu/onboarding/66-discover-trail-quest.png
+    source: ocr_task_panel_fast
+    recognize: {all: [主线], any: [发现踪迹, 变身成小鸡靠近打探]}
+    action: click_task_tracker
+    expected: 自动导航到黑衣人附近进行打探
+  - id: demon_sect_dialogue
+    order: 670
+    evidence: docs/assets/mumu-xianyu/onboarding/67-demon-sect-dialogue.png
+    source: ocr_dialogue_click_fast
+    recognize: {all: [回顾剧情], any: [黑衣人, 秒后自动继续]}
+    action: click_hotspot:ui_dialogue_advance
+    expected: 快速推进魔宗门徒密谋剧情
+  - id: lone_battle_combat
+    order: 680
+    evidence: docs/assets/mumu-xianyu/onboarding/68-lone-battle-combat.png
+    source: ocr_demon_sect_disciple_group_attack_fast
+    recognize: {any_task: [孤身应战, 击败魔宗门徒], enemy: 魔宗门徒}
+    action: cycle_hotspots:[ui_pet_group_attack,ui_secondary_group_attack,ui_group_attack]
+    expected: 轮换三枚群攻技能击败三名魔宗门徒
+  - id: peach_talisman_continue
+    order: 690
+    evidence: docs/assets/mumu-xianyu/onboarding/69-peach-talisman-continue.png
+    source: ocr_peach_talisman_continue_fast
+    recognize: {all: [桃妖符印, 点击任意处关闭]}
+    action: click_text:点击任意处关闭
+    expected: 立即关闭桃妖符印奖励展示
+  - id: break_barrier_quest
+    order: 700
+    evidence: docs/assets/mumu-xianyu/onboarding/70-break-barrier-quest.png
+    source: ocr_task_panel_fast
+    recognize: {all: [主线], any: [破开结界, 与师姐对话]}
+    action: click_task_tracker
+    expected: 自动导航到师姐处推进破开结界任务
+  - id: barrier_dialogue
+    order: 710
+    evidence: docs/assets/mumu-xianyu/onboarding/71-barrier-dialogue.png
+    source: ocr_dialogue_click_fast
+    recognize: {all: [回顾剧情], any: [秒后自动继续, 结界]}
+    action: click_hotspot:ui_dialogue_advance
+    expected: 快速推进桃夭结界剧情

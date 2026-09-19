@@ -38,7 +38,7 @@ class StrategyRegistryTests(unittest.TestCase):
         root = Path(__file__).parents[2]
         flow = load_recorded_flow(root / "configs/flows/mumu-xianyu-onboarding.yaml")
         self.assertEqual(flow.game_id, MUMU_REGISTRY.game_id)
-        self.assertEqual(len(flow.steps), 63)
+        self.assertEqual(len(flow.steps), 71)
         self.assertEqual(
             {Path(step.evidence).name for step in flow.steps},
             {f"{index:02d}-{name}" for index, name in enumerate((
@@ -105,6 +105,14 @@ class StrategyRegistryTests(unittest.TestCase):
                 "pet-star-commit.png",
                 "pet-star-success-continue.png",
                 "pet-star-exit.png",
+                "fairy-report-dialogue.png",
+                "follow-fairy-continued-quest.png",
+                "discover-trail-quest.png",
+                "demon-sect-dialogue.png",
+                "lone-battle-combat.png",
+                "peach-talisman-continue.png",
+                "break-barrier-quest.png",
+                "barrier-dialogue.png",
             ), start=1)},
         )
         for step in flow.steps:
@@ -194,6 +202,7 @@ class StrategyRegistryTests(unittest.TestCase):
             "ocr_demonized_spirit_group_attack_fast",
             "ocr_peach_tree_spirit_group_attack_fast",
             "ocr_raging_tree_spirit_group_attack_fast",
+            "ocr_demon_sect_disciple_group_attack_fast",
             "ocr_red_dust_auto_once_fast",
             "ocr_pet_training_entry_fast",
             "ocr_pet_information_tab_fast",
@@ -214,6 +223,7 @@ class StrategyRegistryTests(unittest.TestCase):
             "ocr_rescue_little_dragon_choice_fast",
             "ocr_little_dragon_heal_fast",
             "ocr_narrative_continue_fast",
+            "ocr_peach_talisman_continue_fast",
             "ocr_close_glyph_fast",
             "ocr_task_panel_fast",
             "ocr_progress_control_fast",
@@ -572,6 +582,42 @@ class PlannerStrategyScopingTests(unittest.TestCase):
             planner.last_decision_source, "ocr_raging_tree_spirit_group_attack_fast"
         )
 
+    def test_demon_sect_fight_rotates_all_three_recorded_group_attacks(self) -> None:
+        planner = GroundedVlmPlanner(
+            _Client([]),
+            max_temporal_frames=1,
+            max_target_crops=0,
+            compact_output=True,
+            prefer_ocr_task_panel=True,
+            strategy_registry=MUMU_REGISTRY,
+            pet_group_attack_hotspot=(0.950, 0.500),
+            secondary_group_attack_hotspot=(0.790, 0.745),
+            group_attack_hotspot=(0.770, 0.890),
+        )
+        snapshot = _onboarding_snapshot(
+            TextRegion("孤身应战", NormalizedBox(0.04, 0.22, 0.18, 0.27), 0.99),
+            TextRegion(
+                "击败魔宗门徒 0/3",
+                NormalizedBox(0.04, 0.27, 0.24, 0.32),
+                0.99,
+            ),
+            TextRegion("魔宗门徒", NormalizedBox(0.42, 0.20, 0.53, 0.27), 0.99),
+        )
+
+        labels = []
+        for _ in range(3):
+            outcome = planner._ocr_fast_path(snapshot)  # type: ignore[attr-defined]
+            assert outcome is not None and outcome.action is not None
+            labels.append(outcome.action.target_label)
+        self.assertEqual(
+            labels,
+            ["ui_pet_group_attack", "ui_secondary_group_attack", "ui_group_attack"],
+        )
+        self.assertEqual(
+            planner.last_decision_source,
+            "ocr_demon_sect_disciple_group_attack_fast",
+        )
+
     def test_red_dust_auto_is_suppressed_after_the_persisted_once_flag(self) -> None:
         planner = GroundedVlmPlanner(
             _Client([]),
@@ -918,6 +964,30 @@ class PlannerStrategyScopingTests(unittest.TestCase):
         assert outcome is not None and outcome.action is not None
         self.assertEqual(outcome.action.target_label, "点击任意处继续")
         self.assertEqual(planner.last_decision_source, "ocr_narrative_continue_fast")
+
+    def test_peach_talisman_reward_closes_without_waiting_for_timeout(self) -> None:
+        planner = GroundedVlmPlanner(
+            _Client([]),
+            max_temporal_frames=1,
+            max_target_crops=0,
+            compact_output=True,
+            prefer_ocr_task_panel=True,
+            strategy_registry=MUMU_REGISTRY,
+        )
+        snapshot = _onboarding_snapshot(
+            TextRegion("桃妖符印", NormalizedBox(0.46, 0.33, 0.58, 0.40), 0.99),
+            TextRegion(
+                "点击任意处关闭(13秒)",
+                NormalizedBox(0.42, 0.88, 0.62, 0.94),
+                0.99,
+            ),
+        )
+        outcome = planner._ocr_fast_path(snapshot)  # type: ignore[attr-defined]
+        assert outcome is not None and outcome.action is not None
+        self.assertEqual(outcome.action.target_label, "点击任意处关闭(13秒)")
+        self.assertEqual(
+            planner.last_decision_source, "ocr_peach_talisman_continue_fast"
+        )
 
     def test_refreshed_main_quest_uses_the_tracker_after_combat(self) -> None:
         planner = GroundedVlmPlanner(

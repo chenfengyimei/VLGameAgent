@@ -830,6 +830,7 @@ class ClosedLoopSupervisor:
             "ocr_demonized_spirit_group_attack_fast",
             "ocr_peach_tree_spirit_group_attack_fast",
             "ocr_raging_tree_spirit_group_attack_fast",
+            "ocr_demon_sect_disciple_group_attack_fast",
         }
         minimum_ns = 100_000_000 if fast_dialogue else 250_000_000
         timeout_ns = self._profile.action_effect_timeout_ms * 1_000_000

@@ -380,6 +380,28 @@ def raging_tree_spirit_combat_active(regions: Iterable[TextRegion]) -> bool:
     return task_active and enemy_visible
 
 
+def demon_sect_disciple_combat_active(regions: Iterable[TextRegion]) -> bool:
+    """Recorded 孤身应战 fight against three 魔宗门徒 enemies."""
+    visible = tuple(regions)
+    task_active = any(
+        any(
+            cue in normalize_visible_text(region.text)
+            for cue in ("孤身应战", "击败魔宗门徒")
+        )
+        and region.confidence >= 0.75
+        and region.box.center.x <= 0.38
+        for region in visible
+    )
+    enemy_visible = any(
+        "魔宗门徒" in normalize_visible_text(region.text)
+        and region.confidence >= 0.75
+        and 0.25 <= region.box.center.x <= 0.90
+        and 0.12 <= region.box.center.y <= 0.75
+        for region in visible
+    )
+    return task_active and enemy_visible
+
+
 def pet_training_entry_control(regions: Iterable[TextRegion]) -> TextRegion | None:
     """Right-side 灵宠 entry for the recorded upgrade/star-up tasks."""
     visible = tuple(regions)
@@ -731,6 +753,27 @@ def narrative_continue_control(regions: Iterable[TextRegion]) -> TextRegion | No
         for region in regions
         if "点击任意处继续" in normalize_visible_text(region.text)
         and region.confidence >= 0.85
+        and region.box.center.y >= 0.70
+    ]
+    return max(candidates, key=lambda region: region.confidence) if candidates else None
+
+
+def peach_talisman_continue_control(regions: Iterable[TextRegion]) -> TextRegion | None:
+    """Dismiss the 桃妖符印 reward presentation without waiting for timeout."""
+    visible = tuple(regions)
+    has_reward = any(
+        "桃妖符印" in normalize_visible_text(region.text)
+        and region.confidence >= 0.80
+        for region in visible
+    )
+    if not has_reward:
+        return None
+    candidates = [
+        region
+        for region in visible
+        if "点击任意" in normalize_visible_text(region.text)
+        and "关闭" in normalize_visible_text(region.text)
+        and region.confidence >= 0.75
         and region.box.center.y >= 0.70
     ]
     return max(candidates, key=lambda region: region.confidence) if candidates else None

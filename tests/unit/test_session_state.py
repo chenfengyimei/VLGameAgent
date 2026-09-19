@@ -8,6 +8,7 @@ from uga.agent.session_state import (
     ActionTrace,
     GameSessionState,
     ScreenType,
+    demon_sect_disciple_combat_active,
     demonized_spirit_combat_active,
     find_xiuxian_path_quest_line,
     mumu_close_dialog_cancel,
@@ -119,6 +120,11 @@ class QuestMemoryTests(unittest.TestCase):
             TextRegion("千年桃木精 Lv.7", NormalizedBox(0.35, 0.08, 0.60, 0.14), 0.99),
         )
         self.assertTrue(raging_tree_spirit_combat_active(raging_tree))
+        demon_sect = regions("孤身应战", "击败魔宗门徒 0/3") + (
+            TextRegion("魔宗门徒", NormalizedBox(0.40, 0.22, 0.55, 0.30), 0.99),
+        )
+        self.assertTrue(demon_sect_disciple_combat_active(demon_sect))
+        self.assertFalse(demon_sect_disciple_combat_active(regions("孤身应战")))
 
     def setUp(self) -> None:
         self.state = GameSessionState()
