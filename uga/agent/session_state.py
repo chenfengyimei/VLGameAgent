@@ -380,6 +380,97 @@ def raging_tree_spirit_combat_active(regions: Iterable[TextRegion]) -> bool:
     return task_active and enemy_visible
 
 
+def pet_training_entry_control(regions: Iterable[TextRegion]) -> TextRegion | None:
+    """Right-side 灵宠 entry for the recorded 小龙升级 task."""
+    visible = tuple(regions)
+    task_active = any(
+        any(
+            cue in normalize_visible_text(region.text)
+            for cue in ("小龙升级", "拥有1只灵宠达到2级")
+        )
+        and region.confidence >= 0.75
+        and region.box.center.x <= 0.38
+        for region in visible
+    )
+    if not task_active:
+        return None
+    candidates = [
+        region
+        for region in visible
+        if normalize_visible_text(region.text) == "灵宠"
+        and region.confidence >= 0.80
+        and region.box.center.x >= 0.85
+        and 0.25 <= region.box.center.y <= 0.75
+    ]
+    return max(candidates, key=lambda region: region.confidence) if candidates else None
+
+
+def pet_information_tab_control(regions: Iterable[TextRegion]) -> TextRegion | None:
+    """Information tab on the pet formation page, not the already-open info page."""
+    visible = tuple(regions)
+    has_pet_title = any(
+        normalize_visible_text(region.text) == "灵宠"
+        and region.confidence >= 0.80
+        and region.box.center.x <= 0.25
+        and region.box.center.y <= 0.18
+        for region in visible
+    )
+    has_formation_page = any(
+        any(
+            cue in normalize_visible_text(region.text)
+            for cue in ("布阵目标", "布阵总修为", "推荐阵容")
+        )
+        and region.confidence >= 0.75
+        for region in visible
+    )
+    if not has_pet_title or not has_formation_page:
+        return None
+    candidates = [
+        region
+        for region in visible
+        if normalize_visible_text(region.text) == "信息"
+        and region.confidence >= 0.80
+        and region.box.center.x >= 0.85
+        and 0.20 <= region.box.center.y <= 0.60
+    ]
+    return max(candidates, key=lambda region: region.confidence) if candidates else None
+
+
+def pet_upgrade_control(
+    regions: Iterable[TextRegion], quest_target_level: int | None
+) -> TextRegion | None:
+    """One pet-upgrade button while the page level is below the task target."""
+    if quest_target_level is None:
+        return None
+    visible = tuple(regions)
+    current_level = page_level_value(visible)
+    if current_level is None or current_level >= quest_target_level:
+        return None
+    has_pet_title = any(
+        normalize_visible_text(region.text) == "灵宠"
+        and region.confidence >= 0.80
+        and region.box.center.x <= 0.25
+        and region.box.center.y <= 0.18
+        for region in visible
+    )
+    has_info_page = any(
+        "基础属性" in normalize_visible_text(region.text)
+        and region.confidence >= 0.75
+        for region in visible
+    )
+    if not has_pet_title or not has_info_page:
+        return None
+    candidates = [
+        region
+        for region in visible
+        if re.fullmatch(r"(?:升\d+级|升级)", normalize_visible_text(region.text))
+        and region.confidence >= 0.80
+        and region.box.center.x >= 0.75
+        and 0.12 <= region.box.center.y <= 0.48
+    ]
+    return max(candidates, key=lambda region: region.confidence) if candidates else None
+
+
 def auto_navigation_active(regions: Iterable[TextRegion]) -> bool:
     """Whether the game is already carrying the character to a quest target."""
     return any(

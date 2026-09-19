@@ -14,6 +14,9 @@ from uga.agent.session_state import (
     page_anchor_signature,
     page_level_value,
     peach_tree_spirit_combat_active,
+    pet_information_tab_control,
+    pet_training_entry_control,
+    pet_upgrade_control,
     quest_level_target,
     quest_page_keyword,
     raging_tree_spirit_combat_active,
@@ -72,6 +75,29 @@ def quest_frame(
 
 
 class QuestMemoryTests(unittest.TestCase):
+    def test_recorded_pet_upgrade_controls_require_their_page_anchors(self) -> None:
+        entry_regions = (
+            TextRegion("小龙升级", NormalizedBox(0.04, 0.22, 0.18, 0.27), 0.99),
+            TextRegion("灵宠", NormalizedBox(0.92, 0.40, 0.99, 0.52), 0.99),
+        )
+        self.assertIsNotNone(pet_training_entry_control(entry_regions))
+
+        formation_regions = (
+            TextRegion("灵宠", NormalizedBox(0.05, 0.06, 0.14, 0.12), 0.99),
+            TextRegion("布阵目标", NormalizedBox(0.70, 0.17, 0.82, 0.23), 0.99),
+            TextRegion("信息", NormalizedBox(0.93, 0.30, 0.99, 0.42), 0.99),
+        )
+        self.assertIsNotNone(pet_information_tab_control(formation_regions))
+
+        training_regions = (
+            TextRegion("灵宠", NormalizedBox(0.05, 0.06, 0.14, 0.12), 0.99),
+            TextRegion("等级 1/40", NormalizedBox(0.62, 0.23, 0.75, 0.29), 0.99),
+            TextRegion("基础属性", NormalizedBox(0.62, 0.39, 0.76, 0.45), 0.99),
+            TextRegion("升2级", NormalizedBox(0.83, 0.23, 0.92, 0.30), 0.99),
+        )
+        self.assertIsNotNone(pet_upgrade_control(training_regions, 2))
+        self.assertIsNone(pet_upgrade_control(training_regions, 1))
+
     def test_recorded_red_dust_and_combat_anchors_are_narrow(self) -> None:
         def regions(*labels: str) -> tuple[TextRegion, ...]:
             return tuple(

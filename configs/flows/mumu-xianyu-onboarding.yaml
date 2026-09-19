@@ -262,3 +262,38 @@ steps:
     recognize: {all: [回顾剧情]}
     action: click_hotspot:ui_dialogue_advance
     expected: 快速推进小树精剧情对话
+  - id: pet_upgrade_task_entry
+    order: 370
+    evidence: docs/assets/mumu-xianyu/onboarding/37-pet-upgrade-task-entry.png
+    source: ocr_pet_training_entry_fast
+    recognize: {any_task: [小龙升级, 拥有1只灵宠达到2级], control: 灵宠, region: game_right}
+    action: click_text:灵宠
+    expected: 打开灵宠布阵界面
+  - id: pet_information_tab
+    order: 380
+    evidence: docs/assets/mumu-xianyu/onboarding/38-pet-information-tab.png
+    source: ocr_pet_information_tab_fast
+    recognize: {all: [灵宠, 布阵目标, 信息]}
+    action: click_text:信息
+    expected: 切换到小青龙信息培养界面
+  - id: pet_upgrade_once
+    order: 390
+    evidence: docs/assets/mumu-xianyu/onboarding/39-pet-upgrade-once.png
+    source: ocr_pet_upgrade_once_fast
+    recognize: {all: [灵宠, 基础属性], level_below_quest_target: true, control: 升2级}
+    action: click_text:升2级
+    expected: 仅升级一次并使灵宠达到任务要求等级
+  - id: pet_upgrade_exit
+    order: 400
+    evidence: docs/assets/mumu-xianyu/onboarding/40-pet-upgrade-exit.png
+    source: ocr_quest_satisfied_back_fast
+    recognize: {all: [灵宠, 升级成功], page_level_at_least_quest_target: true}
+    action: click_hotspot:ui_back
+    expected: 退出已完成的灵宠升级界面
+  - id: peach_village_gate_quest
+    order: 410
+    evidence: docs/assets/mumu-xianyu/onboarding/41-peach-village-gate-quest.png
+    source: ocr_task_panel_fast
+    recognize: {all: [主线], any: [桃夭村口, 远远看到一棵巨大桃树]}
+    action: click_task_tracker
+    expected: 继续自动寻路推进主线

@@ -213,6 +213,39 @@ _RULES: tuple[StrategyRule, ...] = (
         cooldown_s=0.0,
     ),
     StrategyRule(
+        name="pet_training_entry",
+        source="ocr_pet_training_entry_fast",
+        game_id=GAME_ID,
+        summary="小龙升级/灵宠达到2级任务可见时，点击右侧灵宠入口打开培养界面。",
+        allowed_action="click(right-side 灵宠 entry)",
+        risk="navigation",
+        effect="the pet formation interface opens",
+        cooldown_s=0.0,
+    ),
+    StrategyRule(
+        name="pet_information_tab",
+        source="ocr_pet_information_tab_fast",
+        game_id=GAME_ID,
+        summary="灵宠布阵页同时显示布阵目标与右侧信息标签时，点击信息进入培养页。",
+        allowed_action="click(信息 tab)",
+        risk="navigation",
+        effect="the selected pet information and training page opens",
+        cooldown_s=0.0,
+    ),
+    StrategyRule(
+        name="pet_upgrade_once",
+        source="ocr_pet_upgrade_once_fast",
+        game_id=GAME_ID,
+        summary=(
+            "灵宠信息页当前等级低于任务目标时点击升N级一次；达到目标后让位给"
+            "ocr_quest_satisfied_back_fast 退出，禁止继续消耗材料。"
+        ),
+        allowed_action="click(升N级 once while current level is below target)",
+        risk="progression",
+        effect="the pet reaches the tracked quest target level",
+        cooldown_s=0.0,
+    ),
+    StrategyRule(
         name="popup_close_glyph",
         source="ocr_close_glyph_fast",
         game_id=GAME_ID,

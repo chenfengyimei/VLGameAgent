@@ -31,6 +31,9 @@ from uga.agent.session_state import (
     page_has_action_button,
     page_level_value,
     peach_tree_spirit_combat_active,
+    pet_information_tab_control,
+    pet_training_entry_control,
+    pet_upgrade_control,
     quest_is_market_task,
     quest_page_keyword,
     raging_tree_spirit_combat_active,
@@ -883,6 +886,39 @@ class GroundedVlmPlanner:
                 expected_effect=(
                     "the story-completion page closes and the next quest becomes visible"
                 ),
+                action_kind=GuiActionKind.CLICK,
+            )
+        pet_entry = pet_training_entry_control(snapshot.visible_text)
+        if pet_entry is not None:
+            self._last_decision_source = "ocr_pet_training_entry_fast"
+            return self._ocr_action(
+                snapshot,
+                pet_entry,
+                source="ocr_pet_training_entry_fast",
+                expected_effect="the pet formation interface opens",
+                action_kind=GuiActionKind.CLICK,
+            )
+        pet_information = pet_information_tab_control(snapshot.visible_text)
+        if pet_information is not None:
+            self._last_decision_source = "ocr_pet_information_tab_fast"
+            return self._ocr_action(
+                snapshot,
+                pet_information,
+                source="ocr_pet_information_tab_fast",
+                expected_effect="the selected pet information and training page opens",
+                action_kind=GuiActionKind.CLICK,
+            )
+        pet_upgrade = pet_upgrade_control(
+            snapshot.visible_text,
+            quest_target_level if quest_text and "灵宠" in quest_text else None,
+        )
+        if pet_upgrade is not None:
+            self._last_decision_source = "ocr_pet_upgrade_once_fast"
+            return self._ocr_action(
+                snapshot,
+                pet_upgrade,
+                source="ocr_pet_upgrade_once_fast",
+                expected_effect="the pet gains levels and satisfies the tracked quest target",
                 action_kind=GuiActionKind.CLICK,
             )
         group_attack = invasion_group_attack_control(snapshot.visible_text)

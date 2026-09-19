@@ -38,7 +38,7 @@ class StrategyRegistryTests(unittest.TestCase):
         root = Path(__file__).parents[2]
         flow = load_recorded_flow(root / "configs/flows/mumu-xianyu-onboarding.yaml")
         self.assertEqual(flow.game_id, MUMU_REGISTRY.game_id)
-        self.assertEqual(len(flow.steps), 36)
+        self.assertEqual(len(flow.steps), 41)
         self.assertEqual(
             {Path(step.evidence).name for step in flow.steps},
             {f"{index:02d}-{name}" for index, name in enumerate((
@@ -78,6 +78,11 @@ class StrategyRegistryTests(unittest.TestCase):
                 "raging-tree-spirit-combat.png",
                 "ask-reason-quest.png",
                 "little-tree-spirit-dialogue.png",
+                "pet-upgrade-task-entry.png",
+                "pet-information-tab.png",
+                "pet-upgrade-once.png",
+                "pet-upgrade-exit.png",
+                "peach-village-gate-quest.png",
             ), start=1)},
         )
         for step in flow.steps:
@@ -168,6 +173,9 @@ class StrategyRegistryTests(unittest.TestCase):
             "ocr_peach_tree_spirit_group_attack_fast",
             "ocr_raging_tree_spirit_group_attack_fast",
             "ocr_red_dust_auto_once_fast",
+            "ocr_pet_training_entry_fast",
+            "ocr_pet_information_tab_fast",
+            "ocr_pet_upgrade_once_fast",
             "ocr_onboarding_joystick_forward_fast",
             "ocr_character_creation_customize_fast",
             "ocr_character_preset_start_fast",
@@ -566,6 +574,71 @@ class PlannerStrategyScopingTests(unittest.TestCase):
         # never emit after the persisted flag is true.
         if suppressed is not None and suppressed.action is not None:
             self.assertNotEqual(suppressed.action.target_label, "ui_auto_combat")
+
+    def test_pet_upgrade_flow_enters_info_upgrades_once_then_exits(self) -> None:
+        planner = GroundedVlmPlanner(
+            _Client([]),
+            max_temporal_frames=1,
+            max_target_crops=0,
+            compact_output=True,
+            prefer_ocr_task_panel=True,
+            strategy_registry=MUMU_REGISTRY,
+            back_hotspot=(0.060, 0.080),
+        )
+        entry = _onboarding_snapshot(
+            TextRegion("小龙升级", NormalizedBox(0.04, 0.22, 0.18, 0.27), 0.99),
+            TextRegion(
+                "拥有1只灵宠达到2级 0/1",
+                NormalizedBox(0.04, 0.27, 0.28, 0.32),
+                0.99,
+            ),
+            TextRegion("灵宠", NormalizedBox(0.92, 0.40, 0.99, 0.52), 0.99),
+        )
+        outcome = planner._ocr_fast_path(entry)  # type: ignore[attr-defined]
+        assert outcome is not None and outcome.action is not None
+        self.assertEqual(outcome.action.target_label, "灵宠")
+        self.assertEqual(planner.last_decision_source, "ocr_pet_training_entry_fast")
+
+        formation = _onboarding_snapshot(
+            TextRegion("灵宠", NormalizedBox(0.05, 0.06, 0.14, 0.12), 0.99),
+            TextRegion("布阵目标", NormalizedBox(0.70, 0.17, 0.82, 0.23), 0.99),
+            TextRegion("信息", NormalizedBox(0.93, 0.30, 0.99, 0.42), 0.99),
+        )
+        outcome = planner._ocr_fast_path(formation)  # type: ignore[attr-defined]
+        assert outcome is not None and outcome.action is not None
+        self.assertEqual(outcome.action.target_label, "信息")
+        self.assertEqual(planner.last_decision_source, "ocr_pet_information_tab_fast")
+
+        training = _onboarding_snapshot(
+            TextRegion("灵宠", NormalizedBox(0.05, 0.06, 0.14, 0.12), 0.99),
+            TextRegion("等级 1/40", NormalizedBox(0.62, 0.23, 0.75, 0.29), 0.99),
+            TextRegion("基础属性", NormalizedBox(0.62, 0.39, 0.76, 0.45), 0.99),
+            TextRegion("升2级", NormalizedBox(0.83, 0.23, 0.92, 0.30), 0.99),
+        )
+        outcome = planner._ocr_fast_path(  # type: ignore[attr-defined]
+            training,
+            quest_target_level=2,
+            quest_text="拥有1只灵宠达到2级 0/1",
+        )
+        assert outcome is not None and outcome.action is not None
+        self.assertEqual(outcome.action.target_label, "升2级")
+        self.assertEqual(planner.last_decision_source, "ocr_pet_upgrade_once_fast")
+
+        completed = _onboarding_snapshot(
+            TextRegion("灵宠", NormalizedBox(0.05, 0.06, 0.14, 0.12), 0.99),
+            TextRegion("等级 3/40", NormalizedBox(0.62, 0.23, 0.75, 0.29), 0.99),
+            TextRegion("基础属性", NormalizedBox(0.62, 0.39, 0.76, 0.45), 0.99),
+            TextRegion("升级成功", NormalizedBox(0.42, 0.38, 0.58, 0.44), 0.99),
+            TextRegion("升级", NormalizedBox(0.83, 0.23, 0.92, 0.30), 0.99),
+        )
+        outcome = planner._ocr_fast_path(  # type: ignore[attr-defined]
+            completed,
+            quest_target_level=2,
+            quest_text="拥有1只灵宠达到2级 0/1",
+        )
+        assert outcome is not None and outcome.action is not None
+        self.assertEqual(outcome.action.target_label, "ui_back")
+        self.assertEqual(planner.last_decision_source, "ocr_quest_satisfied_back_fast")
 
     def test_auto_navigation_waits_without_reclicking_the_task_tracker(self) -> None:
         planner = GroundedVlmPlanner(
