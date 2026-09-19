@@ -38,7 +38,7 @@ class StrategyRegistryTests(unittest.TestCase):
         root = Path(__file__).parents[2]
         flow = load_recorded_flow(root / "configs/flows/mumu-xianyu-onboarding.yaml")
         self.assertEqual(flow.game_id, MUMU_REGISTRY.game_id)
-        self.assertEqual(len(flow.steps), 76)
+        self.assertEqual(len(flow.steps), 79)
         self.assertEqual(
             {Path(step.evidence).name for step in flow.steps},
             {f"{index:02d}-{name}" for index, name in enumerate((
@@ -118,13 +118,19 @@ class StrategyRegistryTests(unittest.TestCase):
                 "skill-learn.png",
                 "skill-training-exit.png",
                 "peach-talisman-barrier-drag.png",
+                "boss-combat.png",
+                "boss-dialogue.png",
+                "boss-cutscene-skip.png",
             ), start=1)},
         )
         for step in flow.steps:
             with self.subTest(step=step.step_id):
                 self.assertTrue((root / step.evidence).is_file())
                 self.assertTrue(MUMU_REGISTRY.allows(step.source))
-        result_evidence = flow.steps[-1].recognize["result_evidence"]
+        barrier_step = next(
+            step for step in flow.steps if step.step_id == "peach_talisman_barrier_drag"
+        )
+        result_evidence = barrier_step.recognize["result_evidence"]
         self.assertTrue((root / result_evidence).is_file())
 
     def test_recorded_hotspots_match_the_confirmed_game_profile(self) -> None:
@@ -151,6 +157,10 @@ class StrategyRegistryTests(unittest.TestCase):
         assert auto is not None and auto.hotspot is not None
         self.assertAlmostEqual(auto.hotspot[0], 0.585, places=3)
         self.assertAlmostEqual(auto.hotspot[1], 0.803, places=3)
+        heal = profile.binding("ui_heal")
+        assert heal is not None and heal.hotspot is not None
+        self.assertAlmostEqual(heal.hotspot[0], 0.840, places=3)
+        self.assertAlmostEqual(heal.hotspot[1], 0.635, places=3)
 
     def test_known_game_resolves_to_a_populated_registry(self) -> None:
         registry = registry_for("mumu-xianyu")
@@ -210,6 +220,7 @@ class StrategyRegistryTests(unittest.TestCase):
             "ocr_peach_tree_spirit_group_attack_fast",
             "ocr_raging_tree_spirit_group_attack_fast",
             "ocr_demon_sect_disciple_group_attack_fast",
+            "ocr_black_clad_leader_combat_fast",
             "ocr_red_dust_auto_once_fast",
             "ocr_pet_training_entry_fast",
             "ocr_pet_information_tab_fast",
@@ -629,6 +640,53 @@ class PlannerStrategyScopingTests(unittest.TestCase):
         self.assertEqual(
             planner.last_decision_source,
             "ocr_demon_sect_disciple_group_attack_fast",
+        )
+
+    def test_black_clad_leader_fight_rotates_attack_heal_and_attacks(self) -> None:
+        planner = GroundedVlmPlanner(
+            _Client([]),
+            max_temporal_frames=1,
+            max_target_crops=0,
+            compact_output=True,
+            prefer_ocr_task_panel=True,
+            strategy_registry=MUMU_REGISTRY,
+            pet_group_attack_hotspot=(0.950, 0.500),
+            heal_hotspot=(0.840, 0.635),
+            secondary_group_attack_hotspot=(0.790, 0.745),
+            group_attack_hotspot=(0.770, 0.890),
+        )
+        snapshot = _onboarding_snapshot(
+            TextRegion("主线", NormalizedBox(0.04, 0.16, 0.11, 0.21), 0.99),
+            TextRegion("幕后黑手", NormalizedBox(0.04, 0.22, 0.18, 0.27), 0.99),
+            TextRegion(
+                "独自对抗幕后黑手",
+                NormalizedBox(0.04, 0.27, 0.25, 0.32),
+                0.99,
+            ),
+            TextRegion(
+                "黑衣人头目 Lv.20",
+                NormalizedBox(0.35, 0.07, 0.62, 0.14),
+                0.99,
+            ),
+        )
+
+        labels: list[str] = []
+        for _ in range(4):
+            outcome = planner._ocr_fast_path(snapshot)  # type: ignore[attr-defined]
+            assert outcome is not None and outcome.action is not None
+            labels.append(outcome.action.target_label)
+        self.assertEqual(
+            labels,
+            [
+                "ui_pet_group_attack",
+                "ui_heal",
+                "ui_secondary_group_attack",
+                "ui_group_attack",
+            ],
+        )
+        self.assertEqual(
+            planner.last_decision_source,
+            "ocr_black_clad_leader_combat_fast",
         )
 
     def test_red_dust_auto_is_suppressed_after_the_persisted_once_flag(self) -> None:

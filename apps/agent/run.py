@@ -382,6 +382,7 @@ async def _run(args: argparse.Namespace) -> int:
     group_attack_hotspot: tuple[float, float] | None = None
     pet_group_attack_hotspot: tuple[float, float] | None = None
     secondary_group_attack_hotspot: tuple[float, float] | None = None
+    heal_hotspot: tuple[float, float] | None = None
     auto_combat_hotspot: tuple[float, float] | None = None
     for hotspot_name in (
         "ui_back",
@@ -392,6 +393,7 @@ async def _run(args: argparse.Namespace) -> int:
         "ui_group_attack",
         "ui_pet_group_attack",
         "ui_secondary_group_attack",
+        "ui_heal",
         "ui_auto_combat",
     ):
         binding = profile.binding(hotspot_name)
@@ -416,6 +418,8 @@ async def _run(args: argparse.Namespace) -> int:
                 pet_group_attack_hotspot = binding.hotspot
             elif hotspot_name == "ui_secondary_group_attack":
                 secondary_group_attack_hotspot = binding.hotspot
+            elif hotspot_name == "ui_heal":
+                heal_hotspot = binding.hotspot
             else:
                 auto_combat_hotspot = binding.hotspot
     available_keys = frozenset(
@@ -468,6 +472,7 @@ async def _run(args: argparse.Namespace) -> int:
                 group_attack_hotspot=group_attack_hotspot,
                 pet_group_attack_hotspot=pet_group_attack_hotspot,
                 secondary_group_attack_hotspot=secondary_group_attack_hotspot,
+                heal_hotspot=heal_hotspot,
                 auto_combat_hotspot=auto_combat_hotspot,
             )
             policy: ScriptedTapPolicy | None = None

@@ -544,3 +544,24 @@ steps:
       result_evidence: docs/assets/mumu-xianyu/onboarding/76-peach-talisman-barrier-result.png
     action: held_drag:peach_talisman_gem->barrier_center
     expected: 长按右上桃天符印宝石并拖到法阵中央，倒计时期间不重复拖拽
+  - id: black_clad_leader_combat
+    order: 770
+    evidence: docs/assets/mumu-xianyu/onboarding/77-boss-combat.png
+    source: ocr_black_clad_leader_combat_fast
+    recognize: {any_task: [幕后黑手, 独自对抗幕后黑手], enemy: 黑衣人头目}
+    action: cycle_hotspots:[ui_pet_group_attack,ui_heal,ui_secondary_group_attack,ui_group_attack]
+    expected: 循环三枚群攻与治疗技能，击败黑衣人头目并保持生存
+  - id: black_clad_leader_dialogue
+    order: 780
+    evidence: docs/assets/mumu-xianyu/onboarding/78-boss-dialogue.png
+    source: ocr_dialogue_click_fast
+    recognize: {all: [回顾剧情], any: [秒后自动继续, 黑衣人头目]}
+    action: click_hotspot:ui_dialogue_advance
+    expected: 快速推进击败黑衣人头目后的对话
+  - id: black_clad_leader_cutscene_skip
+    order: 790
+    evidence: docs/assets/mumu-xianyu/onboarding/79-boss-cutscene-skip.png
+    source: ocr_cutscene_skip_fast
+    recognize: {control: 跳过, region: game_top_right}
+    action: click_text:跳过
+    expected: 点击右上跳过，结束战后过场剧情

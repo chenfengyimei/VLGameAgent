@@ -96,6 +96,19 @@ _RULES: tuple[StrategyRule, ...] = (
         cooldown_s=0.0,
     ),
     StrategyRule(
+        name="black_clad_leader_combat",
+        source="ocr_black_clad_leader_combat_fast",
+        game_id=GAME_ID,
+        summary=(
+            "幕后黑手任务与黑衣人头目同时可见时，依次轮换灵宠群攻、治疗、"
+            "上方群攻和下方群攻，直至进入战后剧情。"
+        ),
+        allowed_action="click(recorded boss skill hotspot rotation)",
+        risk="combat",
+        effect="the black-clad leader is defeated while the player stays healthy",
+        cooldown_s=0.0,
+    ),
+    StrategyRule(
         name="red_dust_auto_once",
         source="ocr_red_dust_auto_once_fast",
         game_id=GAME_ID,

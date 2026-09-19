@@ -8,6 +8,7 @@ from uga.agent.session_state import (
     ActionTrace,
     GameSessionState,
     ScreenType,
+    black_clad_leader_combat_active,
     demon_sect_disciple_combat_active,
     demonized_spirit_combat_active,
     find_xiuxian_path_quest_line,
@@ -126,6 +127,16 @@ class QuestMemoryTests(unittest.TestCase):
         )
         self.assertTrue(demon_sect_disciple_combat_active(demon_sect))
         self.assertFalse(demon_sect_disciple_combat_active(regions("孤身应战")))
+
+        boss = regions("幕后黑手", "独自对抗幕后黑手") + (
+            TextRegion(
+                "黑衣人头目 Lv.20",
+                NormalizedBox(0.35, 0.07, 0.62, 0.14),
+                0.99,
+            ),
+        )
+        self.assertTrue(black_clad_leader_combat_active(boss))
+        self.assertFalse(black_clad_leader_combat_active(regions("幕后黑手")))
 
     def test_peach_talisman_barrier_requires_instruction_and_countdown(self) -> None:
         instruction = TextRegion(

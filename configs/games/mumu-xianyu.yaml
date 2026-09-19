@@ -79,6 +79,12 @@ controls:
     x: 0.790
     y: 0.745
     confirmed: true
+  # 幕后黑手 BOSS 战中的紫色治疗技能（加号图标），与三枚群攻技能轮换。
+  ui_heal:
+    kind: normalized_hotspot
+    x: 0.840
+    y: 0.635
+    confirmed: true
   # 红尘入世第一段的底部 自动 开关：每个新角色只物理点击一次。
   ui_auto_combat:
     kind: normalized_hotspot
