@@ -297,3 +297,52 @@ steps:
     recognize: {all: [主线], any: [桃夭村口, 远远看到一棵巨大桃树]}
     action: click_task_tracker
     expected: 继续自动寻路推进主线
+  - id: peach_village_cutscene_skip
+    order: 420
+    evidence: docs/assets/mumu-xianyu/onboarding/42-peach-village-cutscene-skip.png
+    source: ocr_cutscene_skip_fast
+    recognize: {all: [跳过], region: game_top_right}
+    action: click_text:跳过
+    expected: 立即结束桃夭村过场动画
+  - id: tree_anomaly_quest
+    order: 430
+    evidence: docs/assets/mumu-xianyu/onboarding/43-tree-anomaly-quest.png
+    source: ocr_task_panel_fast
+    recognize: {all: [主线], any: [树下异样, 终于来到桃夭村]}
+    action: click_task_tracker
+    expected: 自动导航到剧情 NPC
+  - id: tree_anomaly_dialogue
+    order: 440
+    evidence: docs/assets/mumu-xianyu/onboarding/44-tree-anomaly-dialogue.png
+    source: ocr_dialogue_click_fast
+    recognize: {all: [回顾剧情]}
+    action: click_hotspot:ui_dialogue_advance
+    expected: 快速推进树下异样剧情对话
+  - id: strange_villager_quest
+    order: 450
+    evidence: docs/assets/mumu-xianyu/onboarding/45-strange-villager-quest.png
+    source: ocr_task_panel_fast
+    recognize: {all: [主线], any: [怪异村民, 调查怪异的村民]}
+    action: click_task_tracker
+    expected: 自动导航到怪异村民并进入对话
+  - id: strange_villager_dialogue
+    order: 460
+    evidence: docs/assets/mumu-xianyu/onboarding/46-strange-villager-dialogue.png
+    source: ocr_dialogue_click_fast
+    recognize: {all: [回顾剧情]}
+    action: click_hotspot:ui_dialogue_advance
+    expected: 快速推进怪异村民剧情
+  - id: hua_jie_dialogue
+    order: 470
+    evidence: docs/assets/mumu-xianyu/onboarding/47-hua-jie-dialogue.png
+    source: ocr_dialogue_click_fast
+    recognize: {all: [回顾剧情]}
+    action: click_hotspot:ui_dialogue_advance
+    expected: 快速推进花姐剧情对话
+  - id: villager_investigation_dialogue
+    order: 480
+    evidence: docs/assets/mumu-xianyu/onboarding/48-villager-investigation-dialogue.png
+    source: ocr_dialogue_click_fast
+    recognize: {all: [回顾剧情]}
+    action: click_hotspot:ui_dialogue_advance
+    expected: 快速推进村民调查剧情对话
