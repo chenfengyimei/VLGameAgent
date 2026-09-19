@@ -38,7 +38,7 @@ class StrategyRegistryTests(unittest.TestCase):
         root = Path(__file__).parents[2]
         flow = load_recorded_flow(root / "configs/flows/mumu-xianyu-onboarding.yaml")
         self.assertEqual(flow.game_id, MUMU_REGISTRY.game_id)
-        self.assertEqual(len(flow.steps), 71)
+        self.assertEqual(len(flow.steps), 75)
         self.assertEqual(
             {Path(step.evidence).name for step in flow.steps},
             {f"{index:02d}-{name}" for index, name in enumerate((
@@ -113,6 +113,10 @@ class StrategyRegistryTests(unittest.TestCase):
                 "peach-talisman-continue.png",
                 "break-barrier-quest.png",
                 "barrier-dialogue.png",
+                "skill-training-entry.png",
+                "skill-treatment-node.png",
+                "skill-learn.png",
+                "skill-training-exit.png",
             ), start=1)},
         )
         for step in flow.steps:
@@ -213,6 +217,10 @@ class StrategyRegistryTests(unittest.TestCase):
             "ocr_pet_star_autofill_fast",
             "ocr_pet_star_confirm_fast",
             "ocr_pet_star_success_continue_fast",
+            "ocr_skill_training_entry_fast",
+            "ocr_skill_treatment_node_fast",
+            "ocr_skill_learn_fast",
+            "ocr_skill_training_complete_back_fast",
             "ocr_onboarding_joystick_forward_fast",
             "ocr_character_creation_customize_fast",
             "ocr_character_preset_start_fast",
@@ -827,6 +835,82 @@ class PlannerStrategyScopingTests(unittest.TestCase):
         assert outcome is not None and outcome.action is not None
         self.assertEqual(outcome.action.target_label, "ui_back")
         self.assertEqual(planner.last_decision_source, "ocr_completed_panel_back_fast")
+
+    def test_skill_training_selects_learns_once_then_exits(self) -> None:
+        planner = GroundedVlmPlanner(
+            _Client([]),
+            max_temporal_frames=1,
+            max_target_crops=0,
+            compact_output=True,
+            prefer_ocr_task_panel=True,
+            strategy_registry=MUMU_REGISTRY,
+            back_hotspot=(0.060, 0.080),
+        )
+        quest = "学习第3个技能 0/1"
+
+        entry = _onboarding_snapshot(
+            TextRegion("招式传授", NormalizedBox(0.04, 0.22, 0.18, 0.27), 0.99),
+            TextRegion(quest, NormalizedBox(0.04, 0.27, 0.25, 0.32), 0.99),
+            TextRegion("技能", NormalizedBox(0.92, 0.48, 0.99, 0.62), 0.99),
+        )
+        outcome = planner._ocr_fast_path(entry, quest_text=quest)  # type: ignore[attr-defined]
+        assert outcome is not None and outcome.action is not None
+        self.assertEqual(outcome.action.target_label, "技能")
+        self.assertEqual(planner.last_decision_source, "ocr_skill_training_entry_fast")
+
+        selection = _onboarding_snapshot(
+            TextRegion("升级", NormalizedBox(0.05, 0.06, 0.14, 0.12), 0.99),
+            TextRegion("技能点 1/3", NormalizedBox(0.31, 0.16, 0.45, 0.22), 0.99),
+            TextRegion("治疗", NormalizedBox(0.44, 0.38, 0.53, 0.48), 0.99),
+            TextRegion("治疗", NormalizedBox(0.30, 0.60, 0.39, 0.72), 0.99),
+        )
+        outcome = planner._ocr_fast_path(  # type: ignore[attr-defined]
+            selection,
+            quest_text=quest,
+        )
+        assert outcome is not None and outcome.action is not None
+        self.assertEqual(outcome.action.target_box, selection.visible_text[-1].box)
+        self.assertEqual(planner.last_decision_source, "ocr_skill_treatment_node_fast")
+
+        learning = _onboarding_snapshot(
+            TextRegion("升级", NormalizedBox(0.05, 0.06, 0.14, 0.12), 0.99),
+            TextRegion("技能点 1/3", NormalizedBox(0.31, 0.16, 0.45, 0.22), 0.99),
+            TextRegion("花语素心 0级", NormalizedBox(0.73, 0.26, 0.88, 0.33), 0.99),
+            TextRegion("1 学习", NormalizedBox(0.73, 0.84, 0.86, 0.93), 0.99),
+        )
+        outcome = planner._ocr_fast_path(  # type: ignore[attr-defined]
+            learning,
+            quest_text=quest,
+        )
+        assert outcome is not None and outcome.action is not None
+        self.assertEqual(outcome.action.target_label, "1 学习")
+        self.assertEqual(planner.last_decision_source, "ocr_skill_learn_fast")
+
+        completed = _onboarding_snapshot(
+            TextRegion("升级", NormalizedBox(0.05, 0.06, 0.14, 0.12), 0.99),
+            TextRegion("技能点 0/3", NormalizedBox(0.31, 0.16, 0.45, 0.22), 0.99),
+            TextRegion("花语素心 1级", NormalizedBox(0.73, 0.26, 0.88, 0.33), 0.99),
+        )
+        outcome = planner._ocr_fast_path(  # type: ignore[attr-defined]
+            completed,
+            quest_text=quest,
+        )
+        assert outcome is not None and outcome.action is not None
+        self.assertEqual(outcome.action.target_label, "ui_back")
+        self.assertEqual(
+            planner.last_decision_source,
+            "ocr_skill_training_complete_back_fast",
+        )
+
+        unrelated = planner._ocr_fast_path(  # type: ignore[attr-defined]
+            selection,
+            quest_text="普通主线任务",
+        )
+        if unrelated is not None and unrelated.action is not None:
+            self.assertNotEqual(
+                planner.last_decision_source,
+                "ocr_skill_treatment_node_fast",
+            )
 
     def test_auto_navigation_waits_without_reclicking_the_task_tracker(self) -> None:
         planner = GroundedVlmPlanner(

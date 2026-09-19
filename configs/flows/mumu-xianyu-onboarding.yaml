@@ -507,3 +507,31 @@ steps:
     recognize: {all: [回顾剧情], any: [秒后自动继续, 结界]}
     action: click_hotspot:ui_dialogue_advance
     expected: 快速推进桃夭结界剧情
+  - id: skill_training_entry
+    order: 720
+    evidence: docs/assets/mumu-xianyu/onboarding/72-skill-training-entry.png
+    source: ocr_skill_training_entry_fast
+    recognize: {any_task: [招式传授, 学习第3个技能], control: 技能, region: game_right}
+    action: click_text:技能
+    expected: 打开技能升级界面
+  - id: skill_treatment_node
+    order: 730
+    evidence: docs/assets/mumu-xianyu/onboarding/73-skill-treatment-node.png
+    source: ocr_skill_treatment_node_fast
+    recognize: {all: [升级, 技能点], quest_memory: 学习第3个技能, control: 左下治疗节点}
+    action: click_text:治疗
+    expected: 选中教学指定的花语素心治疗技能
+  - id: skill_learn
+    order: 740
+    evidence: docs/assets/mumu-xianyu/onboarding/74-skill-learn.png
+    source: ocr_skill_learn_fast
+    recognize: {all: [升级, 技能点, 花语素心, 0级], control: 学习}
+    action: click_text:学习
+    expected: 消耗一个技能点学习花语素心
+  - id: skill_training_exit
+    order: 750
+    evidence: docs/assets/mumu-xianyu/onboarding/75-skill-training-exit.png
+    source: ocr_skill_training_complete_back_fast
+    recognize: {all: [升级, 技能点, 花语素心, 1级]}
+    action: click_hotspot:ui_back
+    expected: 学习完成后退出技能界面并禁止继续升级

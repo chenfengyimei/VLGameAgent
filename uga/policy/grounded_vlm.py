@@ -43,12 +43,17 @@ from uga.agent.session_state import (
     pet_upgrade_control,
     quest_is_market_task,
     quest_is_pet_star_task,
+    quest_is_skill_learning_task,
     quest_page_keyword,
     raging_tree_spirit_combat_active,
     real_name_gate_active,
     realm_promotion_ready,
     red_dust_auto_enable_ready,
     rescue_little_dragon_choice,
+    skill_learn_control,
+    skill_training_complete,
+    skill_training_entry_control,
+    skill_treatment_node_control,
     stall_sell_item_cell,
     xiuxian_path_objective_goto,
 )
@@ -989,6 +994,54 @@ class GroundedVlmPlanner:
                 pet_star_action,
                 source="ocr_pet_star_action_fast",
                 expected_effect="the pet star-up flow advances",
+                action_kind=GuiActionKind.CLICK,
+            )
+        skill_entry = skill_training_entry_control(snapshot.visible_text)
+        if skill_entry is not None:
+            self._last_decision_source = "ocr_skill_training_entry_fast"
+            return self._ocr_action(
+                snapshot,
+                skill_entry,
+                source="ocr_skill_training_entry_fast",
+                expected_effect="the skill-upgrade interface opens",
+                action_kind=GuiActionKind.CLICK,
+            )
+        skill_task = quest_is_skill_learning_task(quest_text)
+        if (
+            self._back_hotspot is not None
+            and skill_training_complete(
+                snapshot.visible_text,
+                task_active=skill_task,
+            )
+        ):
+            return self._exit_action(
+                snapshot,
+                "ocr_skill_training_complete_back_fast",
+            )
+        treatment_node = skill_treatment_node_control(
+            snapshot.visible_text,
+            task_active=skill_task,
+        )
+        if treatment_node is not None:
+            self._last_decision_source = "ocr_skill_treatment_node_fast"
+            return self._ocr_action(
+                snapshot,
+                treatment_node,
+                source="ocr_skill_treatment_node_fast",
+                expected_effect="the 花语素心 treatment skill is selected",
+                action_kind=GuiActionKind.CLICK,
+            )
+        skill_learn = skill_learn_control(
+            snapshot.visible_text,
+            task_active=skill_task,
+        )
+        if skill_learn is not None:
+            self._last_decision_source = "ocr_skill_learn_fast"
+            return self._ocr_action(
+                snapshot,
+                skill_learn,
+                source="ocr_skill_learn_fast",
+                expected_effect="花语素心 is learned at level one",
                 action_kind=GuiActionKind.CLICK,
             )
         pet_information = pet_information_tab_control(snapshot.visible_text)

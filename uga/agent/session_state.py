@@ -672,6 +672,120 @@ def pet_star_success_continue_control(
     return max(candidates, key=lambda region: region.confidence) if candidates else None
 
 
+def quest_is_skill_learning_task(quest_text: str | None) -> bool:
+    """Whether the durable task is the recorded third-skill tutorial."""
+    if not quest_text:
+        return False
+    normalized = normalize_visible_text(quest_text)
+    return "招式传授" in normalized or "学习第3个技能" in normalized
+
+
+def skill_training_entry_control(regions: Iterable[TextRegion]) -> TextRegion | None:
+    """Right-side 技能 entry while the third-skill tutorial is tracked."""
+    visible = tuple(regions)
+    task_active = any(
+        any(
+            cue in normalize_visible_text(region.text)
+            for cue in ("招式传授", "学习第3个技能")
+        )
+        and region.confidence >= 0.75
+        and region.box.center.x <= 0.38
+        for region in visible
+    )
+    if not task_active:
+        return None
+    candidates = [
+        region
+        for region in visible
+        if normalize_visible_text(region.text) == "技能"
+        and region.confidence >= 0.80
+        and region.box.center.x >= 0.85
+        and 0.25 <= region.box.center.y <= 0.75
+    ]
+    return max(candidates, key=lambda region: region.confidence) if candidates else None
+
+
+def _skill_upgrade_page_visible(regions: Iterable[TextRegion]) -> bool:
+    visible = tuple(regions)
+    has_title = any(
+        normalize_visible_text(region.text) == "升级"
+        and region.confidence >= 0.80
+        and region.box.center.x <= 0.25
+        and region.box.center.y <= 0.18
+        for region in visible
+    )
+    has_skill_points = any(
+        "技能点" in normalize_visible_text(region.text)
+        and region.confidence >= 0.75
+        and region.box.center.y <= 0.30
+        for region in visible
+    )
+    return has_title and has_skill_points
+
+
+def skill_treatment_node_control(
+    regions: Iterable[TextRegion], *, task_active: bool
+) -> TextRegion | None:
+    """The tutorial-highlighted third 治疗 node, not another healing node."""
+    if not task_active:
+        return None
+    visible = tuple(regions)
+    if not _skill_upgrade_page_visible(visible):
+        return None
+    if any("花语素心" in normalize_visible_text(region.text) for region in visible):
+        return None
+    candidates = [
+        region
+        for region in visible
+        if normalize_visible_text(region.text) == "治疗"
+        and region.confidence >= 0.80
+        and 0.25 <= region.box.center.x <= 0.42
+        and 0.55 <= region.box.center.y <= 0.82
+    ]
+    return max(candidates, key=lambda region: region.confidence) if candidates else None
+
+
+def skill_learn_control(
+    regions: Iterable[TextRegion], *, task_active: bool
+) -> TextRegion | None:
+    """Learn 花语素心 once while its displayed level is still zero."""
+    if not task_active:
+        return None
+    visible = tuple(regions)
+    if not _skill_upgrade_page_visible(visible):
+        return None
+    unlearned = any(
+        re.search(r"花语素心\D{0,3}0级", normalize_visible_text(region.text))
+        and region.confidence >= 0.75
+        for region in visible
+    )
+    if not unlearned:
+        return None
+    candidates = [
+        region
+        for region in visible
+        if "学习" in normalize_visible_text(region.text)
+        and region.confidence >= 0.80
+        and region.box.center.x >= 0.65
+        and region.box.center.y >= 0.70
+    ]
+    return max(candidates, key=lambda region: region.confidence) if candidates else None
+
+
+def skill_training_complete(
+    regions: Iterable[TextRegion], *, task_active: bool
+) -> bool:
+    """The requested 花语素心 skill visibly reached level one."""
+    if not task_active:
+        return False
+    visible = tuple(regions)
+    return _skill_upgrade_page_visible(visible) and any(
+        re.search(r"花语素心\D{0,3}[1-9]\d*级", normalize_visible_text(region.text))
+        and region.confidence >= 0.75
+        for region in visible
+    )
+
+
 def auto_navigation_active(regions: Iterable[TextRegion]) -> bool:
     """Whether the game is already carrying the character to a quest target."""
     return any(
