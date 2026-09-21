@@ -15,6 +15,7 @@ from uga.agent.session_state import (
     find_xiuxian_path_quest_line,
     master_message_event_control,
     mumu_close_dialog_cancel,
+    notice_board_event_stage,
     page_anchor_signature,
     page_level_value,
     peach_talisman_barrier_active,
@@ -92,6 +93,22 @@ def quest_frame(
 
 
 class QuestMemoryTests(unittest.TestCase):
+    def test_recorded_notice_board_event_advances_left_then_right(self) -> None:
+        prompt = TextRegion(
+            "告示牌上有许多消息",
+            NormalizedBox(0.40, 0.88, 0.62, 0.95),
+            0.99,
+        )
+        self.assertEqual(notice_board_event_stage((prompt,)), "left")
+
+        clue = TextRegion(
+            "问道大会最高奖赏洛神泪",
+            NormalizedBox(0.08, 0.78, 0.34, 0.88),
+            0.99,
+        )
+        self.assertEqual(notice_board_event_stage((prompt, clue)), "right")
+        self.assertIsNone(notice_board_event_stage((clue,)))
+
     def test_recorded_master_message_and_artifact_close_controls_are_narrow(
         self,
     ) -> None:

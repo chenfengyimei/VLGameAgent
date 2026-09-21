@@ -1078,6 +1078,28 @@ def artifact_result_close_control(regions: Iterable[TextRegion]) -> TextRegion |
     return max(candidates, key=lambda region: region.confidence) if candidates else None
 
 
+def notice_board_event_stage(regions: Iterable[TextRegion]) -> str | None:
+    """Return the next recorded notice-board paper to inspect."""
+    visible = tuple(regions)
+    has_board_prompt = any(
+        "告示牌上有许多消息" in normalize_visible_text(region.text)
+        and region.confidence >= 0.80
+        and region.box.center.y >= 0.75
+        for region in visible
+    )
+    if not has_board_prompt:
+        return None
+    has_reward_clue = any(
+        any(
+            cue in normalize_visible_text(region.text)
+            for cue in ("问道大会最高奖赏", "洛神泪")
+        )
+        and region.confidence >= 0.75
+        for region in visible
+    )
+    return "right" if has_reward_clue else "left"
+
+
 def dialogue_review_visible(regions: Iterable[TextRegion]) -> bool:
     """Recognize the dialogue scene from its left-side ``回顾剧情`` affordance.
 

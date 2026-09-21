@@ -31,6 +31,7 @@ from uga.agent.session_state import (
     master_message_event_control,
     mumu_close_dialog_cancel,
     narrative_continue_control,
+    notice_board_event_stage,
     onboarding_joystick_tutorial_active,
     page_has_action_button,
     page_level_value,
@@ -964,6 +965,29 @@ class GroundedVlmPlanner:
                 source="ocr_artifact_result_close_fast",
                 expected_effect="the acquired-artifact presentation closes",
                 action_kind=GuiActionKind.CLICK,
+            )
+        notice_board_stage = notice_board_event_stage(snapshot.visible_text)
+        if notice_board_stage is not None:
+            label, hotspot, source, expected_effect = {
+                "left": (
+                    "notice_board_left_paper",
+                    (0.395, 0.550),
+                    "ocr_notice_board_left_fast",
+                    "the first notice reveals the conference reward clue",
+                ),
+                "right": (
+                    "notice_board_right_paper",
+                    (0.590, 0.620),
+                    "ocr_notice_board_right_fast",
+                    "the second notice completes the board event",
+                ),
+            }[notice_board_stage]
+            return self._hotspot_click_action(
+                snapshot,
+                label,
+                hotspot,
+                source,
+                expected_effect,
             )
         rescue_choice = rescue_little_dragon_choice(snapshot.visible_text)
         if rescue_choice is not None:

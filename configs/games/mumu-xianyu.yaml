@@ -103,6 +103,17 @@ controls:
     x: 0.135
     y: 0.430
     confirmed: true
+  # 河洛城告示牌事件：先读左侧消息，出现洛神泪提示后再读右侧消息。
+  notice_board_left_paper:
+    kind: normalized_hotspot
+    x: 0.395
+    y: 0.550
+    confirmed: true
+  notice_board_right_paper:
+    kind: normalized_hotspot
+    x: 0.590
+    y: 0.620
+    confirmed: true
   dialogue_advance: {kind: virtual_key, code: 32, confirmed: true}
 capabilities:
   realtime_3d: true

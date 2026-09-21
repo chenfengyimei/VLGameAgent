@@ -38,7 +38,7 @@ class StrategyRegistryTests(unittest.TestCase):
         root = Path(__file__).parents[2]
         flow = load_recorded_flow(root / "configs/flows/mumu-xianyu-onboarding.yaml")
         self.assertEqual(flow.game_id, MUMU_REGISTRY.game_id)
-        self.assertEqual(len(flow.steps), 101)
+        self.assertEqual(len(flow.steps), 106)
         self.assertEqual(
             {
                 Path(step.evidence).name
@@ -148,6 +148,11 @@ class StrategyRegistryTests(unittest.TestCase):
                 "99-master-message-event.png",
                 "100-artifact-result-close.png",
                 "101-post-event-cutscene-skip.png",
+                "102-farewell-senior-sister-task.png",
+                "103-farewell-senior-sister-dialogue.png",
+                "104-notice-board-left.png",
+                "105-notice-board-right.png",
+                "106-post-notice-board-dialogue.png",
             },
         )
         for step in flow.steps:
@@ -306,6 +311,8 @@ class StrategyRegistryTests(unittest.TestCase):
             "ocr_pet_companion_complete_back_fast",
             "ocr_master_message_event_fast",
             "ocr_artifact_result_close_fast",
+            "ocr_notice_board_left_fast",
+            "ocr_notice_board_right_fast",
             "ocr_market_entry_fast",
         ):
             self.assertIn(source, known_sources)
@@ -1035,6 +1042,45 @@ class PlannerStrategyScopingTests(unittest.TestCase):
         assert outcome is not None and outcome.action is not None
         self.assertEqual(outcome.action.target_label, "跳过")
         self.assertEqual(planner.last_decision_source, "ocr_cutscene_skip_fast")
+
+    def test_notice_board_event_clicks_left_then_right_paper(self) -> None:
+        planner = GroundedVlmPlanner(
+            _Client([]),
+            max_temporal_frames=1,
+            max_target_crops=0,
+            compact_output=True,
+            prefer_ocr_task_panel=True,
+            strategy_registry=MUMU_REGISTRY,
+        )
+        prompt = TextRegion(
+            "告示牌上有许多消息",
+            NormalizedBox(0.40, 0.88, 0.62, 0.95),
+            0.99,
+        )
+        first = _onboarding_snapshot(prompt)
+        outcome = planner._ocr_fast_path(first)  # type: ignore[attr-defined]
+        assert outcome is not None and outcome.action is not None
+        self.assertEqual(outcome.action.kind, GuiActionKind.CLICK)
+        self.assertEqual(outcome.action.target_label, "notice_board_left_paper")
+        self.assertAlmostEqual(outcome.action.target_box.center.x, 0.395)
+        self.assertAlmostEqual(outcome.action.target_box.center.y, 0.550)
+        self.assertEqual(planner.last_decision_source, "ocr_notice_board_left_fast")
+
+        second = _onboarding_snapshot(
+            prompt,
+            TextRegion(
+                "问道大会最高奖赏洛神泪",
+                NormalizedBox(0.08, 0.78, 0.34, 0.88),
+                0.99,
+            ),
+        )
+        outcome = planner._ocr_fast_path(second)  # type: ignore[attr-defined]
+        assert outcome is not None and outcome.action is not None
+        self.assertEqual(outcome.action.kind, GuiActionKind.CLICK)
+        self.assertEqual(outcome.action.target_label, "notice_board_right_paper")
+        self.assertAlmostEqual(outcome.action.target_box.center.x, 0.590)
+        self.assertAlmostEqual(outcome.action.target_box.center.y, 0.620)
+        self.assertEqual(planner.last_decision_source, "ocr_notice_board_right_fast")
 
     def test_red_dust_auto_is_suppressed_after_the_persisted_once_flag(self) -> None:
         planner = GroundedVlmPlanner(

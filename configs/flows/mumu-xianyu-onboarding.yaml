@@ -719,3 +719,38 @@ steps:
     recognize: {control: 跳过, region: game_top_right}
     action: click_text:跳过
     expected: 跳过事件后的过场剧情
+  - id: farewell_senior_sister_task
+    order: 1020
+    evidence: docs/assets/mumu-xianyu/onboarding/102-farewell-senior-sister-task.png
+    source: ocr_task_panel_fast
+    recognize: {all: [主线], any_task: [告别师姐, 与师姐对话]}
+    action: click_task_tracker
+    expected: 自动寻路并进入师姐告别剧情
+  - id: farewell_senior_sister_dialogue
+    order: 1030
+    evidence: docs/assets/mumu-xianyu/onboarding/103-farewell-senior-sister-dialogue.png
+    source: ocr_dialogue_click_fast
+    recognize: {all: [回顾剧情], any: [秒后自动继续, 师姐]}
+    action: click_hotspot:ui_dialogue_advance
+    expected: 正常推进师姐告别对话
+  - id: notice_board_left
+    order: 1040
+    evidence: docs/assets/mumu-xianyu/onboarding/104-notice-board-left.png
+    source: ocr_notice_board_left_fast
+    recognize: {all: [告示牌上有许多消息], absent: 洛神泪}
+    action: click_hotspot:notice_board_left_paper
+    expected: 点击左侧消息并显示问道大会奖赏线索
+  - id: notice_board_right
+    order: 1050
+    evidence: docs/assets/mumu-xianyu/onboarding/105-notice-board-right.png
+    source: ocr_notice_board_right_fast
+    recognize: {all: [告示牌上有许多消息, 洛神泪]}
+    action: click_hotspot:notice_board_right_paper
+    expected: 点击右侧消息完成告示牌事件
+  - id: post_notice_board_dialogue
+    order: 1060
+    evidence: docs/assets/mumu-xianyu/onboarding/106-post-notice-board-dialogue.png
+    source: ocr_dialogue_click_fast
+    recognize: {all: [回顾剧情], any: [秒后自动继续, 洛青阳]}
+    action: click_hotspot:ui_dialogue_advance
+    expected: 正常推进洛青阳对话
