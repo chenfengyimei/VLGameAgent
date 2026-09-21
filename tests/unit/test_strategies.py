@@ -38,7 +38,7 @@ class StrategyRegistryTests(unittest.TestCase):
         root = Path(__file__).parents[2]
         flow = load_recorded_flow(root / "configs/flows/mumu-xianyu-onboarding.yaml")
         self.assertEqual(flow.game_id, MUMU_REGISTRY.game_id)
-        self.assertEqual(len(flow.steps), 136)
+        self.assertEqual(len(flow.steps), 142)
         self.assertEqual(
             {
                 Path(step.evidence).name
@@ -177,6 +177,12 @@ class StrategyRegistryTests(unittest.TestCase):
                 "133-pet-level-ten-task.png",
                 "134-pet-level-ten-upgrade.png",
                 "136-pet-level-ten-dialogue.png",
+                "137-find-xiaobao-task.png",
+                "138-xiaobao-dialogue.png",
+                "139-jiuxian-dialogue.png",
+                "140-ghost-flower-task.png",
+                "141-ghost-flower-dialogue.png",
+                "142-phrase-scroll-close.png",
             },
         )
         for step in flow.steps:
@@ -324,6 +330,7 @@ class StrategyRegistryTests(unittest.TestCase):
             "ocr_rescue_little_dragon_choice_fast",
             "ocr_little_dragon_heal_fast",
             "ocr_narrative_continue_fast",
+            "ocr_phrase_scroll_close_fast",
             "ocr_peach_talisman_continue_fast",
             "ocr_peach_talisman_barrier_drag_fast",
             "ocr_peach_talisman_barrier_wait",
@@ -1943,6 +1950,74 @@ class PlannerStrategyScopingTests(unittest.TestCase):
         self.assertAlmostEqual(outcome.action.target_box.center.x, 0.96, places=3)
         self.assertAlmostEqual(outcome.action.target_box.center.y, 0.915, places=3)
         self.assertEqual(planner.last_decision_source, "ocr_dialogue_click_fast")
+
+    def test_generic_story_dialogues_reuse_one_advance_rule(self) -> None:
+        planner = GroundedVlmPlanner(
+            _Client([]),
+            max_temporal_frames=1,
+            max_target_crops=0,
+            compact_output=True,
+            prefer_ocr_task_panel=True,
+            strategy_registry=MUMU_REGISTRY,
+            dialogue_hotspot=(0.960, 0.915),
+        )
+        for speaker in ("小宝", "酒仙", "仙女井风"):
+            with self.subTest(speaker=speaker):
+                snapshot = _onboarding_snapshot(
+                    TextRegion(
+                        "回顾剧情",
+                        NormalizedBox(0.02, 0.43, 0.05, 0.60),
+                        0.99,
+                    ),
+                    TextRegion(
+                        speaker,
+                        NormalizedBox(0.10, 0.80, 0.17, 0.85),
+                        0.99,
+                    ),
+                    TextRegion(
+                        "9秒后自动继续",
+                        NormalizedBox(0.80, 0.89, 0.94, 0.95),
+                        0.99,
+                    ),
+                )
+                outcome = planner._ocr_fast_path(snapshot)  # type: ignore[attr-defined]
+                assert outcome is not None and outcome.action is not None
+                self.assertEqual(outcome.action.target_label, "ui_dialogue_advance")
+                self.assertEqual(
+                    planner.last_decision_source,
+                    "ocr_dialogue_click_fast",
+                )
+
+    def test_completed_phrase_scroll_closes_from_its_bottom_prompt(self) -> None:
+        planner = GroundedVlmPlanner(
+            _Client([]),
+            max_temporal_frames=1,
+            max_target_crops=0,
+            compact_output=True,
+            prefer_ocr_task_panel=True,
+            strategy_registry=MUMU_REGISTRY,
+        )
+        snapshot = _onboarding_snapshot(
+            TextRegion(
+                "根据句首，将纸条拖到正确位置",
+                NormalizedBox(0.31, 0.15, 0.69, 0.22),
+                0.99,
+            ),
+            TextRegion("天地不仁", NormalizedBox(0.31, 0.34, 0.38, 0.73), 0.99),
+            TextRegion("以万物为刍狗", NormalizedBox(0.38, 0.34, 0.46, 0.73), 0.99),
+            TextRegion(
+                "点击任意处关闭界面",
+                NormalizedBox(0.39, 0.89, 0.60, 0.96),
+                0.99,
+            ),
+        )
+        outcome = planner._ocr_fast_path(snapshot)  # type: ignore[attr-defined]
+        assert outcome is not None and outcome.action is not None
+        self.assertEqual(outcome.action.target_label, "点击任意处关闭界面")
+        self.assertEqual(
+            planner.last_decision_source,
+            "ocr_phrase_scroll_close_fast",
+        )
 
     def test_dialogue_main_quest_uses_the_tracker_after_navigation_ends(self) -> None:
         planner = GroundedVlmPlanner(

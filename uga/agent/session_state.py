@@ -1496,6 +1496,33 @@ def narrative_continue_control(regions: Iterable[TextRegion]) -> TextRegion | No
     return max(candidates, key=lambda region: region.confidence) if candidates else None
 
 
+def phrase_scroll_close_control(regions: Iterable[TextRegion]) -> TextRegion | None:
+    """Dismiss the completed sentence-matching scroll result."""
+    visible = tuple(regions)
+    has_scroll_instruction = any(
+        "根据句首" in normalize_visible_text(region.text)
+        and region.confidence >= 0.75
+        for region in visible
+    ) and any(
+        any(
+            cue in normalize_visible_text(region.text)
+            for cue in ("纸条", "正确位置")
+        )
+        and region.confidence >= 0.75
+        for region in visible
+    )
+    if not has_scroll_instruction:
+        return None
+    candidates = [
+        region
+        for region in visible
+        if "点击任意处关闭界面" in normalize_visible_text(region.text)
+        and region.confidence >= 0.75
+        and region.box.center.y >= 0.75
+    ]
+    return max(candidates, key=lambda region: region.confidence) if candidates else None
+
+
 def peach_talisman_continue_control(regions: Iterable[TextRegion]) -> TextRegion | None:
     """Dismiss the 桃妖符印 reward presentation without waiting for timeout."""
     visible = tuple(regions)

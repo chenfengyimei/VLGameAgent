@@ -55,6 +55,7 @@ from uga.agent.session_state import (
     pet_travel_control,
     pet_travel_tower_entry_control,
     pet_upgrade_control,
+    phrase_scroll_close_control,
     quest_is_fourth_skill_learning_task,
     quest_is_market_task,
     quest_is_pet_companion_task,
@@ -981,6 +982,16 @@ class GroundedVlmPlanner:
                 artifact_result_close,
                 source="ocr_artifact_result_close_fast",
                 expected_effect="the acquired-artifact presentation closes",
+                action_kind=GuiActionKind.CLICK,
+            )
+        phrase_scroll_close = phrase_scroll_close_control(snapshot.visible_text)
+        if phrase_scroll_close is not None:
+            self._last_decision_source = "ocr_phrase_scroll_close_fast"
+            return self._ocr_action(
+                snapshot,
+                phrase_scroll_close,
+                source="ocr_phrase_scroll_close_fast",
+                expected_effect="the completed phrase-scroll result closes",
                 action_kind=GuiActionKind.CLICK,
             )
         notice_board_stage = notice_board_event_stage(snapshot.visible_text)

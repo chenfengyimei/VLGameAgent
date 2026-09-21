@@ -964,3 +964,45 @@ steps:
     recognize: {all: [回顾剧情, 秒后自动继续]}
     action: click_hotspot:ui_dialogue_advance
     expected: 灵宠升级任务完成后正常快速推进阿紫对话
+  - id: find_xiaobao_task
+    order: 1370
+    evidence: docs/assets/mumu-xianyu/onboarding/137-find-xiaobao-task.png
+    source: ocr_task_panel_fast
+    recognize: {all: [主线], any_task: [寻找小宝, 前往月桂集寻找小宝]}
+    action: click_task_tracker
+    expected: 点击左上任务并前往月桂集寻找小宝
+  - id: xiaobao_dialogue
+    order: 1380
+    evidence: docs/assets/mumu-xianyu/onboarding/138-xiaobao-dialogue.png
+    source: ocr_dialogue_click_fast
+    recognize: {all: [回顾剧情, 秒后自动继续]}
+    action: click_hotspot:ui_dialogue_advance
+    expected: 使用通用对话规则快速推进小宝剧情
+  - id: jiuxian_dialogue
+    order: 1390
+    evidence: docs/assets/mumu-xianyu/onboarding/139-jiuxian-dialogue.png
+    source: ocr_dialogue_click_fast
+    recognize: {all: [回顾剧情, 秒后自动继续]}
+    action: click_hotspot:ui_dialogue_advance
+    expected: 使用通用对话规则快速推进酒仙剧情
+  - id: ghost_flower_task
+    order: 1400
+    evidence: docs/assets/mumu-xianyu/onboarding/140-ghost-flower-task.png
+    source: ocr_task_panel_fast
+    recognize: {all: [主线], any_task: [探花相助, 与鬼探花对话]}
+    action: click_task_tracker
+    expected: 点击左上任务并自动寻路到鬼探花
+  - id: ghost_flower_dialogue
+    order: 1410
+    evidence: docs/assets/mumu-xianyu/onboarding/141-ghost-flower-dialogue.png
+    source: ocr_dialogue_click_fast
+    recognize: {all: [回顾剧情, 秒后自动继续]}
+    action: click_hotspot:ui_dialogue_advance
+    expected: 使用通用对话规则快速推进鬼探花剧情
+  - id: phrase_scroll_close
+    order: 1420
+    evidence: docs/assets/mumu-xianyu/onboarding/142-phrase-scroll-close.png
+    source: ocr_phrase_scroll_close_fast
+    recognize: {all: [根据句首, 将纸条拖到正确位置, 点击任意处关闭界面]}
+    action: click_text:点击任意处关闭界面
+    expected: 关闭已完成的句首配对纸条界面

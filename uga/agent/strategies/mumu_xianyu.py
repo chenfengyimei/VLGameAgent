@@ -292,6 +292,16 @@ _RULES: tuple[StrategyRule, ...] = (
         cooldown_s=0.0,
     ),
     StrategyRule(
+        name="phrase_scroll_close",
+        source="ocr_phrase_scroll_close_fast",
+        game_id=GAME_ID,
+        summary="句首配对纸条结果页出现点击任意处关闭界面时，点击底部提示。",
+        allowed_action="click(点击任意处关闭界面)",
+        risk="low",
+        effect="the completed phrase-scroll result closes",
+        cooldown_s=0.0,
+    ),
+    StrategyRule(
         name="peach_talisman_continue",
         source="ocr_peach_talisman_continue_fast",
         game_id=GAME_ID,
