@@ -38,7 +38,7 @@ class StrategyRegistryTests(unittest.TestCase):
         root = Path(__file__).parents[2]
         flow = load_recorded_flow(root / "configs/flows/mumu-xianyu-onboarding.yaml")
         self.assertEqual(flow.game_id, MUMU_REGISTRY.game_id)
-        self.assertEqual(len(flow.steps), 171)
+        self.assertEqual(len(flow.steps), 182)
         self.assertEqual(
             {
                 Path(step.evidence).name
@@ -201,6 +201,14 @@ class StrategyRegistryTests(unittest.TestCase):
                 "165-drunkard-dialogue-task.png",
                 "167-drunkard-cutscene-skip.png",
                 "168-drunken-guest-combat.png",
+                "172-red-lotus-plan-task.png",
+                "173-red-lotus-plan-dialogue.png",
+                "174-senior-sister-message.png",
+                "175-fated-rendezvous-navigation.png",
+                "177-fated-rendezvous-dialogue.png",
+                "178-fated-walk-navigation.png",
+                "180-fated-walk-dialogue.png",
+                "181-sky-lantern-wish.png",
             },
         )
         for step in flow.steps:
@@ -341,6 +349,8 @@ class StrategyRegistryTests(unittest.TestCase):
             "ocr_cultivation_manual_activate_fast",
             "ocr_cultivation_manual_complete_back_fast",
             "ocr_disguise_technique_fast",
+            "ocr_senior_sister_message_event_fast",
+            "ocr_sky_lantern_release_fast",
             "ocr_xuanling_tower_entry_fast",
             "ocr_xuanling_tower_challenge_fast",
             "ocr_xuanling_tower_battle_wait",
@@ -1223,6 +1233,53 @@ class PlannerStrategyScopingTests(unittest.TestCase):
         assert outcome is not None and outcome.action is not None
         self.assertEqual(outcome.action.target_label, "跳过")
         self.assertEqual(planner.last_decision_source, "ocr_cutscene_skip_fast")
+
+    def test_senior_sister_message_and_sky_lantern_are_quest_scoped(self) -> None:
+        planner = GroundedVlmPlanner(
+            _Client([]),
+            max_temporal_frames=1,
+            max_target_crops=0,
+            compact_output=True,
+            prefer_ocr_task_panel=True,
+            strategy_registry=MUMU_REGISTRY,
+        )
+        letter = _onboarding_snapshot(
+            TextRegion("师门传音", NormalizedBox(0.42, 0.18, 0.58, 0.25), 0.99),
+            TextRegion(
+                "请于缘定台相聚",
+                NormalizedBox(0.45, 0.29, 0.70, 0.39),
+                0.99,
+            ),
+            TextRegion("——师姐", NormalizedBox(0.56, 0.72, 0.68, 0.82), 0.99),
+        )
+        outcome = planner._ocr_fast_path(letter)  # type: ignore[attr-defined]
+        assert outcome is not None and outcome.action is not None
+        self.assertEqual(outcome.action.target_label, "——师姐")
+        self.assertEqual(
+            planner.last_decision_source,
+            "ocr_senior_sister_message_event_fast",
+        )
+
+        lantern = _onboarding_snapshot(
+            TextRegion("主线", NormalizedBox(0.04, 0.16, 0.11, 0.21), 0.99),
+            TextRegion("天灯寄愿", NormalizedBox(0.04, 0.22, 0.18, 0.27), 0.99),
+            TextRegion(
+                "点一盏天灯祈愿",
+                NormalizedBox(0.04, 0.27, 0.25, 0.32),
+                0.99,
+            ),
+            TextRegion("放灯", NormalizedBox(0.55, 0.56, 0.64, 0.64), 0.99),
+        )
+        outcome = planner._ocr_fast_path(lantern)  # type: ignore[attr-defined]
+        assert outcome is not None and outcome.action is not None
+        self.assertEqual(outcome.action.target_label, "放灯")
+        self.assertEqual(planner.last_decision_source, "ocr_sky_lantern_release_fast")
+
+        unrelated = _onboarding_snapshot(
+            TextRegion("放灯", NormalizedBox(0.55, 0.56, 0.64, 0.64), 0.99),
+        )
+        outcome = planner._ocr_fast_path(unrelated)  # type: ignore[attr-defined]
+        self.assertIsNone(outcome)
 
     def test_notice_board_event_clicks_left_then_right_paper(self) -> None:
         planner = GroundedVlmPlanner(

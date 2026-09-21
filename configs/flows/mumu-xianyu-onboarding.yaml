@@ -1209,3 +1209,80 @@ steps:
     recognize: {any_task: [拔刀相助, 制服醉酒的客人, 平定骚乱], enemy: 煞和尚, rotation: 4}
     action: click_hotspot:ui_group_attack
     expected: 使用下方群攻技能后继续循环直至战斗结束
+  - id: red_lotus_plan_task
+    order: 1720
+    evidence: docs/assets/mumu-xianyu/onboarding/172-red-lotus-plan-task.png
+    source: ocr_task_panel_fast
+    recognize: {all: [主线], any_task: [红莲献计, 红莲好像还有什么要说]}
+    action: click_task_tracker
+    expected: 点击左上任务并与红莲继续交谈
+  - id: red_lotus_plan_dialogue
+    order: 1730
+    evidence: docs/assets/mumu-xianyu/onboarding/173-red-lotus-plan-dialogue.png
+    source: ocr_dialogue_click_fast
+    recognize: {all: [回顾剧情, 秒后自动继续]}
+    action: click_hotspot:ui_dialogue_advance
+    expected: 使用通用对话规则快速推进红莲献计剧情
+  - id: senior_sister_message_event
+    order: 1740
+    evidence: docs/assets/mumu-xianyu/onboarding/174-senior-sister-message.png
+    source: ocr_senior_sister_message_event_fast
+    recognize: {all: [师门传音, 缘定台相聚], control: 师姐}
+    action: click_text:师姐
+    expected: 点击师姐落款接受缘定台邀约
+  - id: fated_rendezvous_task
+    order: 1750
+    evidence: docs/assets/mumu-xianyu/onboarding/175-fated-rendezvous-navigation.png
+    source: ocr_task_panel_fast
+    recognize: {all: [主线], any_task: [缘定相约, 与师姐对话]}
+    action: click_task_tracker
+    expected: 点击左上任务并自动寻路前往缘定台
+  - id: fated_rendezvous_navigation_wait
+    order: 1760
+    evidence: docs/assets/mumu-xianyu/onboarding/175-fated-rendezvous-navigation.png
+    source: ocr_auto_navigation_wait
+    recognize: {all: [自动寻路中], any_task: [缘定相约, 与师姐对话]}
+    action: wait
+    expected: 等待自动寻路到达师姐处
+  - id: fated_rendezvous_dialogue
+    order: 1770
+    evidence: docs/assets/mumu-xianyu/onboarding/177-fated-rendezvous-dialogue.png
+    source: ocr_dialogue_click_fast
+    recognize: {all: [回顾剧情, 秒后自动继续]}
+    action: click_hotspot:ui_dialogue_advance
+    expected: 使用通用对话规则快速推进缘定相约剧情
+  - id: fated_walk_task
+    order: 1780
+    evidence: docs/assets/mumu-xianyu/onboarding/178-fated-walk-navigation.png
+    source: ocr_task_panel_fast
+    recognize: {all: [主线], any_task: [缘定漫步, 陪师姐逛逛]}
+    action: click_task_tracker
+    expected: 点击左上任务并陪师姐继续漫步
+  - id: fated_walk_navigation_wait
+    order: 1790
+    evidence: docs/assets/mumu-xianyu/onboarding/178-fated-walk-navigation.png
+    source: ocr_auto_navigation_wait
+    recognize: {all: [自动寻路中], any_task: [缘定漫步, 陪师姐逛逛]}
+    action: wait
+    expected: 等待自动寻路完成缘定漫步
+  - id: fated_walk_dialogue
+    order: 1800
+    evidence: docs/assets/mumu-xianyu/onboarding/180-fated-walk-dialogue.png
+    source: ocr_dialogue_click_fast
+    recognize: {all: [回顾剧情, 秒后自动继续]}
+    action: click_hotspot:ui_dialogue_advance
+    expected: 使用通用对话规则快速推进师姐漫步剧情
+  - id: sky_lantern_wish_task
+    order: 1810
+    evidence: docs/assets/mumu-xianyu/onboarding/181-sky-lantern-wish.png
+    source: ocr_task_panel_fast
+    recognize: {all: [主线], any_task: [天灯寄愿, 点一盏天灯祈愿]}
+    action: click_task_tracker
+    expected: 点击左上任务并前往天灯祈愿点
+  - id: sky_lantern_release
+    order: 1820
+    evidence: docs/assets/mumu-xianyu/onboarding/181-sky-lantern-wish.png
+    source: ocr_sky_lantern_release_fast
+    recognize: {any_task: [天灯寄愿, 点一盏天灯祈愿], control: 放灯}
+    action: click_text:放灯
+    expected: 点击场景中的放灯交互完成天灯寄愿

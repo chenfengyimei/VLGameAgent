@@ -85,11 +85,13 @@ from uga.agent.session_state import (
     realm_promotion_ready,
     red_dust_auto_enable_ready,
     rescue_little_dragon_choice,
+    senior_sister_message_event_control,
     skill_control_node_control,
     skill_learn_control,
     skill_training_complete,
     skill_training_entry_control,
     skill_treatment_node_control,
+    sky_lantern_release_control,
     stall_sell_item_cell,
     summon_bell_interaction_active,
     summon_once_control,
@@ -995,6 +997,18 @@ class GroundedVlmPlanner:
                 expected_effect="the master's transmitted-message event is accepted",
                 action_kind=GuiActionKind.CLICK,
             )
+        senior_sister_message = senior_sister_message_event_control(
+            snapshot.visible_text
+        )
+        if senior_sister_message is not None:
+            self._last_decision_source = "ocr_senior_sister_message_event_fast"
+            return self._ocr_action(
+                snapshot,
+                senior_sister_message,
+                source="ocr_senior_sister_message_event_fast",
+                expected_effect="the senior sister's rendezvous invitation is accepted",
+                action_kind=GuiActionKind.CLICK,
+            )
         artifact_result_close = artifact_result_close_control(snapshot.visible_text)
         if artifact_result_close is not None:
             self._last_decision_source = "ocr_artifact_result_close_fast"
@@ -1023,6 +1037,16 @@ class GroundedVlmPlanner:
                 disguise_technique,
                 source="ocr_disguise_technique_fast",
                 expected_effect="the player assumes the disguise required to enter 春风里",
+                action_kind=GuiActionKind.CLICK,
+            )
+        sky_lantern_release = sky_lantern_release_control(snapshot.visible_text)
+        if sky_lantern_release is not None:
+            self._last_decision_source = "ocr_sky_lantern_release_fast"
+            return self._ocr_action(
+                snapshot,
+                sky_lantern_release,
+                source="ocr_sky_lantern_release_fast",
+                expected_effect="the sky lantern is released and the wish scene advances",
                 action_kind=GuiActionKind.CLICK,
             )
         notice_board_stage = notice_board_event_stage(snapshot.visible_text)

@@ -242,6 +242,16 @@ _RULES: tuple[StrategyRule, ...] = (
         cooldown_s=0.0,
     ),
     StrategyRule(
+        name="senior_sister_message_event",
+        source="ocr_senior_sister_message_event_fast",
+        game_id=GAME_ID,
+        summary="师门传音邀请前往缘定台时，点击信件下方师姐落款接受邀约。",
+        allowed_action="click(师姐 signature)",
+        risk="progression",
+        effect="the senior sister's rendezvous invitation is accepted",
+        cooldown_s=0.0,
+    ),
+    StrategyRule(
         name="artifact_result_close",
         source="ocr_artifact_result_close_fast",
         game_id=GAME_ID,
@@ -494,6 +504,16 @@ _RULES: tuple[StrategyRule, ...] = (
         allowed_action="click(易容术)",
         risk="progression",
         effect="the player assumes the disguise required to enter 春风里",
+        cooldown_s=0.0,
+    ),
+    StrategyRule(
+        name="sky_lantern_release",
+        source="ocr_sky_lantern_release_fast",
+        game_id=GAME_ID,
+        summary="天灯寄愿/点一盏天灯祈愿任务中，只点击场景内的放灯交互。",
+        allowed_action="click(放灯)",
+        risk="progression",
+        effect="the sky lantern is released and the wish scene advances",
         cooldown_s=0.0,
     ),
     StrategyRule(

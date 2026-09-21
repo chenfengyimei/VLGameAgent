@@ -1742,6 +1742,60 @@ def master_message_event_control(regions: Iterable[TextRegion]) -> TextRegion | 
     return max(candidates, key=lambda region: region.confidence) if candidates else None
 
 
+def senior_sister_message_event_control(
+    regions: Iterable[TextRegion],
+) -> TextRegion | None:
+    """Clickable 师姐 signature on the recorded 师门传音 invitation."""
+    visible = tuple(regions)
+    has_letter = any(
+        "师门传音" in normalize_visible_text(region.text)
+        and region.confidence >= 0.80
+        for region in visible
+    )
+    has_rendezvous = any(
+        "缘定台相聚" in normalize_visible_text(region.text)
+        and region.confidence >= 0.75
+        for region in visible
+    )
+    if not has_letter or not has_rendezvous:
+        return None
+    candidates = [
+        region
+        for region in visible
+        if "师姐" in normalize_visible_text(region.text)
+        and region.confidence >= 0.80
+        and 0.45 <= region.box.center.x <= 0.75
+        and 0.60 <= region.box.center.y <= 0.90
+    ]
+    return max(candidates, key=lambda region: region.confidence) if candidates else None
+
+
+def sky_lantern_release_control(regions: Iterable[TextRegion]) -> TextRegion | None:
+    """Scene-bound 放灯 control for the recorded 天灯寄愿 quest."""
+    visible = tuple(regions)
+    task_active = any(
+        any(
+            cue in normalize_visible_text(region.text)
+            for cue in ("天灯寄愿", "点一盏天灯祈愿")
+        )
+        and region.confidence >= 0.75
+        and region.box.center.x <= 0.38
+        and 0.14 <= region.box.center.y <= 0.45
+        for region in visible
+    )
+    if not task_active:
+        return None
+    candidates = [
+        region
+        for region in visible
+        if normalize_visible_text(region.text) == "放灯"
+        and region.confidence >= 0.80
+        and 0.45 <= region.box.center.x <= 0.75
+        and 0.45 <= region.box.center.y <= 0.80
+    ]
+    return max(candidates, key=lambda region: region.confidence) if candidates else None
+
+
 def artifact_result_close_control(regions: Iterable[TextRegion]) -> TextRegion | None:
     """Dismiss the recorded 承影仙剑 acquisition presentation immediately."""
     visible = tuple(regions)
