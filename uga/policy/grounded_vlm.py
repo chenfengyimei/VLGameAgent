@@ -11,6 +11,7 @@ from difflib import SequenceMatcher
 from typing import Any, Protocol
 
 from uga.agent.session_state import (
+    artifact_result_close_control,
     auto_navigation_active,
     black_clad_leader_combat_active,
     character_creation_control,
@@ -27,6 +28,7 @@ from uga.agent.session_state import (
     invasion_group_attack_control,
     invasion_task_navigation_target,
     little_dragon_healing_active,
+    master_message_event_control,
     mumu_close_dialog_cancel,
     narrative_continue_control,
     onboarding_joystick_tutorial_active,
@@ -941,6 +943,26 @@ class GroundedVlmPlanner:
                 cutscene_skip,
                 source="ocr_cutscene_skip_fast",
                 expected_effect="the cutscene ends and the game world becomes visible",
+                action_kind=GuiActionKind.CLICK,
+            )
+        master_message_event = master_message_event_control(snapshot.visible_text)
+        if master_message_event is not None:
+            self._last_decision_source = "ocr_master_message_event_fast"
+            return self._ocr_action(
+                snapshot,
+                master_message_event,
+                source="ocr_master_message_event_fast",
+                expected_effect="the master's transmitted-message event is accepted",
+                action_kind=GuiActionKind.CLICK,
+            )
+        artifact_result_close = artifact_result_close_control(snapshot.visible_text)
+        if artifact_result_close is not None:
+            self._last_decision_source = "ocr_artifact_result_close_fast"
+            return self._ocr_action(
+                snapshot,
+                artifact_result_close,
+                source="ocr_artifact_result_close_fast",
+                expected_effect="the acquired-artifact presentation closes",
                 action_kind=GuiActionKind.CLICK,
             )
         rescue_choice = rescue_little_dragon_choice(snapshot.visible_text)

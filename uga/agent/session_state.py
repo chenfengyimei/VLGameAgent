@@ -1031,6 +1031,53 @@ def cutscene_skip_control(regions: Iterable[TextRegion]) -> TextRegion | None:
     return max(candidates, key=lambda region: region.confidence) if candidates else None
 
 
+def master_message_event_control(regions: Iterable[TextRegion]) -> TextRegion | None:
+    """Clickable 师父 signature on the recorded 桃源居传音 event letter."""
+    visible = tuple(regions)
+    has_letter = any(
+        "桃源居传音" in normalize_visible_text(region.text)
+        and region.confidence >= 0.80
+        for region in visible
+    )
+    has_event = any(
+        "问道大会" in normalize_visible_text(region.text)
+        and region.confidence >= 0.75
+        for region in visible
+    )
+    if not has_letter or not has_event:
+        return None
+    candidates = [
+        region
+        for region in visible
+        if "师父" in normalize_visible_text(region.text)
+        and region.confidence >= 0.80
+        and 0.45 <= region.box.center.x <= 0.75
+        and 0.60 <= region.box.center.y <= 0.90
+    ]
+    return max(candidates, key=lambda region: region.confidence) if candidates else None
+
+
+def artifact_result_close_control(regions: Iterable[TextRegion]) -> TextRegion | None:
+    """Dismiss the recorded 承影仙剑 acquisition presentation immediately."""
+    visible = tuple(regions)
+    has_artifact = any(
+        "承影仙剑" in normalize_visible_text(region.text)
+        and region.confidence >= 0.80
+        for region in visible
+    )
+    if not has_artifact:
+        return None
+    candidates = [
+        region
+        for region in visible
+        if "点击任意" in normalize_visible_text(region.text)
+        and "关闭" in normalize_visible_text(region.text)
+        and region.confidence >= 0.75
+        and region.box.center.y >= 0.75
+    ]
+    return max(candidates, key=lambda region: region.confidence) if candidates else None
+
+
 def dialogue_review_visible(regions: Iterable[TextRegion]) -> bool:
     """Recognize the dialogue scene from its left-side ``回顾剧情`` affordance.
 

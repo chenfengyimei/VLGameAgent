@@ -8,10 +8,12 @@ from uga.agent.session_state import (
     ActionTrace,
     GameSessionState,
     ScreenType,
+    artifact_result_close_control,
     black_clad_leader_combat_active,
     demon_sect_disciple_combat_active,
     demonized_spirit_combat_active,
     find_xiuxian_path_quest_line,
+    master_message_event_control,
     mumu_close_dialog_cancel,
     page_anchor_signature,
     page_level_value,
@@ -90,6 +92,46 @@ def quest_frame(
 
 
 class QuestMemoryTests(unittest.TestCase):
+    def test_recorded_master_message_and_artifact_close_controls_are_narrow(
+        self,
+    ) -> None:
+        letter = TextRegion(
+            "桃源居传音",
+            NormalizedBox(0.42, 0.18, 0.58, 0.25),
+            0.99,
+        )
+        event = TextRegion(
+            "河洛城即将召开问道大会",
+            NormalizedBox(0.45, 0.29, 0.70, 0.39),
+            0.99,
+        )
+        signature = TextRegion(
+            "——师父",
+            NormalizedBox(0.56, 0.72, 0.68, 0.82),
+            0.99,
+        )
+        self.assertEqual(
+            master_message_event_control((letter, event, signature)),
+            signature,
+        )
+        self.assertIsNone(master_message_event_control((event, signature)))
+
+        artifact = TextRegion(
+            "承影仙剑",
+            NormalizedBox(0.45, 0.30, 0.62, 0.39),
+            0.99,
+        )
+        close = TextRegion(
+            "点击任意处关闭(30秒)",
+            NormalizedBox(0.39, 0.88, 0.61, 0.95),
+            0.99,
+        )
+        self.assertEqual(
+            artifact_result_close_control((artifact, close)),
+            close,
+        )
+        self.assertIsNone(artifact_result_close_control((close,)))
+
     def test_recorded_pet_companion_controls_replace_xiaoqinglong_with_taotian(
         self,
     ) -> None:

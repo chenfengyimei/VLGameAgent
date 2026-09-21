@@ -38,7 +38,7 @@ class StrategyRegistryTests(unittest.TestCase):
         root = Path(__file__).parents[2]
         flow = load_recorded_flow(root / "configs/flows/mumu-xianyu-onboarding.yaml")
         self.assertEqual(flow.game_id, MUMU_REGISTRY.game_id)
-        self.assertEqual(len(flow.steps), 97)
+        self.assertEqual(len(flow.steps), 101)
         self.assertEqual(
             {
                 Path(step.evidence).name
@@ -144,6 +144,10 @@ class StrategyRegistryTests(unittest.TestCase):
                 "95-pet-companion-current.png",
                 "96-pet-companion-select-taotian.png",
                 "97-pet-companion-complete-exit.png",
+                "98-post-companion-dialogue.png",
+                "99-master-message-event.png",
+                "100-artifact-result-close.png",
+                "101-post-event-cutscene-skip.png",
             },
         )
         for step in flow.steps:
@@ -300,6 +304,8 @@ class StrategyRegistryTests(unittest.TestCase):
             "ocr_pet_companion_current_fast",
             "ocr_pet_companion_select_taotian_fast",
             "ocr_pet_companion_complete_back_fast",
+            "ocr_master_message_event_fast",
+            "ocr_artifact_result_close_fast",
             "ocr_market_entry_fast",
         ):
             self.assertIn(source, known_sources)
@@ -962,6 +968,73 @@ class PlannerStrategyScopingTests(unittest.TestCase):
             planner.last_decision_source,
             "ocr_pet_companion_complete_back_fast",
         )
+
+    def test_post_companion_story_clicks_event_closes_reward_and_skips(self) -> None:
+        planner = GroundedVlmPlanner(
+            _Client([]),
+            max_temporal_frames=1,
+            max_target_crops=0,
+            compact_output=True,
+            prefer_ocr_task_panel=True,
+            strategy_registry=MUMU_REGISTRY,
+            dialogue_hotspot=(0.960, 0.915),
+        )
+        dialogue = _onboarding_snapshot(
+            TextRegion("回顾剧情", NormalizedBox(0.02, 0.41, 0.08, 0.62), 0.99),
+            TextRegion(
+                "9秒后自动继续",
+                NormalizedBox(0.80, 0.88, 0.94, 0.95),
+                0.99,
+            ),
+        )
+        outcome = planner._ocr_fast_path(dialogue)  # type: ignore[attr-defined]
+        assert outcome is not None and outcome.action is not None
+        self.assertEqual(outcome.action.target_label, "ui_dialogue_advance")
+        self.assertEqual(planner.last_decision_source, "ocr_dialogue_click_fast")
+
+        letter = _onboarding_snapshot(
+            TextRegion(
+                "桃源居传音",
+                NormalizedBox(0.42, 0.18, 0.58, 0.25),
+                0.99,
+            ),
+            TextRegion(
+                "河洛城即将召开问道大会",
+                NormalizedBox(0.45, 0.29, 0.70, 0.39),
+                0.99,
+            ),
+            TextRegion("——师父", NormalizedBox(0.56, 0.72, 0.68, 0.82), 0.99),
+            TextRegion("×", NormalizedBox(0.79, 0.12, 0.84, 0.19), 0.99),
+        )
+        outcome = planner._ocr_fast_path(letter)  # type: ignore[attr-defined]
+        assert outcome is not None and outcome.action is not None
+        self.assertEqual(outcome.action.target_label, "——师父")
+        self.assertEqual(planner.last_decision_source, "ocr_master_message_event_fast")
+
+        artifact = _onboarding_snapshot(
+            TextRegion(
+                "承影仙剑",
+                NormalizedBox(0.45, 0.30, 0.62, 0.39),
+                0.99,
+            ),
+            TextRegion(
+                "点击任意处关闭(30秒)",
+                NormalizedBox(0.39, 0.88, 0.61, 0.95),
+                0.99,
+            ),
+        )
+        outcome = planner._ocr_fast_path(artifact)  # type: ignore[attr-defined]
+        assert outcome is not None and outcome.action is not None
+        self.assertEqual(outcome.action.target_label, "点击任意处关闭(30秒)")
+        self.assertEqual(planner.last_decision_source, "ocr_artifact_result_close_fast")
+
+        cutscene = _onboarding_snapshot(
+            TextRegion("跳过", NormalizedBox(0.90, 0.07, 0.98, 0.14), 0.99),
+        )
+        outcome = planner._ocr_fast_path(cutscene)  # type: ignore[attr-defined]
+        assert outcome is not None and outcome.action is not None
+        self.assertEqual(outcome.action.target_label, "跳过")
+        self.assertEqual(planner.last_decision_source, "ocr_cutscene_skip_fast")
 
     def test_red_dust_auto_is_suppressed_after_the_persisted_once_flag(self) -> None:
         planner = GroundedVlmPlanner(

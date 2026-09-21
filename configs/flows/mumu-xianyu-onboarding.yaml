@@ -691,3 +691,31 @@ steps:
     recognize: {all: [灵宠, 主战位], any_taotian_marker: [仙, 1级]}
     action: click_hotspot:ui_back
     expected: 桃天上阵完成后点击左上角返回世界页
+  - id: post_companion_dialogue
+    order: 980
+    evidence: docs/assets/mumu-xianyu/onboarding/98-post-companion-dialogue.png
+    source: ocr_dialogue_click_fast
+    recognize: {all: [回顾剧情], any: [秒后自动继续, 仙女井凤]}
+    action: click_hotspot:ui_dialogue_advance
+    expected: 正常推进桃天上阵后的剧情对话
+  - id: master_message_event
+    order: 990
+    evidence: docs/assets/mumu-xianyu/onboarding/99-master-message-event.png
+    source: ocr_master_message_event_fast
+    recognize: {all: [桃源居传音, 问道大会], control: 师父}
+    action: click_text:师父
+    expected: 点击师父落款触发传音事件
+  - id: artifact_result_close
+    order: 1000
+    evidence: docs/assets/mumu-xianyu/onboarding/100-artifact-result-close.png
+    source: ocr_artifact_result_close_fast
+    recognize: {all: [承影仙剑, 点击任意处关闭]}
+    action: click_text:点击任意处关闭
+    expected: 关闭承影仙剑展示页且不等待倒计时
+  - id: post_event_cutscene_skip
+    order: 1010
+    evidence: docs/assets/mumu-xianyu/onboarding/101-post-event-cutscene-skip.png
+    source: ocr_cutscene_skip_fast
+    recognize: {control: 跳过, region: game_top_right}
+    action: click_text:跳过
+    expected: 跳过事件后的过场剧情
