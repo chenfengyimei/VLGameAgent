@@ -38,7 +38,7 @@ class StrategyRegistryTests(unittest.TestCase):
         root = Path(__file__).parents[2]
         flow = load_recorded_flow(root / "configs/flows/mumu-xianyu-onboarding.yaml")
         self.assertEqual(flow.game_id, MUMU_REGISTRY.game_id)
-        self.assertEqual(len(flow.steps), 132)
+        self.assertEqual(len(flow.steps), 136)
         self.assertEqual(
             {
                 Path(step.evidence).name
@@ -174,6 +174,9 @@ class StrategyRegistryTests(unittest.TestCase):
                 "129-pet-travel-free-speedup.png",
                 "130-pet-travel-claim.png",
                 "131-pet-travel-reward-close.png",
+                "133-pet-level-ten-task.png",
+                "134-pet-level-ten-upgrade.png",
+                "136-pet-level-ten-dialogue.png",
             },
         )
         for step in flow.steps:
@@ -1310,6 +1313,92 @@ class PlannerStrategyScopingTests(unittest.TestCase):
         assert outcome is not None and outcome.action is not None
         self.assertEqual(outcome.action.target_label, "ui_back")
         self.assertEqual(planner.last_decision_source, "ocr_quest_satisfied_back_fast")
+
+    def test_pet_level_ten_task_upgrades_twice_then_advances_dialogue(self) -> None:
+        planner = GroundedVlmPlanner(
+            _Client([]),
+            max_temporal_frames=1,
+            max_target_crops=0,
+            compact_output=True,
+            prefer_ocr_task_panel=True,
+            strategy_registry=MUMU_REGISTRY,
+            back_hotspot=(0.060, 0.080),
+            dialogue_hotspot=(0.960, 0.915),
+        )
+        quest = "灵宠升级 拥有1只灵宠达到10级 0/1"
+
+        task = _onboarding_snapshot(
+            TextRegion("主线", NormalizedBox(0.04, 0.16, 0.11, 0.21), 0.99),
+            TextRegion("灵宠升级", NormalizedBox(0.04, 0.22, 0.18, 0.27), 0.99),
+            TextRegion(
+                "拥有1只灵宠达到10级 0/1",
+                NormalizedBox(0.04, 0.27, 0.28, 0.32),
+                0.99,
+            ),
+        )
+        outcome = planner._ocr_fast_path(task, quest_text=quest)  # type: ignore[attr-defined]
+        assert outcome is not None and outcome.action is not None
+        self.assertIn("达到10级", outcome.action.target_label)
+        self.assertEqual(planner.last_decision_source, "ocr_task_panel_fast")
+
+        first_upgrade = _onboarding_snapshot(
+            TextRegion("灵宠", NormalizedBox(0.05, 0.06, 0.14, 0.12), 0.99),
+            TextRegion("等级 1/40", NormalizedBox(0.62, 0.23, 0.75, 0.29), 0.99),
+            TextRegion("基础属性", NormalizedBox(0.62, 0.39, 0.76, 0.45), 0.99),
+            TextRegion("升5级", NormalizedBox(0.83, 0.23, 0.92, 0.30), 0.99),
+        )
+        outcome = planner._ocr_fast_path(  # type: ignore[attr-defined]
+            first_upgrade,
+            quest_target_level=10,
+            quest_text=quest,
+        )
+        assert outcome is not None and outcome.action is not None
+        self.assertEqual(outcome.action.target_label, "升5级")
+        self.assertEqual(planner.last_decision_source, "ocr_pet_upgrade_once_fast")
+
+        second_upgrade = _onboarding_snapshot(
+            TextRegion("灵宠", NormalizedBox(0.05, 0.06, 0.14, 0.12), 0.99),
+            TextRegion("等级 6/40", NormalizedBox(0.62, 0.23, 0.75, 0.29), 0.99),
+            TextRegion("基础属性", NormalizedBox(0.62, 0.39, 0.76, 0.45), 0.99),
+            TextRegion("升5级", NormalizedBox(0.83, 0.23, 0.92, 0.30), 0.99),
+        )
+        outcome = planner._ocr_fast_path(  # type: ignore[attr-defined]
+            second_upgrade,
+            quest_target_level=10,
+            quest_text=quest,
+        )
+        assert outcome is not None and outcome.action is not None
+        self.assertEqual(outcome.action.target_label, "升5级")
+        self.assertEqual(planner.last_decision_source, "ocr_pet_upgrade_once_fast")
+
+        completed = _onboarding_snapshot(
+            TextRegion("灵宠", NormalizedBox(0.05, 0.06, 0.14, 0.12), 0.99),
+            TextRegion("等级 11/40", NormalizedBox(0.62, 0.23, 0.75, 0.29), 0.99),
+            TextRegion("基础属性", NormalizedBox(0.62, 0.39, 0.76, 0.45), 0.99),
+            TextRegion("升5级", NormalizedBox(0.83, 0.23, 0.92, 0.30), 0.99),
+        )
+        outcome = planner._ocr_fast_path(  # type: ignore[attr-defined]
+            completed,
+            quest_target_level=10,
+            quest_text=quest,
+        )
+        assert outcome is not None and outcome.action is not None
+        self.assertEqual(outcome.action.target_label, "ui_back")
+        self.assertEqual(planner.last_decision_source, "ocr_quest_satisfied_back_fast")
+
+        dialogue = _onboarding_snapshot(
+            TextRegion("回顾剧情", NormalizedBox(0.02, 0.43, 0.05, 0.60), 0.99),
+            TextRegion("阿紫", NormalizedBox(0.10, 0.80, 0.16, 0.85), 0.99),
+            TextRegion(
+                "8秒后自动继续",
+                NormalizedBox(0.80, 0.89, 0.94, 0.95),
+                0.99,
+            ),
+        )
+        outcome = planner._ocr_fast_path(dialogue, quest_text=quest)  # type: ignore[attr-defined]
+        assert outcome is not None and outcome.action is not None
+        self.assertEqual(outcome.action.target_label, "ui_dialogue_advance")
+        self.assertEqual(planner.last_decision_source, "ocr_dialogue_click_fast")
 
     def test_pet_star_flow_uses_each_recorded_control_then_exits(self) -> None:
         planner = GroundedVlmPlanner(

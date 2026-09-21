@@ -936,3 +936,31 @@ steps:
     recognize: {all: [委托], state: pet_travel_reward_closed, evidence_status: owner_described_no_screenshot}
     action: click_hotspot:ui_back
     expected: 宠物游历任务完成后点击左上角退出
+  - id: pet_level_ten_task
+    order: 1330
+    evidence: docs/assets/mumu-xianyu/onboarding/133-pet-level-ten-task.png
+    source: ocr_task_panel_fast
+    recognize: {all: [主线], any_task: [灵宠升级, 拥有1只灵宠达到10级]}
+    action: click_task_tracker
+    expected: 点击左上任务并跳转到灵宠升级界面
+  - id: pet_level_ten_upgrade_first
+    order: 1340
+    evidence: docs/assets/mumu-xianyu/onboarding/134-pet-level-ten-upgrade.png
+    source: ocr_pet_upgrade_once_fast
+    recognize: {all: [灵宠, 基础属性], page_level_below: 10, control: 升5级, click_ordinal: 1}
+    action: click_text:升5级
+    expected: 第一次点击升5级并等待等级刷新
+  - id: pet_level_ten_upgrade_second
+    order: 1350
+    evidence: docs/assets/mumu-xianyu/onboarding/134-pet-level-ten-upgrade.png
+    source: ocr_pet_upgrade_once_fast
+    recognize: {all: [灵宠, 基础属性], page_level_below: 10, control: 升5级, click_ordinal: 2}
+    action: click_text:升5级
+    expected: 第二次点击升5级使灵宠达到10级任务要求
+  - id: pet_level_ten_dialogue
+    order: 1360
+    evidence: docs/assets/mumu-xianyu/onboarding/136-pet-level-ten-dialogue.png
+    source: ocr_dialogue_click_fast
+    recognize: {all: [回顾剧情, 秒后自动继续]}
+    action: click_hotspot:ui_dialogue_advance
+    expected: 灵宠升级任务完成后正常快速推进阿紫对话
