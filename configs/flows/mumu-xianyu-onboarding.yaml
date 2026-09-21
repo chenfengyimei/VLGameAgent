@@ -1048,3 +1048,38 @@ steps:
     recognize: {all: [回顾剧情, 秒后自动继续]}
     action: click_hotspot:ui_dialogue_advance
     expected: 使用通用对话规则快速推进后续剧情
+  - id: pet_wash_menu
+    order: 1490
+    evidence: docs/assets/mumu-xianyu/onboarding/149-pet-wash-menu.png
+    source: ocr_pet_wash_menu_fast
+    recognize: {any_task: [灵宠洗髓, 给灵宠洗髓1次], all: [前往灵宠洗髓], control: 菜单}
+    action: click_text:菜单
+    expected: 展开右侧菜单并显示灵宠入口
+  - id: pet_wash_entry
+    order: 1500
+    evidence: docs/assets/mumu-xianyu/onboarding/150-pet-wash-entry.png
+    source: ocr_pet_wash_entry_fast
+    recognize: {any_task: [灵宠洗髓, 给灵宠洗髓1次], all: [查看灵宠培养], control: 灵宠}
+    action: click_text:灵宠
+    expected: 打开灵宠培养界面
+  - id: pet_wash_tab
+    order: 1510
+    evidence: docs/assets/mumu-xianyu/onboarding/151-pet-wash-tab.png
+    source: ocr_pet_wash_tab_fast
+    recognize: {all: [灵宠, 切换到灵宠洗髓界面], control: 顶部洗髓标签}
+    action: click_text:洗髓
+    expected: 切换到灵宠洗髓页面
+  - id: pet_wash_action
+    order: 1520
+    evidence: docs/assets/mumu-xianyu/onboarding/152-pet-wash-action.png
+    source: ocr_pet_wash_action_fast
+    recognize: {all: [灵宠, 洗髓, 属性提升, 点击洗髓灵宠], control: 右下洗髓}
+    action: click_text:洗髓
+    expected: 给当前灵宠洗髓一次并刷新属性提升值
+  - id: pet_wash_complete_exit
+    order: 1530
+    evidence: docs/assets/mumu-xianyu/onboarding/153-pet-wash-complete-exit.png
+    source: ocr_pet_wash_complete_back_fast
+    recognize: {all: [灵宠, 洗髓, 属性提升], state: any_attribute_numerator_positive}
+    action: click_hotspot:ui_back
+    expected: 确认洗髓属性已提升后点击左上角退出

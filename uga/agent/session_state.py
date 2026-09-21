@@ -476,6 +476,160 @@ def pet_training_entry_control(regions: Iterable[TextRegion]) -> TextRegion | No
     return max(candidates, key=lambda region: region.confidence) if candidates else None
 
 
+def quest_is_pet_wash_task(quest_text: str | None) -> bool:
+    """Whether the durable task is the recorded one-time pet wash tutorial."""
+    if not quest_text:
+        return False
+    normalized = normalize_visible_text(quest_text)
+    return "灵宠洗髓" in normalized or "给灵宠洗髓1次" in normalized
+
+
+def pet_wash_world_control(
+    regions: Iterable[TextRegion],
+) -> tuple[str, TextRegion] | None:
+    """Open the world menu or its 灵宠 entry for the wash tutorial."""
+    visible = tuple(regions)
+    task_active = any(
+        any(
+            cue in normalize_visible_text(region.text)
+            for cue in ("灵宠洗髓", "给灵宠洗髓1次")
+        )
+        and region.confidence >= 0.75
+        and region.box.center.x <= 0.38
+        for region in visible
+    )
+    guide_active = any(
+        any(
+            cue in normalize_visible_text(region.text)
+            for cue in ("前往灵宠洗髓", "查看灵宠培养")
+        )
+        and region.confidence >= 0.75
+        for region in visible
+    )
+    if not task_active or not guide_active:
+        return None
+    pet_entries = [
+        region
+        for region in visible
+        if normalize_visible_text(region.text) == "灵宠"
+        and region.confidence >= 0.80
+        and region.box.center.x >= 0.85
+        and 0.25 <= region.box.center.y <= 0.75
+    ]
+    if pet_entries:
+        return "entry", max(pet_entries, key=lambda region: region.confidence)
+    menu_buttons = [
+        region
+        for region in visible
+        if normalize_visible_text(region.text) == "菜单"
+        and region.confidence >= 0.80
+        and region.box.center.x >= 0.85
+        and 0.20 <= region.box.center.y <= 0.55
+    ]
+    if menu_buttons:
+        return "menu", max(menu_buttons, key=lambda region: region.confidence)
+    return None
+
+
+def _pet_wash_page_visible(regions: Iterable[TextRegion]) -> bool:
+    visible = tuple(regions)
+    has_pet_title = any(
+        normalize_visible_text(region.text) == "灵宠"
+        and region.confidence >= 0.80
+        and region.box.center.x <= 0.25
+        and region.box.center.y <= 0.18
+        for region in visible
+    )
+    has_wash_tab = any(
+        normalize_visible_text(region.text) == "洗髓"
+        and region.confidence >= 0.80
+        and region.box.center.x >= 0.65
+        and 0.10 <= region.box.center.y <= 0.30
+        for region in visible
+    )
+    return has_pet_title and has_wash_tab
+
+
+def pet_wash_tab_control(
+    regions: Iterable[TextRegion], *, task_active: bool
+) -> TextRegion | None:
+    """Top 洗髓 tab while the tutorial explicitly asks to switch pages."""
+    if not task_active:
+        return None
+    visible = tuple(regions)
+    has_pet_title = any(
+        normalize_visible_text(region.text) == "灵宠"
+        and region.confidence >= 0.80
+        and region.box.center.x <= 0.25
+        and region.box.center.y <= 0.18
+        for region in visible
+    )
+    switch_guide = any(
+        "切换到灵宠洗髓界面" in normalize_visible_text(region.text)
+        and region.confidence >= 0.75
+        for region in visible
+    )
+    if not has_pet_title or not switch_guide:
+        return None
+    candidates = [
+        region
+        for region in visible
+        if normalize_visible_text(region.text) == "洗髓"
+        and region.confidence >= 0.80
+        and region.box.center.x >= 0.65
+        and 0.10 <= region.box.center.y <= 0.30
+    ]
+    return max(candidates, key=lambda region: region.confidence) if candidates else None
+
+
+def pet_wash_action_control(
+    regions: Iterable[TextRegion], *, task_active: bool
+) -> TextRegion | None:
+    """Bottom 洗髓 action when the tutorial requests one wash."""
+    if not task_active:
+        return None
+    visible = tuple(regions)
+    if not _pet_wash_page_visible(visible):
+        return None
+    has_attributes = any(
+        "属性提升" in normalize_visible_text(region.text)
+        and region.confidence >= 0.75
+        for region in visible
+    )
+    action_guide = any(
+        "点击洗髓灵宠" in normalize_visible_text(region.text)
+        and region.confidence >= 0.75
+        for region in visible
+    )
+    if not has_attributes or not action_guide:
+        return None
+    candidates = [
+        region
+        for region in visible
+        if normalize_visible_text(region.text) == "洗髓"
+        and region.confidence >= 0.80
+        and region.box.center.x >= 0.65
+        and region.box.center.y >= 0.75
+    ]
+    return max(candidates, key=lambda region: region.confidence) if candidates else None
+
+
+def pet_wash_complete(regions: Iterable[TextRegion], *, task_active: bool) -> bool:
+    """Whether a wash produced a positive attribute numerator."""
+    if not task_active:
+        return False
+    visible = tuple(regions)
+    if not _pet_wash_page_visible(visible):
+        return False
+    return any(
+        re.search(r"(?:^|\D)[1-9]\d*\s*[/／]\s*\d+", region.text)
+        and region.confidence >= 0.75
+        and region.box.center.x >= 0.55
+        and 0.42 <= region.box.center.y <= 0.85
+        for region in visible
+    )
+
+
 def pet_information_tab_control(regions: Iterable[TextRegion]) -> TextRegion | None:
     """Information tab on the pet formation page, not the already-open info page."""
     visible = tuple(regions)

@@ -38,7 +38,7 @@ class StrategyRegistryTests(unittest.TestCase):
         root = Path(__file__).parents[2]
         flow = load_recorded_flow(root / "configs/flows/mumu-xianyu-onboarding.yaml")
         self.assertEqual(flow.game_id, MUMU_REGISTRY.game_id)
-        self.assertEqual(len(flow.steps), 148)
+        self.assertEqual(len(flow.steps), 153)
         self.assertEqual(
             {
                 Path(step.evidence).name
@@ -187,6 +187,11 @@ class StrategyRegistryTests(unittest.TestCase):
                 "144-cipher-manual-activate.png",
                 "147-cipher-manual-task-continue.png",
                 "148-cipher-manual-dialogue.png",
+                "149-pet-wash-menu.png",
+                "150-pet-wash-entry.png",
+                "151-pet-wash-tab.png",
+                "152-pet-wash-action.png",
+                "153-pet-wash-complete-exit.png",
             },
         )
         for step in flow.steps:
@@ -299,6 +304,11 @@ class StrategyRegistryTests(unittest.TestCase):
             "ocr_pet_training_entry_fast",
             "ocr_pet_information_tab_fast",
             "ocr_pet_upgrade_once_fast",
+            "ocr_pet_wash_menu_fast",
+            "ocr_pet_wash_entry_fast",
+            "ocr_pet_wash_tab_fast",
+            "ocr_pet_wash_action_fast",
+            "ocr_pet_wash_complete_back_fast",
             "ocr_pet_star_menu_fast",
             "ocr_pet_star_tab_fast",
             "ocr_pet_star_action_fast",
@@ -1414,6 +1424,111 @@ class PlannerStrategyScopingTests(unittest.TestCase):
         assert outcome is not None and outcome.action is not None
         self.assertEqual(outcome.action.target_label, "ui_dialogue_advance")
         self.assertEqual(planner.last_decision_source, "ocr_dialogue_click_fast")
+
+    def test_pet_wash_opens_menu_washes_once_then_exits(self) -> None:
+        planner = GroundedVlmPlanner(
+            _Client([]),
+            max_temporal_frames=1,
+            max_target_crops=0,
+            compact_output=True,
+            prefer_ocr_task_panel=True,
+            strategy_registry=MUMU_REGISTRY,
+            back_hotspot=(0.060, 0.080),
+        )
+        quest = "灵宠洗髓 给灵宠洗髓1次 0/1"
+
+        menu = _onboarding_snapshot(
+            TextRegion("灵宠洗髓", NormalizedBox(0.04, 0.22, 0.18, 0.27), 0.99),
+            TextRegion(
+                "给灵宠洗髓1次 0/1",
+                NormalizedBox(0.04, 0.27, 0.25, 0.32),
+                0.99,
+            ),
+            TextRegion(
+                "前往灵宠洗髓",
+                NormalizedBox(0.52, 0.39, 0.70, 0.49),
+                0.99,
+            ),
+            TextRegion("菜单", NormalizedBox(0.93, 0.29, 0.99, 0.39), 0.99),
+        )
+        outcome = planner._ocr_fast_path(menu, quest_text=quest)  # type: ignore[attr-defined]
+        assert outcome is not None and outcome.action is not None
+        self.assertEqual(outcome.action.target_label, "菜单")
+        self.assertEqual(planner.last_decision_source, "ocr_pet_wash_menu_fast")
+
+        entry = _onboarding_snapshot(
+            TextRegion("灵宠洗髓", NormalizedBox(0.04, 0.22, 0.18, 0.27), 0.99),
+            TextRegion(
+                "给灵宠洗髓1次 0/1",
+                NormalizedBox(0.04, 0.27, 0.25, 0.32),
+                0.99,
+            ),
+            TextRegion(
+                "查看灵宠培养",
+                NormalizedBox(0.52, 0.50, 0.70, 0.60),
+                0.99,
+            ),
+            TextRegion("灵宠", NormalizedBox(0.92, 0.36, 0.99, 0.48), 0.99),
+        )
+        outcome = planner._ocr_fast_path(entry, quest_text=quest)  # type: ignore[attr-defined]
+        assert outcome is not None and outcome.action is not None
+        self.assertEqual(outcome.action.target_label, "灵宠")
+        self.assertEqual(planner.last_decision_source, "ocr_pet_wash_entry_fast")
+
+        tab = _onboarding_snapshot(
+            TextRegion("灵宠", NormalizedBox(0.05, 0.06, 0.14, 0.12), 0.99),
+            TextRegion(
+                "切换到灵宠洗髓界面",
+                NormalizedBox(0.36, 0.25, 0.62, 0.34),
+                0.99,
+            ),
+            TextRegion("基础", NormalizedBox(0.63, 0.16, 0.72, 0.22), 0.99),
+            TextRegion("洗髓", NormalizedBox(0.77, 0.16, 0.88, 0.22), 0.99),
+        )
+        outcome = planner._ocr_fast_path(tab, quest_text=quest)  # type: ignore[attr-defined]
+        assert outcome is not None and outcome.action is not None
+        self.assertEqual(outcome.action.target_label, "洗髓")
+        self.assertEqual(planner.last_decision_source, "ocr_pet_wash_tab_fast")
+
+        wash = _onboarding_snapshot(
+            TextRegion("灵宠", NormalizedBox(0.05, 0.06, 0.14, 0.12), 0.99),
+            TextRegion("洗髓", NormalizedBox(0.77, 0.16, 0.88, 0.22), 0.99),
+            TextRegion("属性提升", NormalizedBox(0.62, 0.39, 0.76, 0.45), 0.99),
+            TextRegion("气血 0/4500", NormalizedBox(0.63, 0.47, 0.85, 0.53), 0.99),
+            TextRegion(
+                "点击洗髓灵宠",
+                NormalizedBox(0.36, 0.84, 0.60, 0.94),
+                0.99,
+            ),
+            TextRegion("洗髓", NormalizedBox(0.76, 0.84, 0.86, 0.93), 0.99),
+        )
+        outcome = planner._ocr_fast_path(wash, quest_text=quest)  # type: ignore[attr-defined]
+        assert outcome is not None and outcome.action is not None
+        self.assertEqual(outcome.action.target_box, wash.visible_text[-1].box)
+        self.assertEqual(planner.last_decision_source, "ocr_pet_wash_action_fast")
+
+        completed = _onboarding_snapshot(
+            TextRegion("灵宠", NormalizedBox(0.05, 0.06, 0.14, 0.12), 0.99),
+            TextRegion("洗髓", NormalizedBox(0.77, 0.16, 0.88, 0.22), 0.99),
+            TextRegion("属性提升", NormalizedBox(0.62, 0.39, 0.76, 0.45), 0.99),
+            TextRegion(
+                "气血 100/4500",
+                NormalizedBox(0.63, 0.47, 0.85, 0.53),
+                0.99,
+            ),
+            TextRegion("攻击 2/90", NormalizedBox(0.63, 0.55, 0.85, 0.61), 0.99),
+            TextRegion("洗髓", NormalizedBox(0.76, 0.84, 0.86, 0.93), 0.99),
+        )
+        outcome = planner._ocr_fast_path(  # type: ignore[attr-defined]
+            completed,
+            quest_text=quest,
+        )
+        assert outcome is not None and outcome.action is not None
+        self.assertEqual(outcome.action.target_label, "ui_back")
+        self.assertEqual(
+            planner.last_decision_source,
+            "ocr_pet_wash_complete_back_fast",
+        )
 
     def test_pet_star_flow_uses_each_recorded_control_then_exits(self) -> None:
         planner = GroundedVlmPlanner(

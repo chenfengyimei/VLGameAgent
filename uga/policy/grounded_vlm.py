@@ -59,6 +59,10 @@ from uga.agent.session_state import (
     pet_travel_control,
     pet_travel_tower_entry_control,
     pet_upgrade_control,
+    pet_wash_action_control,
+    pet_wash_complete,
+    pet_wash_tab_control,
+    pet_wash_world_control,
     phrase_scroll_close_control,
     quest_is_cipher_manual_task,
     quest_is_fourth_skill_learning_task,
@@ -66,6 +70,7 @@ from uga.agent.session_state import (
     quest_is_pet_companion_task,
     quest_is_pet_star_task,
     quest_is_pet_travel_task,
+    quest_is_pet_wash_task,
     quest_is_skill_learning_task,
     quest_is_xuanling_tower_task,
     quest_page_keyword,
@@ -504,6 +509,8 @@ class GroundedVlmPlanner:
         self._xuanling_tower_challenge_at: float | None = None
         self._pet_travel_started_at: float | None = None
         self._pet_travel_reward_closed = False
+        self._pet_wash_started_at: float | None = None
+        self._pet_wash_action_requested = False
         self._cultivation_manual_started_at: float | None = None
         self._cultivation_manual_tab_selected = False
         self._cultivation_manual_activation_requested = False
@@ -1211,6 +1218,80 @@ class GroundedVlmPlanner:
                 (0.135, 0.430),
                 "ocr_pet_companion_current_fast",
                 "the main-slot pet picker opens",
+            )
+        pet_wash_world = pet_wash_world_control(snapshot.visible_text)
+        if pet_wash_world is not None:
+            stage, control = pet_wash_world
+            source, expected_effect = {
+                "menu": (
+                    "ocr_pet_wash_menu_fast",
+                    "the expanded game menu reveals the pet entry",
+                ),
+                "entry": (
+                    "ocr_pet_wash_entry_fast",
+                    "the pet cultivation interface opens",
+                ),
+            }[stage]
+            self._pet_wash_started_at = time.monotonic()
+            self._pet_wash_action_requested = False
+            self._last_decision_source = source
+            return self._ocr_action(
+                snapshot,
+                control,
+                source=source,
+                expected_effect=expected_effect,
+                action_kind=GuiActionKind.CLICK,
+            )
+        if (
+            self._pet_wash_started_at is not None
+            and time.monotonic() - self._pet_wash_started_at > 300.0
+        ):
+            self._pet_wash_started_at = None
+            self._pet_wash_action_requested = False
+        pet_wash_task = quest_is_pet_wash_task(quest_text)
+        pet_wash_active = pet_wash_task or self._pet_wash_started_at is not None
+        if (
+            self._pet_wash_action_requested
+            and self._back_hotspot is not None
+            and pet_wash_complete(
+                snapshot.visible_text,
+                task_active=pet_wash_active,
+            )
+        ):
+            self._pet_wash_started_at = None
+            self._pet_wash_action_requested = False
+            return self._exit_action(
+                snapshot,
+                "ocr_pet_wash_complete_back_fast",
+            )
+        pet_wash_tab = pet_wash_tab_control(
+            snapshot.visible_text,
+            task_active=pet_wash_active,
+        )
+        if pet_wash_tab is not None:
+            self._pet_wash_started_at = time.monotonic()
+            self._last_decision_source = "ocr_pet_wash_tab_fast"
+            return self._ocr_action(
+                snapshot,
+                pet_wash_tab,
+                source="ocr_pet_wash_tab_fast",
+                expected_effect="the pet wash page opens",
+                action_kind=GuiActionKind.CLICK,
+            )
+        pet_wash_action = pet_wash_action_control(
+            snapshot.visible_text,
+            task_active=pet_wash_active,
+        )
+        if pet_wash_action is not None:
+            self._pet_wash_started_at = time.monotonic()
+            self._pet_wash_action_requested = True
+            self._last_decision_source = "ocr_pet_wash_action_fast"
+            return self._ocr_action(
+                snapshot,
+                pet_wash_action,
+                source="ocr_pet_wash_action_fast",
+                expected_effect="the selected pet receives one marrow wash",
+                action_kind=GuiActionKind.CLICK,
             )
         pet_entry = pet_training_entry_control(snapshot.visible_text)
         if pet_entry is not None:
