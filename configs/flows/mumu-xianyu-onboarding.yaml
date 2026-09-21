@@ -838,3 +838,38 @@ steps:
     recognize: {any_task: [无上招式, 任务已完成点击提交]}
     action: click_task_tracker
     expected: 点击左上任务提交无上招式并领取奖励
+  - id: xuanling_tower_task
+    order: 1190
+    evidence: docs/assets/mumu-xianyu/onboarding/119-xuanling-tower-task.png
+    source: ocr_task_panel_fast
+    recognize: {all: [主线], any_task: [悬铃之塔, 通关悬铃塔第一层]}
+    action: click_task_tracker
+    expected: 点击左上任务并显示悬铃塔入口引导
+  - id: xuanling_tower_entry
+    order: 1200
+    evidence: docs/assets/mumu-xianyu/onboarding/120-xuanling-tower-entry.png
+    source: ocr_xuanling_tower_entry_fast
+    recognize: {any_task: [悬铃之塔, 通关悬铃塔第一层], all: [挑战悬铃塔], control: 右上悬铃塔}
+    action: click_text:悬铃塔
+    expected: 打开悬铃塔第一层挑战页面
+  - id: xuanling_tower_challenge
+    order: 1210
+    evidence: docs/assets/mumu-xianyu/onboarding/121-xuanling-tower-challenge.png
+    source: ocr_xuanling_tower_challenge_fast
+    recognize: {all: [悬铃塔, 第1层], control: 挑战}
+    action: click_text:挑战
+    expected: 进入悬铃塔第一层挑战
+  - id: xuanling_tower_battle_wait
+    order: 1220
+    evidence: owner-described:no-screenshot
+    source: ocr_xuanling_tower_battle_wait
+    recognize: {state: challenge_clicked_and_result_not_visible, evidence_status: owner_described_no_screenshot}
+    action: wait
+    expected: 等待自动战斗结束并出现胜利结算页
+  - id: xuanling_tower_leave
+    order: 1230
+    evidence: docs/assets/mumu-xianyu/onboarding/123-xuanling-tower-leave.png
+    source: ocr_xuanling_tower_leave_fast
+    recognize: {all: [胜利, 人元之境, 第1层], control: 离开}
+    action: click_text:离开
+    expected: 离开已完成的悬铃塔第一层挑战

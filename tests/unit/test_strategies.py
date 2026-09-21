@@ -38,7 +38,7 @@ class StrategyRegistryTests(unittest.TestCase):
         root = Path(__file__).parents[2]
         flow = load_recorded_flow(root / "configs/flows/mumu-xianyu-onboarding.yaml")
         self.assertEqual(flow.game_id, MUMU_REGISTRY.game_id)
-        self.assertEqual(len(flow.steps), 118)
+        self.assertEqual(len(flow.steps), 123)
         self.assertEqual(
             {
                 Path(step.evidence).name
@@ -163,6 +163,10 @@ class StrategyRegistryTests(unittest.TestCase):
                 "115-fourth-skill-control-node.png",
                 "116-fourth-skill-learn.png",
                 "118-fourth-skill-submit.png",
+                "119-xuanling-tower-task.png",
+                "120-xuanling-tower-entry.png",
+                "121-xuanling-tower-challenge.png",
+                "123-xuanling-tower-leave.png",
             },
         )
         for step in flow.steps:
@@ -288,6 +292,10 @@ class StrategyRegistryTests(unittest.TestCase):
             "ocr_skill_control_node_fast",
             "ocr_fourth_skill_learn_fast",
             "ocr_fourth_skill_complete_back_fast",
+            "ocr_xuanling_tower_entry_fast",
+            "ocr_xuanling_tower_challenge_fast",
+            "ocr_xuanling_tower_battle_wait",
+            "ocr_xuanling_tower_leave_fast",
             "ocr_onboarding_joystick_forward_fast",
             "ocr_character_creation_customize_fast",
             "ocr_character_preset_start_fast",
@@ -1543,6 +1551,84 @@ class PlannerStrategyScopingTests(unittest.TestCase):
                 planner.last_decision_source,
                 "ocr_skill_control_node_fast",
             )
+
+    def test_xuanling_tower_enters_challenges_waits_and_leaves(self) -> None:
+        planner = GroundedVlmPlanner(
+            _Client([]),
+            max_temporal_frames=1,
+            max_target_crops=0,
+            compact_output=True,
+            prefer_ocr_task_panel=True,
+            strategy_registry=MUMU_REGISTRY,
+        )
+        quest = "悬铃之塔 通关悬铃塔第一层"
+
+        entry = _onboarding_snapshot(
+            TextRegion("主线", NormalizedBox(0.04, 0.16, 0.11, 0.21), 0.99),
+            TextRegion("悬铃之塔", NormalizedBox(0.04, 0.22, 0.18, 0.27), 0.99),
+            TextRegion(
+                "通关悬铃塔第一层",
+                NormalizedBox(0.04, 0.27, 0.25, 0.32),
+                0.99,
+            ),
+            TextRegion(
+                "挑战悬铃塔，有极品灵宠奖励",
+                NormalizedBox(0.36, 0.22, 0.70, 0.34),
+                0.99,
+            ),
+            TextRegion("悬铃塔", NormalizedBox(0.74, 0.14, 0.87, 0.26), 0.99),
+        )
+        outcome = planner._ocr_fast_path(entry, quest_text=quest)  # type: ignore[attr-defined]
+        assert outcome is not None and outcome.action is not None
+        self.assertEqual(outcome.action.target_box, entry.visible_text[-1].box)
+        self.assertEqual(planner.last_decision_source, "ocr_xuanling_tower_entry_fast")
+
+        challenge = _onboarding_snapshot(
+            TextRegion("悬铃塔", NormalizedBox(0.04, 0.05, 0.18, 0.13), 0.99),
+            TextRegion("第1层", NormalizedBox(0.76, 0.10, 0.88, 0.18), 0.99),
+            TextRegion("人元之境 第1/25层", NormalizedBox(0.73, 0.18, 0.91, 0.24), 0.99),
+            TextRegion("挑战", NormalizedBox(0.75, 0.85, 0.89, 0.94), 0.99),
+        )
+        outcome = planner._ocr_fast_path(  # type: ignore[attr-defined]
+            challenge,
+            quest_text=quest,
+        )
+        assert outcome is not None and outcome.action is not None
+        self.assertEqual(outcome.action.target_label, "挑战")
+        self.assertEqual(
+            planner.last_decision_source,
+            "ocr_xuanling_tower_challenge_fast",
+        )
+
+        battle = _onboarding_snapshot(
+            TextRegion("悬铃塔 第1层", NormalizedBox(0.38, 0.05, 0.62, 0.13), 0.99),
+            TextRegion("自动战斗中", NormalizedBox(0.42, 0.80, 0.58, 0.87), 0.99),
+        )
+        outcome = planner._ocr_fast_path(  # type: ignore[attr-defined]
+            battle,
+            quest_text=quest,
+        )
+        assert outcome is not None
+        self.assertEqual(outcome.kind, DecisionKind.WAIT)
+        self.assertIsNone(outcome.action)
+        self.assertEqual(planner.last_decision_source, "ocr_xuanling_tower_battle_wait")
+
+        victory = _onboarding_snapshot(
+            TextRegion("胜利", NormalizedBox(0.12, 0.18, 0.32, 0.48), 0.99),
+            TextRegion(
+                "通关 人元之境·第1层",
+                NormalizedBox(0.52, 0.16, 0.82, 0.24),
+                0.99,
+            ),
+            TextRegion("离开", NormalizedBox(0.59, 0.76, 0.72, 0.86), 0.99),
+        )
+        outcome = planner._ocr_fast_path(  # type: ignore[attr-defined]
+            victory,
+            quest_text=quest,
+        )
+        assert outcome is not None and outcome.action is not None
+        self.assertEqual(outcome.action.target_label, "离开")
+        self.assertEqual(planner.last_decision_source, "ocr_xuanling_tower_leave_fast")
 
     def test_auto_navigation_waits_without_reclicking_the_task_tracker(self) -> None:
         planner = GroundedVlmPlanner(

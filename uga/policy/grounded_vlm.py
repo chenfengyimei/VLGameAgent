@@ -57,6 +57,7 @@ from uga.agent.session_state import (
     quest_is_pet_companion_task,
     quest_is_pet_star_task,
     quest_is_skill_learning_task,
+    quest_is_xuanling_tower_task,
     quest_page_keyword,
     raging_tree_spirit_combat_active,
     real_name_gate_active,
@@ -78,6 +79,9 @@ from uga.agent.session_state import (
     summon_result_close_control,
     summon_world_control,
     xiuxian_path_objective_goto,
+    xuanling_tower_challenge_control,
+    xuanling_tower_entry_control,
+    xuanling_tower_leave_control,
 )
 from uga.agent.strategies import StrategyRegistry
 from uga.capture.frame import BufferHandle, BufferKind, Frame
@@ -487,6 +491,7 @@ class GroundedVlmPlanner:
         self._demon_sect_combat_skill_index = 0
         self._black_clad_leader_combat_skill_index = 0
         self._heroic_rescue_combat_skill_index = 0
+        self._xuanling_tower_challenge_at: float | None = None
         self._task_panel_cooldown_s = 25.0
         self._last_task_panel_click: tuple[str, float] | None = None
         self._last_stall_item_click: float | None = None
@@ -1313,6 +1318,77 @@ class GroundedVlmPlanner:
                 fourth_skill_learn,
                 source="ocr_fourth_skill_learn_fast",
                 expected_effect="花灵庇佑 is learned at level one",
+                action_kind=GuiActionKind.CLICK,
+            )
+        tower_task = quest_is_xuanling_tower_task(quest_text)
+        if (
+            self._xuanling_tower_challenge_at is not None
+            and time.monotonic() - self._xuanling_tower_challenge_at > 300.0
+        ):
+            self._xuanling_tower_challenge_at = None
+        tower_leave = xuanling_tower_leave_control(
+            snapshot.visible_text,
+            task_active=(
+                tower_task or self._xuanling_tower_challenge_at is not None
+            ),
+        )
+        if tower_leave is not None:
+            self._xuanling_tower_challenge_at = None
+            self._last_decision_source = "ocr_xuanling_tower_leave_fast"
+            return self._ocr_action(
+                snapshot,
+                tower_leave,
+                source="ocr_xuanling_tower_leave_fast",
+                expected_effect="the completed tower challenge closes",
+                action_kind=GuiActionKind.CLICK,
+            )
+        tower_challenge = xuanling_tower_challenge_control(
+            snapshot.visible_text,
+            task_active=tower_task,
+        )
+        if tower_challenge is not None:
+            now = time.monotonic()
+            if (
+                self._xuanling_tower_challenge_at is None
+                or now - self._xuanling_tower_challenge_at >= 3.0
+            ):
+                self._xuanling_tower_challenge_at = now
+                self._last_decision_source = "ocr_xuanling_tower_challenge_fast"
+                return self._ocr_action(
+                    snapshot,
+                    tower_challenge,
+                    source="ocr_xuanling_tower_challenge_fast",
+                    expected_effect="the first-floor tower challenge starts",
+                    action_kind=GuiActionKind.CLICK,
+                )
+        if self._xuanling_tower_challenge_at is not None:
+            self._last_decision_source = "ocr_xuanling_tower_battle_wait"
+            return PlannerOutcome(
+                uuid.uuid4().hex,
+                snapshot.frame_id,
+                snapshot.frame_sequence,
+                snapshot.window_identity.window_generation,
+                snapshot.geometry_generation,
+                snapshot.task_generation,
+                DecisionKind.WAIT,
+                "the tower's automatic battle is still resolving",
+                snapshot.text,
+                GoalStatus.IN_PROGRESS,
+                1.0,
+                None,
+                WaitReason.ANIMATION,
+                explanation=(
+                    "ocr_xuanling_tower_battle_wait avoids interrupting automatic combat"
+                ),
+            )
+        tower_entry = xuanling_tower_entry_control(snapshot.visible_text)
+        if tower_entry is not None:
+            self._last_decision_source = "ocr_xuanling_tower_entry_fast"
+            return self._ocr_action(
+                snapshot,
+                tower_entry,
+                source="ocr_xuanling_tower_entry_fast",
+                expected_effect="the first-floor tower challenge page opens",
                 action_kind=GuiActionKind.CLICK,
             )
         if (

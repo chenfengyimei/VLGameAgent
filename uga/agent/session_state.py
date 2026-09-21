@@ -932,6 +932,110 @@ def quest_is_fourth_skill_learning_task(quest_text: str | None) -> bool:
     )
 
 
+def quest_is_xuanling_tower_task(quest_text: str | None) -> bool:
+    """Whether the durable task is the recorded first 悬铃塔 challenge."""
+    if not quest_text:
+        return False
+    normalized = normalize_visible_text(quest_text)
+    return "悬铃之塔" in normalized or "通关悬铃塔第一层" in normalized
+
+
+def xuanling_tower_entry_control(regions: Iterable[TextRegion]) -> TextRegion | None:
+    """Highlighted top-right 悬铃塔 entry after the tracker is clicked."""
+    visible = tuple(regions)
+    task_active = any(
+        any(
+            cue in normalize_visible_text(region.text)
+            for cue in ("悬铃之塔", "通关悬铃塔第一层")
+        )
+        and region.confidence >= 0.75
+        and region.box.center.x <= 0.38
+        for region in visible
+    )
+    tutorial_active = any(
+        "挑战悬铃塔" in normalize_visible_text(region.text)
+        and region.confidence >= 0.75
+        for region in visible
+    )
+    if not task_active or not tutorial_active:
+        return None
+    candidates = [
+        region
+        for region in visible
+        if normalize_visible_text(region.text) == "悬铃塔"
+        and region.confidence >= 0.80
+        and region.box.center.x >= 0.70
+        and 0.08 <= region.box.center.y <= 0.35
+    ]
+    return max(candidates, key=lambda region: region.confidence) if candidates else None
+
+
+def xuanling_tower_challenge_control(
+    regions: Iterable[TextRegion], *, task_active: bool
+) -> TextRegion | None:
+    """Challenge button on the first-floor 悬铃塔 page."""
+    if not task_active:
+        return None
+    visible = tuple(regions)
+    tower_page = any(
+        normalize_visible_text(region.text) == "悬铃塔"
+        and region.confidence >= 0.80
+        and region.box.center.x <= 0.30
+        and region.box.center.y <= 0.20
+        for region in visible
+    )
+    first_floor = any(
+        any(
+            cue in normalize_visible_text(region.text)
+            for cue in ("第1层", "第1/25层")
+        )
+        and region.confidence >= 0.75
+        for region in visible
+    )
+    if not tower_page or not first_floor:
+        return None
+    candidates = [
+        region
+        for region in visible
+        if normalize_visible_text(region.text) == "挑战"
+        and region.confidence >= 0.80
+        and region.box.center.x >= 0.65
+        and region.box.center.y >= 0.75
+    ]
+    return max(candidates, key=lambda region: region.confidence) if candidates else None
+
+
+def xuanling_tower_leave_control(
+    regions: Iterable[TextRegion], *, task_active: bool
+) -> TextRegion | None:
+    """Leave button on the first-floor victory result page."""
+    if not task_active:
+        return None
+    visible = tuple(regions)
+    victory = any(
+        "胜利" in normalize_visible_text(region.text)
+        and region.confidence >= 0.80
+        for region in visible
+    )
+    first_floor = any(
+        "人元之境" in normalize_visible_text(region.text)
+        and "第1层" in normalize_visible_text(region.text)
+        and region.confidence >= 0.75
+        for region in visible
+    )
+    if not victory or not first_floor:
+        return None
+    candidates = [
+        region
+        for region in visible
+        if normalize_visible_text(region.text) == "离开"
+        and region.confidence >= 0.80
+        and region.box.center.x >= 0.50
+        and region.box.center.y >= 0.65
+    ]
+    return max(candidates, key=lambda region: region.confidence) if candidates else None
+
+
 def skill_training_entry_control(regions: Iterable[TextRegion]) -> TextRegion | None:
     """Right-side 技能 entry while the third-skill tutorial is tracked."""
     visible = tuple(regions)
