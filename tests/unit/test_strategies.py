@@ -38,7 +38,7 @@ class StrategyRegistryTests(unittest.TestCase):
         root = Path(__file__).parents[2]
         flow = load_recorded_flow(root / "configs/flows/mumu-xianyu-onboarding.yaml")
         self.assertEqual(flow.game_id, MUMU_REGISTRY.game_id)
-        self.assertEqual(len(flow.steps), 123)
+        self.assertEqual(len(flow.steps), 132)
         self.assertEqual(
             {
                 Path(step.evidence).name
@@ -167,6 +167,13 @@ class StrategyRegistryTests(unittest.TestCase):
                 "120-xuanling-tower-entry.png",
                 "121-xuanling-tower-challenge.png",
                 "123-xuanling-tower-leave.png",
+                "124-pet-travel-task-and-tower.png",
+                "126-pet-travel-commission-tab.png",
+                "127-pet-travel-one-key-insert.png",
+                "128-pet-travel-accept.png",
+                "129-pet-travel-free-speedup.png",
+                "130-pet-travel-claim.png",
+                "131-pet-travel-reward-close.png",
             },
         )
         for step in flow.steps:
@@ -296,6 +303,14 @@ class StrategyRegistryTests(unittest.TestCase):
             "ocr_xuanling_tower_challenge_fast",
             "ocr_xuanling_tower_battle_wait",
             "ocr_xuanling_tower_leave_fast",
+            "ocr_pet_travel_tower_entry_fast",
+            "ocr_pet_travel_commission_tab_fast",
+            "ocr_pet_travel_one_key_insert_fast",
+            "ocr_pet_travel_accept_fast",
+            "ocr_pet_travel_free_speedup_fast",
+            "ocr_pet_travel_claim_fast",
+            "ocr_pet_travel_reward_close_fast",
+            "ocr_pet_travel_complete_back_fast",
             "ocr_onboarding_joystick_forward_fast",
             "ocr_character_creation_customize_fast",
             "ocr_character_preset_start_fast",
@@ -1629,6 +1644,158 @@ class PlannerStrategyScopingTests(unittest.TestCase):
         assert outcome is not None and outcome.action is not None
         self.assertEqual(outcome.action.target_label, "离开")
         self.assertEqual(planner.last_decision_source, "ocr_xuanling_tower_leave_fast")
+
+    def test_pet_travel_dispatches_accelerates_claims_and_exits(self) -> None:
+        planner = GroundedVlmPlanner(
+            _Client([]),
+            max_temporal_frames=1,
+            max_target_crops=0,
+            compact_output=True,
+            prefer_ocr_task_panel=True,
+            strategy_registry=MUMU_REGISTRY,
+            back_hotspot=(0.060, 0.080),
+        )
+        quest = "委托派遣 派遣灵宠前往执行委托"
+
+        entry = _onboarding_snapshot(
+            TextRegion("委托派遣", NormalizedBox(0.04, 0.22, 0.18, 0.27), 0.99),
+            TextRegion(
+                "派遣灵宠前往执行委托",
+                NormalizedBox(0.04, 0.27, 0.28, 0.32),
+                0.99,
+            ),
+            TextRegion(
+                "前往查看游历",
+                NormalizedBox(0.36, 0.22, 0.64, 0.34),
+                0.99,
+            ),
+            TextRegion("悬铃塔", NormalizedBox(0.74, 0.14, 0.87, 0.26), 0.99),
+        )
+        outcome = planner._ocr_fast_path(entry, quest_text=quest)  # type: ignore[attr-defined]
+        assert outcome is not None and outcome.action is not None
+        self.assertEqual(outcome.action.target_label, "悬铃塔")
+        self.assertEqual(
+            planner.last_decision_source,
+            "ocr_pet_travel_tower_entry_fast",
+        )
+
+        commission_tab = _onboarding_snapshot(
+            TextRegion("游历", NormalizedBox(0.05, 0.05, 0.17, 0.13), 0.99),
+            TextRegion(
+                "可以前往接受委托",
+                NormalizedBox(0.20, 0.50, 0.48, 0.62),
+                0.99,
+            ),
+            TextRegion("委托", NormalizedBox(0.02, 0.53, 0.08, 0.68), 0.99),
+        )
+        outcome = planner._ocr_fast_path(commission_tab, quest_text=quest)  # type: ignore[attr-defined]
+        assert outcome is not None and outcome.action is not None
+        self.assertEqual(outcome.action.target_label, "委托")
+        self.assertEqual(
+            planner.last_decision_source,
+            "ocr_pet_travel_commission_tab_fast",
+        )
+
+        one_key_insert = _onboarding_snapshot(
+            TextRegion("委托", NormalizedBox(0.05, 0.05, 0.17, 0.13), 0.99),
+            TextRegion(
+                "选择所需派遣的灵宠",
+                NormalizedBox(0.18, 0.83, 0.52, 0.92),
+                0.99,
+            ),
+            TextRegion("一键放入", NormalizedBox(0.55, 0.84, 0.70, 0.94), 0.99),
+        )
+        outcome = planner._ocr_fast_path(one_key_insert, quest_text=quest)  # type: ignore[attr-defined]
+        assert outcome is not None and outcome.action is not None
+        self.assertEqual(outcome.action.target_label, "一键放入")
+        self.assertEqual(
+            planner.last_decision_source,
+            "ocr_pet_travel_one_key_insert_fast",
+        )
+
+        accept = _onboarding_snapshot(
+            TextRegion("委托", NormalizedBox(0.05, 0.05, 0.17, 0.13), 0.99),
+            TextRegion(
+                "确认执行委托任务",
+                NormalizedBox(0.18, 0.83, 0.52, 0.92),
+                0.99,
+            ),
+            TextRegion("接受", NormalizedBox(0.73, 0.84, 0.87, 0.94), 0.99),
+        )
+        outcome = planner._ocr_fast_path(accept, quest_text=quest)  # type: ignore[attr-defined]
+        assert outcome is not None and outcome.action is not None
+        self.assertEqual(outcome.action.target_label, "接受")
+        self.assertEqual(planner.last_decision_source, "ocr_pet_travel_accept_fast")
+
+        free_speedup = _onboarding_snapshot(
+            TextRegion("委托", NormalizedBox(0.05, 0.05, 0.17, 0.13), 0.99),
+            TextRegion(
+                "灵宠派遣中",
+                NormalizedBox(0.62, 0.61, 0.82, 0.69),
+                0.99,
+            ),
+            TextRegion("剩余时间", NormalizedBox(0.61, 0.51, 0.73, 0.58), 0.99),
+            TextRegion(
+                "免费加速",
+                NormalizedBox(0.62, 0.84, 0.78, 0.94),
+                0.99,
+            ),
+        )
+        outcome = planner._ocr_fast_path(free_speedup, quest_text=quest)  # type: ignore[attr-defined]
+        assert outcome is not None and outcome.action is not None
+        self.assertEqual(outcome.action.target_label, "免费加速")
+        self.assertEqual(
+            planner.last_decision_source,
+            "ocr_pet_travel_free_speedup_fast",
+        )
+
+        claim = _onboarding_snapshot(
+            TextRegion("委托", NormalizedBox(0.05, 0.05, 0.17, 0.13), 0.99),
+            TextRegion("已完成", NormalizedBox(0.62, 0.61, 0.82, 0.69), 0.99),
+            TextRegion(
+                "请领取奖励",
+                NormalizedBox(0.62, 0.51, 0.78, 0.58),
+                0.99,
+            ),
+            TextRegion(
+                "领取奖励",
+                NormalizedBox(0.62, 0.84, 0.78, 0.94),
+                0.99,
+            ),
+        )
+        outcome = planner._ocr_fast_path(claim, quest_text=quest)  # type: ignore[attr-defined]
+        assert outcome is not None and outcome.action is not None
+        self.assertEqual(outcome.action.target_label, "领取奖励")
+        self.assertEqual(planner.last_decision_source, "ocr_pet_travel_claim_fast")
+
+        reward = _onboarding_snapshot(
+            TextRegion("获得奖励", NormalizedBox(0.36, 0.26, 0.64, 0.40), 0.99),
+            TextRegion(
+                "点击空白区域关闭",
+                NormalizedBox(0.42, 0.88, 0.60, 0.95),
+                0.99,
+            ),
+        )
+        outcome = planner._ocr_fast_path(reward, quest_text=quest)  # type: ignore[attr-defined]
+        assert outcome is not None and outcome.action is not None
+        self.assertEqual(outcome.action.target_label, "点击空白区域关闭")
+        self.assertEqual(
+            planner.last_decision_source,
+            "ocr_pet_travel_reward_close_fast",
+        )
+
+        completed = _onboarding_snapshot(
+            TextRegion("委托", NormalizedBox(0.05, 0.05, 0.17, 0.13), 0.99),
+            TextRegion("雪山救济", NormalizedBox(0.20, 0.24, 0.36, 0.31), 0.99),
+            TextRegion("已完成", NormalizedBox(0.20, 0.24, 0.36, 0.31), 0.99),
+        )
+        outcome = planner._ocr_fast_path(completed, quest_text=quest)  # type: ignore[attr-defined]
+        assert outcome is not None and outcome.action is not None
+        self.assertEqual(outcome.action.target_label, "ui_back")
+        self.assertEqual(
+            planner.last_decision_source,
+            "ocr_pet_travel_complete_back_fast",
+        )
 
     def test_auto_navigation_waits_without_reclicking_the_task_tracker(self) -> None:
         planner = GroundedVlmPlanner(

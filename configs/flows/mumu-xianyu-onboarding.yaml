@@ -873,3 +873,66 @@ steps:
     recognize: {all: [胜利, 人元之境, 第1层], control: 离开}
     action: click_text:离开
     expected: 离开已完成的悬铃塔第一层挑战
+  - id: pet_travel_task
+    order: 1240
+    evidence: docs/assets/mumu-xianyu/onboarding/124-pet-travel-task-and-tower.png
+    source: ocr_task_panel_fast
+    recognize: {all: [主线], any_task: [委托派遣, 派遣灵宠前往执行委托]}
+    action: click_task_tracker
+    expected: 点击左上任务并显示前往查看游历引导
+  - id: pet_travel_tower_entry
+    order: 1250
+    evidence: docs/assets/mumu-xianyu/onboarding/124-pet-travel-task-and-tower.png
+    source: ocr_pet_travel_tower_entry_fast
+    recognize: {any_task: [委托派遣, 派遣灵宠前往执行委托], all: [前往查看游历], control: 右上悬铃塔}
+    action: click_text:悬铃塔
+    expected: 打开灵宠游历页面
+  - id: pet_travel_commission_tab
+    order: 1260
+    evidence: docs/assets/mumu-xianyu/onboarding/126-pet-travel-commission-tab.png
+    source: ocr_pet_travel_commission_tab_fast
+    recognize: {all: [游历, 前往接受委托], control: 委托}
+    action: click_text:委托
+    expected: 打开游历委托列表
+  - id: pet_travel_one_key_insert
+    order: 1270
+    evidence: docs/assets/mumu-xianyu/onboarding/127-pet-travel-one-key-insert.png
+    source: ocr_pet_travel_one_key_insert_fast
+    recognize: {all: [委托, 选择所需派遣的灵宠], control: 一键放入}
+    action: click_text:一键放入
+    expected: 自动放入符合要求的灵宠
+  - id: pet_travel_accept
+    order: 1280
+    evidence: docs/assets/mumu-xianyu/onboarding/128-pet-travel-accept.png
+    source: ocr_pet_travel_accept_fast
+    recognize: {all: [委托, 确认执行委托任务], control: 接受}
+    action: click_text:接受
+    expected: 接受雪山救济委托并开始派遣
+  - id: pet_travel_free_speedup
+    order: 1290
+    evidence: docs/assets/mumu-xianyu/onboarding/129-pet-travel-free-speedup.png
+    source: ocr_pet_travel_free_speedup_fast
+    recognize: {all: [委托, 灵宠派遣中], control: 免费加速}
+    action: click_text:免费加速
+    expected: 免费完成教学委托倒计时
+  - id: pet_travel_claim
+    order: 1300
+    evidence: docs/assets/mumu-xianyu/onboarding/130-pet-travel-claim.png
+    source: ocr_pet_travel_claim_fast
+    recognize: {all: [委托, 已完成, 请领取奖励], control: 领取奖励}
+    action: click_text:领取奖励
+    expected: 领取雪山救济委托奖励
+  - id: pet_travel_reward_close
+    order: 1310
+    evidence: docs/assets/mumu-xianyu/onboarding/131-pet-travel-reward-close.png
+    source: ocr_pet_travel_reward_close_fast
+    recognize: {all: [获得奖励, 点击空白区域关闭]}
+    action: click_text:点击空白区域关闭
+    expected: 关闭委托奖励展示并返回委托页面
+  - id: pet_travel_complete_exit
+    order: 1320
+    evidence: owner-described:no-screenshot
+    source: ocr_pet_travel_complete_back_fast
+    recognize: {all: [委托], state: pet_travel_reward_closed, evidence_status: owner_described_no_screenshot}
+    action: click_hotspot:ui_back
+    expected: 宠物游历任务完成后点击左上角退出

@@ -940,6 +940,139 @@ def quest_is_xuanling_tower_task(quest_text: str | None) -> bool:
     return "悬铃之塔" in normalized or "通关悬铃塔第一层" in normalized
 
 
+def quest_is_pet_travel_task(quest_text: str | None) -> bool:
+    """Whether the durable task is the recorded pet-travel commission."""
+    if not quest_text:
+        return False
+    normalized = normalize_visible_text(quest_text)
+    return (
+        "委托派遣" in normalized
+        or "派遣灵宠前往执行委托" in normalized
+    )
+
+
+def pet_travel_tower_entry_control(
+    regions: Iterable[TextRegion],
+) -> TextRegion | None:
+    """Highlighted 悬铃塔 entry for the pet-travel tutorial."""
+    visible = tuple(regions)
+    task_active = any(
+        any(
+            cue in normalize_visible_text(region.text)
+            for cue in ("委托派遣", "派遣灵宠前往执行委托")
+        )
+        and region.confidence >= 0.75
+        and region.box.center.x <= 0.38
+        for region in visible
+    )
+    tutorial_active = any(
+        "前往查看游历" in normalize_visible_text(region.text)
+        and region.confidence >= 0.75
+        for region in visible
+    )
+    if not task_active or not tutorial_active:
+        return None
+    candidates = [
+        region
+        for region in visible
+        if normalize_visible_text(region.text) == "悬铃塔"
+        and region.confidence >= 0.80
+        and region.box.center.x >= 0.70
+        and 0.08 <= region.box.center.y <= 0.35
+    ]
+    return max(candidates, key=lambda region: region.confidence) if candidates else None
+
+
+def pet_travel_control(
+    regions: Iterable[TextRegion], *, task_active: bool
+) -> tuple[str, TextRegion] | None:
+    """Current actionable control in the pet-travel commission tutorial."""
+    if not task_active:
+        return None
+    visible = tuple(regions)
+
+    def has(cue: str) -> bool:
+        return any(
+            cue in normalize_visible_text(region.text)
+            and region.confidence >= 0.75
+            for region in visible
+        )
+
+    def best(
+        label: str,
+        *,
+        min_x: float = 0.0,
+        max_x: float = 1.0,
+        min_y: float = 0.0,
+        max_y: float = 1.0,
+    ) -> TextRegion | None:
+        candidates = [
+            region
+            for region in visible
+            if normalize_visible_text(region.text) == label
+            and region.confidence >= 0.80
+            and min_x <= region.box.center.x <= max_x
+            and min_y <= region.box.center.y <= max_y
+        ]
+        return max(candidates, key=lambda region: region.confidence) if candidates else None
+
+    if has("获得奖励"):
+        control = next(
+            (
+                region
+                for region in visible
+                if "点击空白区域关闭" in normalize_visible_text(region.text)
+                and region.confidence >= 0.75
+                and region.box.center.y >= 0.70
+            ),
+            None,
+        )
+        if control is not None:
+            return "reward_close", control
+
+    commission_page = pet_travel_commission_page_visible(visible)
+    if commission_page and (has("请领取奖励") or has("已完成")):
+        control = best("领取奖励", min_x=0.55, min_y=0.70)
+        if control is not None:
+            return "claim", control
+    if commission_page and (has("灵宠派遣中") or has("剩余时间")):
+        control = best("免费加速", min_x=0.55, min_y=0.70)
+        if control is not None:
+            return "free_speedup", control
+    if commission_page and has("确认执行委托任务"):
+        control = best("接受", min_x=0.65, min_y=0.70)
+        if control is not None:
+            return "accept", control
+    if commission_page and has("选择所需派遣的灵宠"):
+        control = best("一键放入", min_x=0.45, min_y=0.70)
+        if control is not None:
+            return "one_key_insert", control
+
+    travel_page = any(
+        normalize_visible_text(region.text) == "游历"
+        and region.confidence >= 0.80
+        and region.box.center.x <= 0.30
+        and region.box.center.y <= 0.20
+        for region in visible
+    )
+    if travel_page and has("前往接受委托"):
+        control = best("委托", max_x=0.15, min_y=0.45, max_y=0.80)
+        if control is not None:
+            return "commission_tab", control
+    return None
+
+
+def pet_travel_commission_page_visible(regions: Iterable[TextRegion]) -> bool:
+    """True when the pet-travel commission page title is visible."""
+    return any(
+        normalize_visible_text(region.text) == "委托"
+        and region.confidence >= 0.80
+        and region.box.center.x <= 0.30
+        and region.box.center.y <= 0.20
+        for region in regions
+    )
+
+
 def xuanling_tower_entry_control(regions: Iterable[TextRegion]) -> TextRegion | None:
     """Highlighted top-right 悬铃塔 entry after the tracker is clicked."""
     visible = tuple(regions)

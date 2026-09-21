@@ -51,11 +51,15 @@ from uga.agent.session_state import (
     pet_star_success_continue_control,
     pet_star_tab_control,
     pet_training_entry_control,
+    pet_travel_commission_page_visible,
+    pet_travel_control,
+    pet_travel_tower_entry_control,
     pet_upgrade_control,
     quest_is_fourth_skill_learning_task,
     quest_is_market_task,
     quest_is_pet_companion_task,
     quest_is_pet_star_task,
+    quest_is_pet_travel_task,
     quest_is_skill_learning_task,
     quest_is_xuanling_tower_task,
     quest_page_keyword,
@@ -492,6 +496,8 @@ class GroundedVlmPlanner:
         self._black_clad_leader_combat_skill_index = 0
         self._heroic_rescue_combat_skill_index = 0
         self._xuanling_tower_challenge_at: float | None = None
+        self._pet_travel_started_at: float | None = None
+        self._pet_travel_reward_closed = False
         self._task_panel_cooldown_s = 25.0
         self._last_task_panel_click: tuple[str, float] | None = None
         self._last_stall_item_click: float | None = None
@@ -1389,6 +1395,89 @@ class GroundedVlmPlanner:
                 tower_entry,
                 source="ocr_xuanling_tower_entry_fast",
                 expected_effect="the first-floor tower challenge page opens",
+                action_kind=GuiActionKind.CLICK,
+            )
+        pet_travel_task = quest_is_pet_travel_task(quest_text)
+        if (
+            self._pet_travel_started_at is not None
+            and time.monotonic() - self._pet_travel_started_at > 900.0
+        ):
+            self._pet_travel_started_at = None
+            self._pet_travel_reward_closed = False
+        pet_travel_active = (
+            pet_travel_task or self._pet_travel_started_at is not None
+        )
+        pet_travel_stage = pet_travel_control(
+            snapshot.visible_text,
+            task_active=pet_travel_active,
+        )
+        if pet_travel_stage is not None:
+            stage, control = pet_travel_stage
+            source, expected_effect = {
+                "commission_tab": (
+                    "ocr_pet_travel_commission_tab_fast",
+                    "the pet-travel commission list opens",
+                ),
+                "one_key_insert": (
+                    "ocr_pet_travel_one_key_insert_fast",
+                    "an eligible pet is assigned to the commission",
+                ),
+                "accept": (
+                    "ocr_pet_travel_accept_fast",
+                    "the selected pet starts the commission",
+                ),
+                "free_speedup": (
+                    "ocr_pet_travel_free_speedup_fast",
+                    "the tutorial commission finishes immediately",
+                ),
+                "claim": (
+                    "ocr_pet_travel_claim_fast",
+                    "the completed commission reward is claimed",
+                ),
+                "reward_close": (
+                    "ocr_pet_travel_reward_close_fast",
+                    "the commission reward presentation closes",
+                ),
+            }[stage]
+            self._pet_travel_started_at = time.monotonic()
+            if stage == "reward_close":
+                self._pet_travel_reward_closed = True
+            self._last_decision_source = source
+            return self._ocr_action(
+                snapshot,
+                control,
+                source=source,
+                expected_effect=expected_effect,
+                action_kind=GuiActionKind.CLICK,
+            )
+        if (
+            self._pet_travel_reward_closed
+            and self._back_hotspot is not None
+            and pet_travel_commission_page_visible(snapshot.visible_text)
+            and any(
+                any(
+                    cue in normalize_visible_text(region.text)
+                    for cue in ("雪山救济", "花之枯竭", "仙岛海啸")
+                )
+                for region in snapshot.visible_text
+            )
+        ):
+            self._pet_travel_started_at = None
+            self._pet_travel_reward_closed = False
+            return self._exit_action(
+                snapshot,
+                "ocr_pet_travel_complete_back_fast",
+            )
+        pet_travel_entry = pet_travel_tower_entry_control(snapshot.visible_text)
+        if pet_travel_entry is not None:
+            self._pet_travel_started_at = time.monotonic()
+            self._pet_travel_reward_closed = False
+            self._last_decision_source = "ocr_pet_travel_tower_entry_fast"
+            return self._ocr_action(
+                snapshot,
+                pet_travel_entry,
+                source="ocr_pet_travel_tower_entry_fast",
+                expected_effect="the pet-travel page opens",
                 action_kind=GuiActionKind.CLICK,
             )
         if (
