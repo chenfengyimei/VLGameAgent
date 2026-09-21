@@ -38,7 +38,7 @@ class StrategyRegistryTests(unittest.TestCase):
         root = Path(__file__).parents[2]
         flow = load_recorded_flow(root / "configs/flows/mumu-xianyu-onboarding.yaml")
         self.assertEqual(flow.game_id, MUMU_REGISTRY.game_id)
-        self.assertEqual(len(flow.steps), 88)
+        self.assertEqual(len(flow.steps), 93)
         self.assertEqual(
             {
                 Path(step.evidence).name
@@ -133,7 +133,14 @@ class StrategyRegistryTests(unittest.TestCase):
                 "realm-breakthrough-claim.png",
                 "realm-breakthrough-animation.png",
                 "realm-breakthrough-confirm.png",
-            ), start=1)},
+            ), start=1)}
+            | {
+                "89-summon-menu.png",
+                "90-summon-entry.png",
+                "91-summon-once.png",
+                "92-summon-bell-center-click.png",
+                "93-summon-result-close.png",
+            },
         )
         for step in flow.steps:
             with self.subTest(step=step.step_id):
@@ -281,6 +288,11 @@ class StrategyRegistryTests(unittest.TestCase):
             "ocr_realm_breakthrough_control_fast",
             "ocr_realm_breakthrough_animation_wait",
             "ocr_realm_breakthrough_success_back_fast",
+            "ocr_summon_menu_fast",
+            "ocr_summon_entry_fast",
+            "ocr_summon_once_fast",
+            "ocr_summon_bell_center_fast",
+            "ocr_summon_result_close_fast",
             "ocr_market_entry_fast",
         ):
             self.assertIn(source, known_sources)
@@ -780,6 +792,79 @@ class PlannerStrategyScopingTests(unittest.TestCase):
             planner.last_decision_source,
             "ocr_realm_breakthrough_success_back_fast",
         )
+
+    def test_contract_bell_flow_opens_summons_by_click_and_closes(self) -> None:
+        planner = GroundedVlmPlanner(
+            _Client([]),
+            max_temporal_frames=1,
+            max_target_crops=0,
+            compact_output=True,
+            prefer_ocr_task_panel=True,
+            strategy_registry=MUMU_REGISTRY,
+        )
+        quest = TextRegion(
+            "使用契铃唤醒桃天 0/1",
+            NormalizedBox(0.04, 0.27, 0.30, 0.34),
+            0.99,
+        )
+        menu = _onboarding_snapshot(
+            quest,
+            TextRegion("菜单", NormalizedBox(0.93, 0.29, 0.99, 0.39), 0.99),
+        )
+        outcome = planner._ocr_fast_path(menu)  # type: ignore[attr-defined]
+        assert outcome is not None and outcome.action is not None
+        self.assertEqual(outcome.action.target_label, "菜单")
+        self.assertEqual(planner.last_decision_source, "ocr_summon_menu_fast")
+
+        expanded = _onboarding_snapshot(
+            quest,
+            TextRegion("菜单", NormalizedBox(0.93, 0.29, 0.99, 0.39), 0.99),
+            TextRegion("铃唤", NormalizedBox(0.88, 0.42, 0.96, 0.54), 0.99),
+        )
+        outcome = planner._ocr_fast_path(expanded)  # type: ignore[attr-defined]
+        assert outcome is not None and outcome.action is not None
+        self.assertEqual(outcome.action.target_label, "铃唤")
+        self.assertEqual(planner.last_decision_source, "ocr_summon_entry_fast")
+
+        summon_page = _onboarding_snapshot(
+            TextRegion("召唤", NormalizedBox(0.04, 0.05, 0.16, 0.13), 0.99),
+            TextRegion("铃唤一次", NormalizedBox(0.30, 0.80, 0.52, 0.91), 0.99),
+            TextRegion("铃唤十次", NormalizedBox(0.62, 0.80, 0.80, 0.91), 0.99),
+        )
+        outcome = planner._ocr_fast_path(summon_page)  # type: ignore[attr-defined]
+        assert outcome is not None and outcome.action is not None
+        self.assertEqual(outcome.action.target_label, "铃唤一次")
+        self.assertEqual(planner.last_decision_source, "ocr_summon_once_fast")
+
+        bell = _onboarding_snapshot(
+            TextRegion("铃唤", NormalizedBox(0.04, 0.05, 0.16, 0.13), 0.99),
+            TextRegion(
+                "滑动手指摇动铃铛召唤灵宠",
+                NormalizedBox(0.34, 0.90, 0.66, 0.96),
+                0.99,
+            ),
+        )
+        outcome = planner._ocr_fast_path(bell)  # type: ignore[attr-defined]
+        assert outcome is not None and outcome.action is not None
+        self.assertEqual(outcome.action.kind, GuiActionKind.CLICK)
+        self.assertEqual(outcome.action.target_label, "summon_bell_center")
+        self.assertAlmostEqual(outcome.action.target_box.center.x, 0.500)
+        self.assertAlmostEqual(outcome.action.target_box.center.y, 0.500)
+        self.assertEqual(planner.last_decision_source, "ocr_summon_bell_center_fast")
+
+        result = _onboarding_snapshot(
+            TextRegion("桃天", NormalizedBox(0.88, 0.20, 0.96, 0.40), 0.99),
+            TextRegion(
+                "点击空白区域关闭",
+                NormalizedBox(0.67, 0.87, 0.89, 0.94),
+                0.99,
+            ),
+        )
+        outcome = planner._ocr_fast_path(result)  # type: ignore[attr-defined]
+        assert outcome is not None and outcome.action is not None
+        self.assertEqual(outcome.action.kind, GuiActionKind.CLICK)
+        self.assertEqual(outcome.action.target_label, "点击空白区域关闭")
+        self.assertEqual(planner.last_decision_source, "ocr_summon_result_close_fast")
 
     def test_red_dust_auto_is_suppressed_after_the_persisted_once_flag(self) -> None:
         planner = GroundedVlmPlanner(

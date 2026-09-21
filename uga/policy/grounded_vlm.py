@@ -61,6 +61,10 @@ from uga.agent.session_state import (
     skill_training_entry_control,
     skill_treatment_node_control,
     stall_sell_item_cell,
+    summon_bell_interaction_active,
+    summon_once_control,
+    summon_result_close_control,
+    summon_world_control,
     xiuxian_path_objective_goto,
 )
 from uga.agent.strategies import StrategyRegistry
@@ -1033,6 +1037,58 @@ class GroundedVlmPlanner:
             return self._exit_action(
                 snapshot,
                 "ocr_realm_breakthrough_success_back_fast",
+            )
+        summon_result_close = summon_result_close_control(snapshot.visible_text)
+        if summon_result_close is not None:
+            self._last_decision_source = "ocr_summon_result_close_fast"
+            return self._ocr_action(
+                snapshot,
+                summon_result_close,
+                source="ocr_summon_result_close_fast",
+                expected_effect="the summoned-pet result presentation closes",
+                action_kind=GuiActionKind.CLICK,
+            )
+        if summon_bell_interaction_active(snapshot.visible_text):
+            # Owner-tested correction: the instruction says to slide/shake,
+            # but this interaction completes with one click on the bell.  Do
+            # not emit DRAG here.
+            return self._hotspot_click_action(
+                snapshot,
+                "summon_bell_center",
+                (0.500, 0.500),
+                "ocr_summon_bell_center_fast",
+                "the bell rings once and summons the contracted pet",
+            )
+        summon_once = summon_once_control(snapshot.visible_text)
+        if summon_once is not None:
+            self._last_decision_source = "ocr_summon_once_fast"
+            return self._ocr_action(
+                snapshot,
+                summon_once,
+                source="ocr_summon_once_fast",
+                expected_effect="the bell-summoning interaction opens",
+                action_kind=GuiActionKind.CLICK,
+            )
+        summon_world = summon_world_control(snapshot.visible_text)
+        if summon_world is not None:
+            stage, control = summon_world
+            source, expected_effect = {
+                "menu": (
+                    "ocr_summon_menu_fast",
+                    "the expanded game menu reveals the bell-summon entry",
+                ),
+                "entry": (
+                    "ocr_summon_entry_fast",
+                    "the summon page opens",
+                ),
+            }[stage]
+            self._last_decision_source = source
+            return self._ocr_action(
+                snapshot,
+                control,
+                source=source,
+                expected_effect=expected_effect,
+                action_kind=GuiActionKind.CLICK,
             )
         pet_entry = pet_training_entry_control(snapshot.visible_text)
         if pet_entry is not None:

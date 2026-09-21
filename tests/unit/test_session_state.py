@@ -29,6 +29,10 @@ from uga.agent.session_state import (
     realm_breakthrough_success,
     red_dust_auto_enable_ready,
     stable_anchor_tokens,
+    summon_bell_interaction_active,
+    summon_once_control,
+    summon_result_close_control,
+    summon_world_control,
     xiuxian_path_objective_goto,
 )
 from uga.control.lease import ControlMode
@@ -82,6 +86,48 @@ def quest_frame(
 
 
 class QuestMemoryTests(unittest.TestCase):
+    def test_recorded_contract_bell_controls_are_narrow_and_ordered(self) -> None:
+        quest = TextRegion(
+            "使用契铃唤醒桃天 0/1",
+            NormalizedBox(0.04, 0.27, 0.30, 0.34),
+            0.99,
+        )
+        menu = TextRegion("菜单", NormalizedBox(0.93, 0.29, 0.99, 0.39), 0.99)
+        entry = TextRegion("铃唤", NormalizedBox(0.88, 0.42, 0.96, 0.54), 0.99)
+
+        collapsed = summon_world_control((quest, menu))
+        assert collapsed is not None
+        self.assertEqual(collapsed, ("menu", menu))
+
+        expanded = summon_world_control((quest, menu, entry))
+        assert expanded is not None
+        self.assertEqual(expanded, ("entry", entry))
+        self.assertIsNone(summon_world_control((menu, entry)))
+
+        title = TextRegion("召唤", NormalizedBox(0.04, 0.05, 0.16, 0.13), 0.99)
+        once = TextRegion("铃唤一次", NormalizedBox(0.30, 0.80, 0.52, 0.91), 0.99)
+        ten = TextRegion("铃唤十次", NormalizedBox(0.62, 0.80, 0.80, 0.91), 0.99)
+        self.assertEqual(summon_once_control((title, once, ten)), once)
+        self.assertIsNone(summon_once_control((once, ten)))
+
+        bell_title = TextRegion("铃唤", NormalizedBox(0.04, 0.05, 0.16, 0.13), 0.99)
+        instruction = TextRegion(
+            "滑动手指摇动铃铛召唤灵宠",
+            NormalizedBox(0.34, 0.90, 0.66, 0.96),
+            0.99,
+        )
+        self.assertTrue(summon_bell_interaction_active((bell_title, instruction)))
+        self.assertFalse(summon_bell_interaction_active((instruction,)))
+
+        pet_name = TextRegion("桃天", NormalizedBox(0.88, 0.20, 0.96, 0.40), 0.99)
+        close = TextRegion(
+            "点击空白区域关闭",
+            NormalizedBox(0.67, 0.87, 0.89, 0.94),
+            0.99,
+        )
+        self.assertEqual(summon_result_close_control((pet_name, close)), close)
+        self.assertIsNone(summon_result_close_control((close,)))
+
     def test_recorded_pet_upgrade_controls_require_their_page_anchors(self) -> None:
         entry_regions = (
             TextRegion("小龙升级", NormalizedBox(0.04, 0.22, 0.18, 0.27), 0.99),

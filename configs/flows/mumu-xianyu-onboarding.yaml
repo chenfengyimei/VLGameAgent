@@ -628,3 +628,38 @@ steps:
     recognize: {all: [突破成功], evidence_status: owner_described_no_screenshot}
     action: click_hotspot:ui_back
     expected: 突破成功后点击左上角退出按钮返回世界页
+  - id: summon_menu
+    order: 890
+    evidence: docs/assets/mumu-xianyu/onboarding/89-summon-menu.png
+    source: ocr_summon_menu_fast
+    recognize: {any_task: [契约之铃, 使用契铃唤醒桃天], absent: 铃唤, control: 菜单}
+    action: click_text:菜单
+    expected: 展开右侧菜单以显示铃唤入口
+  - id: summon_entry
+    order: 900
+    evidence: docs/assets/mumu-xianyu/onboarding/90-summon-entry.png
+    source: ocr_summon_entry_fast
+    recognize: {any_task: [契约之铃, 使用契铃唤醒桃天], control: 铃唤}
+    action: click_text:铃唤
+    expected: 打开召唤页面
+  - id: summon_once
+    order: 910
+    evidence: docs/assets/mumu-xianyu/onboarding/91-summon-once.png
+    source: ocr_summon_once_fast
+    recognize: {all: [召唤], control: 铃唤一次}
+    action: click_text:铃唤一次
+    expected: 仅召唤一次，不点击铃唤十次
+  - id: summon_bell_center_click
+    order: 920
+    evidence: docs/assets/mumu-xianyu/onboarding/92-summon-bell-center-click.png
+    source: ocr_summon_bell_center_fast
+    recognize: {all: [铃唤, 摇动铃铛召唤灵宠], owner_tested: center_click_no_drag}
+    action: click_hotspot:summon_bell_center
+    expected: 点击铃铛中央一次完成召唤，禁止滑动
+  - id: summon_result_close
+    order: 930
+    evidence: docs/assets/mumu-xianyu/onboarding/93-summon-result-close.png
+    source: ocr_summon_result_close_fast
+    recognize: {all: [桃天, 点击空白区域关闭]}
+    action: click_text:点击空白区域关闭
+    expected: 关闭桃天召唤结果页

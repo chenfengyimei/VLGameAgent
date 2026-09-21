@@ -555,6 +555,112 @@ def pet_star_menu_control(regions: Iterable[TextRegion]) -> TextRegion | None:
     return max(candidates, key=lambda region: region.confidence) if candidates else None
 
 
+def summon_world_control(
+    regions: Iterable[TextRegion],
+) -> tuple[str, TextRegion] | None:
+    """Open the menu or its 铃唤 entry for the 契约之铃 quest.
+
+    The expanded entry takes priority over 菜单 so an already-open menu is
+    never collapsed again.
+    """
+    visible = tuple(regions)
+    task_active = any(
+        any(
+            cue in normalize_visible_text(region.text)
+            for cue in ("契约之铃", "使用契铃唤醒桃天")
+        )
+        and region.confidence >= 0.75
+        and region.box.center.x <= 0.38
+        and 0.15 <= region.box.center.y <= 0.45
+        for region in visible
+    )
+    if not task_active:
+        return None
+    summon_entries = [
+        region
+        for region in visible
+        if normalize_visible_text(region.text) == "铃唤"
+        and region.confidence >= 0.80
+        and region.box.center.x >= 0.80
+        and 0.30 <= region.box.center.y <= 0.62
+    ]
+    if summon_entries:
+        return "entry", max(summon_entries, key=lambda region: region.confidence)
+    menu_buttons = [
+        region
+        for region in visible
+        if normalize_visible_text(region.text) == "菜单"
+        and region.confidence >= 0.80
+        and region.box.center.x >= 0.85
+        and 0.20 <= region.box.center.y <= 0.55
+    ]
+    if menu_buttons:
+        return "menu", max(menu_buttons, key=lambda region: region.confidence)
+    return None
+
+
+def summon_once_control(regions: Iterable[TextRegion]) -> TextRegion | None:
+    """The single-summon button on the recorded 召唤 page."""
+    visible = tuple(regions)
+    has_title = any(
+        normalize_visible_text(region.text) == "召唤"
+        and region.confidence >= 0.85
+        and region.box.center.x <= 0.30
+        and region.box.center.y <= 0.18
+        for region in visible
+    )
+    if not has_title:
+        return None
+    candidates = [
+        region
+        for region in visible
+        if normalize_visible_text(region.text) == "铃唤一次"
+        and region.confidence >= 0.85
+        and 0.20 <= region.box.center.x <= 0.62
+        and region.box.center.y >= 0.70
+    ]
+    return max(candidates, key=lambda region: region.confidence) if candidates else None
+
+
+def summon_bell_interaction_active(regions: Iterable[TextRegion]) -> bool:
+    """The bell interaction where one tested centre click completes the cue."""
+    visible = tuple(regions)
+    has_title = any(
+        normalize_visible_text(region.text) == "铃唤"
+        and region.confidence >= 0.80
+        and region.box.center.x <= 0.30
+        and region.box.center.y <= 0.18
+        for region in visible
+    )
+    has_instruction = any(
+        "摇动铃铛召唤灵宠" in normalize_visible_text(region.text)
+        and region.confidence >= 0.75
+        and region.box.center.y >= 0.75
+        for region in visible
+    )
+    return has_title and has_instruction
+
+
+def summon_result_close_control(regions: Iterable[TextRegion]) -> TextRegion | None:
+    """The blank-area close instruction on the newly summoned 桃天 result."""
+    visible = tuple(regions)
+    has_pet_name = any(
+        normalize_visible_text(region.text) == "桃天"
+        and region.confidence >= 0.80
+        for region in visible
+    )
+    if not has_pet_name:
+        return None
+    candidates = [
+        region
+        for region in visible
+        if "点击空白区域关闭" in normalize_visible_text(region.text)
+        and region.confidence >= 0.80
+        and region.box.center.y >= 0.70
+    ]
+    return max(candidates, key=lambda region: region.confidence) if candidates else None
+
+
 def _pet_title_visible(regions: Iterable[TextRegion]) -> bool:
     return any(
         normalize_visible_text(region.text) == "灵宠"

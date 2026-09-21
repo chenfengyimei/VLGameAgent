@@ -91,6 +91,12 @@ controls:
     x: 0.585
     y: 0.803
     confirmed: true
+  # 契约之铃互动页：用户实测点击铃铛中央一次即可完成，无需按提示滑动。
+  summon_bell_center:
+    kind: normalized_hotspot
+    x: 0.500
+    y: 0.500
+    confirmed: true
   dialogue_advance: {kind: virtual_key, code: 32, confirmed: true}
 capabilities:
   realtime_3d: true
