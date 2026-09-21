@@ -661,6 +661,98 @@ def summon_result_close_control(regions: Iterable[TextRegion]) -> TextRegion | N
     return max(candidates, key=lambda region: region.confidence) if candidates else None
 
 
+def quest_is_pet_companion_task(quest_text: str | None) -> bool:
+    """Whether the durable tracked task asks 桃天 to join the formation."""
+    if not quest_text:
+        return False
+    normalized = normalize_visible_text(quest_text)
+    return any(cue in normalized for cue in ("桃天伴随", "上阵桃天"))
+
+
+def pet_companion_current_slot_ready(
+    regions: Iterable[TextRegion], *, task_active: bool
+) -> bool:
+    """Whether the tutorial is asking to replace the current 小青龙 slot."""
+    if not task_active:
+        return False
+    visible = tuple(regions)
+    texts = tuple(normalize_visible_text(region.text) for region in visible)
+    has_pet_title = any(
+        text == "灵宠"
+        and region.confidence >= 0.80
+        and region.box.center.x <= 0.25
+        and region.box.center.y <= 0.18
+        for region, text in zip(visible, texts, strict=True)
+    )
+    has_formation = "主战位" in texts and any(
+        cue in text for text in texts for cue in ("布阵目标", "布阵总修为")
+    )
+    asks_to_rest = any(
+        any(cue in text for cue in ("让小青龙歇息", "小青龙歇息一下"))
+        for text in texts
+    )
+    return has_pet_title and has_formation and asks_to_rest
+
+
+def pet_companion_taotian_control(
+    regions: Iterable[TextRegion], *, task_active: bool
+) -> TextRegion | None:
+    """桃天 row in the main-slot pet picker for the companion tutorial."""
+    if not task_active:
+        return None
+    visible = tuple(regions)
+    has_picker = any(
+        "选择主战位灵宠" in normalize_visible_text(region.text)
+        and region.confidence >= 0.75
+        and region.box.center.x >= 0.55
+        and region.box.center.y <= 0.35
+        for region in visible
+    )
+    if not has_picker:
+        return None
+    candidates = [
+        region
+        for region in visible
+        if normalize_visible_text(region.text) == "桃天"
+        and region.confidence >= 0.80
+        and region.box.center.x >= 0.60
+        and 0.15 <= region.box.center.y <= 0.48
+    ]
+    return max(candidates, key=lambda region: region.confidence) if candidates else None
+
+
+def pet_companion_deployment_complete(
+    regions: Iterable[TextRegion], *, task_active: bool
+) -> bool:
+    """Whether the main slot now shows the newly summoned level-one 桃天."""
+    if not task_active:
+        return False
+    visible = tuple(regions)
+    normalized = tuple(
+        (region, normalize_visible_text(region.text)) for region in visible
+    )
+    has_pet_title = any(
+        text == "灵宠"
+        and region.confidence >= 0.80
+        and region.box.center.x <= 0.25
+        and region.box.center.y <= 0.18
+        for region, text in normalized
+    )
+    has_formation = any(text == "主战位" for _, text in normalized) and any(
+        any(cue in text for cue in ("布阵目标", "布阵总修为"))
+        for _, text in normalized
+    )
+    has_taotian_card_marker = any(
+        text in {"仙", "1级"}
+        and region.confidence >= 0.75
+        and region.box.center.x <= 0.22
+        and 0.15 <= region.box.center.y <= 0.38
+        for region, text in normalized
+    )
+    picker_open = any("选择主战位灵宠" in text for _, text in normalized)
+    return has_pet_title and has_formation and has_taotian_card_marker and not picker_open
+
+
 def _pet_title_visible(regions: Iterable[TextRegion]) -> bool:
     return any(
         normalize_visible_text(region.text) == "灵宠"

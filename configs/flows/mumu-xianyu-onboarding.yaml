@@ -663,3 +663,31 @@ steps:
     recognize: {all: [桃天, 点击空白区域关闭]}
     action: click_text:点击空白区域关闭
     expected: 关闭桃天召唤结果页
+  - id: pet_companion_task
+    order: 940
+    evidence: docs/assets/mumu-xianyu/onboarding/94-pet-companion-task.png
+    source: ocr_task_panel_fast
+    recognize: {all: [主线], any_task: [桃天伴随, 上阵桃天协助战斗]}
+    action: click_task_tracker
+    expected: 打开桃天伴随的灵宠布阵界面
+  - id: pet_companion_current
+    order: 950
+    evidence: docs/assets/mumu-xianyu/onboarding/95-pet-companion-current.png
+    source: ocr_pet_companion_current_fast
+    recognize: {all: [灵宠, 主战位, 让小青龙歇息一下]}
+    action: click_hotspot:pet_main_slot_card
+    expected: 点击当前上阵的小青龙卡片并打开主战位候选列表
+  - id: pet_companion_select_taotian
+    order: 960
+    evidence: docs/assets/mumu-xianyu/onboarding/96-pet-companion-select-taotian.png
+    source: ocr_pet_companion_select_taotian_fast
+    recognize: {all: [灵宠, 选择主战位灵宠], control: 桃天}
+    action: click_text:桃天
+    expected: 选择桃天替换主战位的小青龙
+  - id: pet_companion_complete_exit
+    order: 970
+    evidence: docs/assets/mumu-xianyu/onboarding/97-pet-companion-complete-exit.png
+    source: ocr_pet_companion_complete_back_fast
+    recognize: {all: [灵宠, 主战位], any_taotian_marker: [仙, 1级]}
+    action: click_hotspot:ui_back
+    expected: 桃天上阵完成后点击左上角返回世界页

@@ -97,6 +97,12 @@ controls:
     x: 0.500
     y: 0.500
     confirmed: true
+  # 桃天伴随教学：点击布阵页左侧当前主战灵宠卡，打开候选列表。
+  pet_main_slot_card:
+    kind: normalized_hotspot
+    x: 0.135
+    y: 0.430
+    confirmed: true
   dialogue_advance: {kind: virtual_key, code: 32, confirmed: true}
 capabilities:
   realtime_3d: true

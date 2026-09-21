@@ -17,9 +17,13 @@ from uga.agent.session_state import (
     page_level_value,
     peach_talisman_barrier_active,
     peach_tree_spirit_combat_active,
+    pet_companion_current_slot_ready,
+    pet_companion_deployment_complete,
+    pet_companion_taotian_control,
     pet_information_tab_control,
     pet_training_entry_control,
     pet_upgrade_control,
+    quest_is_pet_companion_task,
     quest_level_target,
     quest_page_keyword,
     raging_tree_spirit_combat_active,
@@ -86,6 +90,78 @@ def quest_frame(
 
 
 class QuestMemoryTests(unittest.TestCase):
+    def test_recorded_pet_companion_controls_replace_xiaoqinglong_with_taotian(
+        self,
+    ) -> None:
+        self.assertTrue(quest_is_pet_companion_task("桃天伴随 上阵桃天，协助战斗 0/1"))
+        self.assertFalse(quest_is_pet_companion_task("小龙升级"))
+
+        title = TextRegion("灵宠", NormalizedBox(0.05, 0.05, 0.15, 0.13), 0.99)
+        main_slot = TextRegion("主战位", NormalizedBox(0.26, 0.17, 0.38, 0.24), 0.99)
+        formation = TextRegion(
+            "布阵总修为:1540",
+            NormalizedBox(0.65, 0.35, 0.88, 0.42),
+            0.99,
+        )
+        rest = TextRegion(
+            "让小青龙歇息一下",
+            NormalizedBox(0.36, 0.45, 0.63, 0.55),
+            0.99,
+        )
+        current = (title, main_slot, formation, rest)
+        self.assertTrue(
+            pet_companion_current_slot_ready(current, task_active=True)
+        )
+        self.assertFalse(
+            pet_companion_current_slot_ready(current, task_active=False)
+        )
+
+        picker = TextRegion(
+            "选择主战位灵宠",
+            NormalizedBox(0.68, 0.14, 0.88, 0.22),
+            0.99,
+        )
+        taotian = TextRegion("桃天", NormalizedBox(0.70, 0.23, 0.82, 0.34), 0.99)
+        xiaoqinglong = TextRegion(
+            "小青龙",
+            NormalizedBox(0.70, 0.38, 0.82, 0.49),
+            0.99,
+        )
+        self.assertEqual(
+            pet_companion_taotian_control(
+                (title, picker, taotian, xiaoqinglong),
+                task_active=True,
+            ),
+            taotian,
+        )
+        self.assertIsNone(
+            pet_companion_taotian_control(
+                (title, picker, xiaoqinglong),
+                task_active=True,
+            )
+        )
+
+        complete = (
+            title,
+            main_slot,
+            TextRegion(
+                "布阵总修为:1814",
+                NormalizedBox(0.65, 0.35, 0.88, 0.42),
+                0.99,
+            ),
+            TextRegion("仙", NormalizedBox(0.06, 0.23, 0.09, 0.28), 0.99),
+            TextRegion("1级", NormalizedBox(0.08, 0.23, 0.13, 0.28), 0.99),
+        )
+        self.assertTrue(
+            pet_companion_deployment_complete(complete, task_active=True)
+        )
+        self.assertFalse(
+            pet_companion_deployment_complete(
+                complete + (picker,),
+                task_active=True,
+            )
+        )
+
     def test_recorded_contract_bell_controls_are_narrow_and_ordered(self) -> None:
         quest = TextRegion(
             "使用契铃唤醒桃天 0/1",

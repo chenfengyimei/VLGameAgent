@@ -35,6 +35,9 @@ from uga.agent.session_state import (
     peach_talisman_barrier_active,
     peach_talisman_continue_control,
     peach_tree_spirit_combat_active,
+    pet_companion_current_slot_ready,
+    pet_companion_deployment_complete,
+    pet_companion_taotian_control,
     pet_information_tab_control,
     pet_star_action_control,
     pet_star_material_control,
@@ -44,6 +47,7 @@ from uga.agent.session_state import (
     pet_training_entry_control,
     pet_upgrade_control,
     quest_is_market_task,
+    quest_is_pet_companion_task,
     quest_is_pet_star_task,
     quest_is_skill_learning_task,
     quest_page_keyword,
@@ -1089,6 +1093,42 @@ class GroundedVlmPlanner:
                 source=source,
                 expected_effect=expected_effect,
                 action_kind=GuiActionKind.CLICK,
+            )
+        pet_companion_task = quest_is_pet_companion_task(quest_text)
+        if (
+            self._back_hotspot is not None
+            and pet_companion_deployment_complete(
+                snapshot.visible_text,
+                task_active=pet_companion_task,
+            )
+        ):
+            return self._exit_action(
+                snapshot,
+                "ocr_pet_companion_complete_back_fast",
+            )
+        taotian = pet_companion_taotian_control(
+            snapshot.visible_text,
+            task_active=pet_companion_task,
+        )
+        if taotian is not None:
+            self._last_decision_source = "ocr_pet_companion_select_taotian_fast"
+            return self._ocr_action(
+                snapshot,
+                taotian,
+                source="ocr_pet_companion_select_taotian_fast",
+                expected_effect="桃天 replaces 小青龙 in the main battle slot",
+                action_kind=GuiActionKind.CLICK,
+            )
+        if pet_companion_current_slot_ready(
+            snapshot.visible_text,
+            task_active=pet_companion_task,
+        ):
+            return self._hotspot_click_action(
+                snapshot,
+                "pet_main_slot_card",
+                (0.135, 0.430),
+                "ocr_pet_companion_current_fast",
+                "the main-slot pet picker opens",
             )
         pet_entry = pet_training_entry_control(snapshot.visible_text)
         if pet_entry is not None:

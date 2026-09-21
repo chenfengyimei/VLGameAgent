@@ -38,7 +38,7 @@ class StrategyRegistryTests(unittest.TestCase):
         root = Path(__file__).parents[2]
         flow = load_recorded_flow(root / "configs/flows/mumu-xianyu-onboarding.yaml")
         self.assertEqual(flow.game_id, MUMU_REGISTRY.game_id)
-        self.assertEqual(len(flow.steps), 93)
+        self.assertEqual(len(flow.steps), 97)
         self.assertEqual(
             {
                 Path(step.evidence).name
@@ -140,6 +140,10 @@ class StrategyRegistryTests(unittest.TestCase):
                 "91-summon-once.png",
                 "92-summon-bell-center-click.png",
                 "93-summon-result-close.png",
+                "94-pet-companion-task.png",
+                "95-pet-companion-current.png",
+                "96-pet-companion-select-taotian.png",
+                "97-pet-companion-complete-exit.png",
             },
         )
         for step in flow.steps:
@@ -293,6 +297,9 @@ class StrategyRegistryTests(unittest.TestCase):
             "ocr_summon_once_fast",
             "ocr_summon_bell_center_fast",
             "ocr_summon_result_close_fast",
+            "ocr_pet_companion_current_fast",
+            "ocr_pet_companion_select_taotian_fast",
+            "ocr_pet_companion_complete_back_fast",
             "ocr_market_entry_fast",
         ):
             self.assertIn(source, known_sources)
@@ -865,6 +872,96 @@ class PlannerStrategyScopingTests(unittest.TestCase):
         self.assertEqual(outcome.action.kind, GuiActionKind.CLICK)
         self.assertEqual(outcome.action.target_label, "点击空白区域关闭")
         self.assertEqual(planner.last_decision_source, "ocr_summon_result_close_fast")
+
+    def test_pet_companion_flow_replaces_current_pet_with_taotian(self) -> None:
+        planner = GroundedVlmPlanner(
+            _Client([]),
+            max_temporal_frames=1,
+            max_target_crops=0,
+            compact_output=True,
+            prefer_ocr_task_panel=True,
+            strategy_registry=MUMU_REGISTRY,
+            back_hotspot=(0.060, 0.080),
+        )
+        quest = "桃天伴随 上阵桃天，协助战斗 0/1"
+        world = _onboarding_snapshot(
+            TextRegion("主线", NormalizedBox(0.04, 0.16, 0.11, 0.21), 0.99),
+            TextRegion("桃天伴随", NormalizedBox(0.04, 0.22, 0.18, 0.27), 0.99),
+            TextRegion(
+                "上阵桃天，协助战斗 0/1",
+                NormalizedBox(0.04, 0.27, 0.28, 0.33),
+                0.99,
+            ),
+        )
+        outcome = planner._ocr_fast_path(world, quest_text=quest)  # type: ignore[attr-defined]
+        assert outcome is not None and outcome.action is not None
+        self.assertIn("上阵桃天", outcome.action.target_label)
+        self.assertEqual(planner.last_decision_source, "ocr_task_panel_fast")
+
+        title = TextRegion("灵宠", NormalizedBox(0.05, 0.05, 0.15, 0.13), 0.99)
+        main_slot = TextRegion("主战位", NormalizedBox(0.26, 0.17, 0.38, 0.24), 0.99)
+        current = _onboarding_snapshot(
+            title,
+            main_slot,
+            TextRegion(
+                "布阵总修为:1540",
+                NormalizedBox(0.65, 0.35, 0.88, 0.42),
+                0.99,
+            ),
+            TextRegion(
+                "让小青龙歇息一下",
+                NormalizedBox(0.36, 0.45, 0.63, 0.55),
+                0.99,
+            ),
+            TextRegion("信息", NormalizedBox(0.93, 0.30, 0.99, 0.42), 0.99),
+        )
+        outcome = planner._ocr_fast_path(current, quest_text=quest)  # type: ignore[attr-defined]
+        assert outcome is not None and outcome.action is not None
+        self.assertEqual(outcome.action.kind, GuiActionKind.CLICK)
+        self.assertEqual(outcome.action.target_label, "pet_main_slot_card")
+        self.assertAlmostEqual(outcome.action.target_box.center.x, 0.135)
+        self.assertAlmostEqual(outcome.action.target_box.center.y, 0.430)
+        self.assertEqual(planner.last_decision_source, "ocr_pet_companion_current_fast")
+
+        picker = _onboarding_snapshot(
+            title,
+            main_slot,
+            TextRegion(
+                "选择主战位灵宠",
+                NormalizedBox(0.68, 0.14, 0.88, 0.22),
+                0.99,
+            ),
+            TextRegion("桃天", NormalizedBox(0.70, 0.23, 0.82, 0.34), 0.99),
+            TextRegion("小青龙", NormalizedBox(0.70, 0.38, 0.82, 0.49), 0.99),
+            TextRegion("信息", NormalizedBox(0.93, 0.30, 0.99, 0.42), 0.99),
+        )
+        outcome = planner._ocr_fast_path(picker, quest_text=quest)  # type: ignore[attr-defined]
+        assert outcome is not None and outcome.action is not None
+        self.assertEqual(outcome.action.target_label, "桃天")
+        self.assertEqual(
+            planner.last_decision_source,
+            "ocr_pet_companion_select_taotian_fast",
+        )
+
+        complete = _onboarding_snapshot(
+            title,
+            main_slot,
+            TextRegion(
+                "布阵总修为:1814",
+                NormalizedBox(0.65, 0.35, 0.88, 0.42),
+                0.99,
+            ),
+            TextRegion("仙", NormalizedBox(0.06, 0.23, 0.09, 0.28), 0.99),
+            TextRegion("1级", NormalizedBox(0.08, 0.23, 0.13, 0.28), 0.99),
+            TextRegion("信息", NormalizedBox(0.93, 0.30, 0.99, 0.42), 0.99),
+        )
+        outcome = planner._ocr_fast_path(complete, quest_text=quest)  # type: ignore[attr-defined]
+        assert outcome is not None and outcome.action is not None
+        self.assertEqual(outcome.action.target_label, "ui_back")
+        self.assertEqual(
+            planner.last_decision_source,
+            "ocr_pet_companion_complete_back_fast",
+        )
 
     def test_red_dust_auto_is_suppressed_after_the_persisted_once_flag(self) -> None:
         planner = GroundedVlmPlanner(
