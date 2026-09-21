@@ -25,6 +25,8 @@ from uga.agent.session_state import (
     demon_sect_disciple_combat_active,
     demonized_spirit_combat_active,
     dialogue_review_visible,
+    disguise_technique_control,
+    drunken_guest_combat_active,
     find_close_glyph,
     find_market_entry,
     find_xiuxian_path_quest_line,
@@ -433,6 +435,7 @@ class GroundedVlmPlanner:
         pet_group_attack_hotspot: tuple[float, float] | None = None,
         secondary_group_attack_hotspot: tuple[float, float] | None = None,
         heal_hotspot: tuple[float, float] | None = None,
+        control_hotspot: tuple[float, float] | None = None,
         auto_combat_hotspot: tuple[float, float] | None = None,
         strategy_registry: StrategyRegistry | None = None,
         coordinate_space: str = "unit",
@@ -464,6 +467,7 @@ class GroundedVlmPlanner:
             ("pet group attack", pet_group_attack_hotspot),
             ("secondary group attack", secondary_group_attack_hotspot),
             ("heal", heal_hotspot),
+            ("control", control_hotspot),
             ("auto combat", auto_combat_hotspot),
         ):
             if hotspot is not None and (
@@ -500,12 +504,14 @@ class GroundedVlmPlanner:
         self._pet_group_attack_hotspot = pet_group_attack_hotspot
         self._secondary_group_attack_hotspot = secondary_group_attack_hotspot
         self._heal_hotspot = heal_hotspot
+        self._control_hotspot = control_hotspot
         self._auto_combat_hotspot = auto_combat_hotspot
         self._peach_combat_skill_index = 0
         self._raging_tree_combat_skill_index = 0
         self._demon_sect_combat_skill_index = 0
         self._black_clad_leader_combat_skill_index = 0
         self._heroic_rescue_combat_skill_index = 0
+        self._drunken_guest_combat_skill_index = 0
         self._xuanling_tower_challenge_at: float | None = None
         self._pet_travel_started_at: float | None = None
         self._pet_travel_reward_closed = False
@@ -1007,6 +1013,16 @@ class GroundedVlmPlanner:
                 phrase_scroll_close,
                 source="ocr_phrase_scroll_close_fast",
                 expected_effect="the completed phrase-scroll result closes",
+                action_kind=GuiActionKind.CLICK,
+            )
+        disguise_technique = disguise_technique_control(snapshot.visible_text)
+        if disguise_technique is not None:
+            self._last_decision_source = "ocr_disguise_technique_fast"
+            return self._ocr_action(
+                snapshot,
+                disguise_technique,
+                source="ocr_disguise_technique_fast",
+                expected_effect="the player assumes the disguise required to enter 春风里",
                 action_kind=GuiActionKind.CLICK,
             )
         notice_board_stage = notice_board_event_stage(snapshot.visible_text)
@@ -1862,6 +1878,29 @@ class GroundedVlmPlanner:
                     hotspot,
                     "ocr_heroic_rescue_combat_fast",
                     "Yao Jiu and his accomplices take damage while the player stays healthy",
+                )
+        if drunken_guest_combat_active(snapshot.visible_text):
+            skills = tuple(
+                (label, hotspot)
+                for label, hotspot in (
+                    ("ui_heal", self._heal_hotspot),
+                    ("ui_control", self._control_hotspot),
+                    ("ui_secondary_group_attack", self._secondary_group_attack_hotspot),
+                    ("ui_group_attack", self._group_attack_hotspot),
+                )
+                if hotspot is not None
+            )
+            if skills:
+                label, hotspot = skills[
+                    self._drunken_guest_combat_skill_index % len(skills)
+                ]
+                self._drunken_guest_combat_skill_index += 1
+                return self._hotspot_click_action(
+                    snapshot,
+                    label,
+                    hotspot,
+                    "ocr_drunken_guest_combat_fast",
+                    "the drunken guest is controlled and damaged while the player stays healthy",
                 )
         auto_combat_enabled = bool(
             session_context and "auto_combat_enabled=true" in session_context

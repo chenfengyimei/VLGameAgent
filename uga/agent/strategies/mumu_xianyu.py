@@ -122,6 +122,19 @@ _RULES: tuple[StrategyRule, ...] = (
         cooldown_s=0.0,
     ),
     StrategyRule(
+        name="drunken_guest_combat",
+        source="ocr_drunken_guest_combat_fast",
+        game_id=GAME_ID,
+        summary=(
+            "拔刀相助/制服醉酒客人任务与煞和尚同时可见时，依次轮换治疗、"
+            "控制、上方群攻和下方群攻，直至进入战后剧情。"
+        ),
+        allowed_action="click(recorded heal/control/group-attack hotspot rotation)",
+        risk="combat",
+        effect="the drunken guest is defeated while the player stays healthy",
+        cooldown_s=0.0,
+    ),
+    StrategyRule(
         name="red_dust_auto_once",
         source="ocr_red_dust_auto_once_fast",
         game_id=GAME_ID,
@@ -471,6 +484,16 @@ _RULES: tuple[StrategyRule, ...] = (
         allowed_action="click(right-side 技能 entry)",
         risk="navigation",
         effect="the cultivation interface opens",
+        cooldown_s=0.0,
+    ),
+    StrategyRule(
+        name="disguise_technique",
+        source="ocr_disguise_technique_fast",
+        game_id=GAME_ID,
+        summary="妖术易容/施展秘术乔装化形任务中，只点击场景内的易容术交互。",
+        allowed_action="click(易容术)",
+        risk="progression",
+        effect="the player assumes the disguise required to enter 春风里",
         cooldown_s=0.0,
     ),
     StrategyRule(

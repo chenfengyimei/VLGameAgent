@@ -445,6 +445,55 @@ def heroic_rescue_combat_active(regions: Iterable[TextRegion]) -> bool:
     return task_active and enemy_visible
 
 
+def drunken_guest_combat_active(regions: Iterable[TextRegion]) -> bool:
+    """Recorded 拔刀相助 fight against the drunken 煞和尚."""
+    visible = tuple(regions)
+    task_active = any(
+        any(
+            cue in normalize_visible_text(region.text)
+            for cue in ("拔刀相助", "制服醉酒的客人", "平定骚乱")
+        )
+        and region.confidence >= 0.75
+        and region.box.center.x <= 0.38
+        and 0.14 <= region.box.center.y <= 0.45
+        for region in visible
+    )
+    enemy_visible = any(
+        "煞和尚" in normalize_visible_text(region.text)
+        and region.confidence >= 0.75
+        and 0.25 <= region.box.center.x <= 0.75
+        and 0.05 <= region.box.center.y <= 0.35
+        for region in visible
+    )
+    return task_active and enemy_visible
+
+
+def disguise_technique_control(regions: Iterable[TextRegion]) -> TextRegion | None:
+    """Scene-bound 易容术 control for the recorded 妖术易容 quest."""
+    visible = tuple(regions)
+    task_active = any(
+        any(
+            cue in normalize_visible_text(region.text)
+            for cue in ("妖术易容", "施展秘术乔装化形")
+        )
+        and region.confidence >= 0.75
+        and region.box.center.x <= 0.38
+        and 0.14 <= region.box.center.y <= 0.45
+        for region in visible
+    )
+    if not task_active:
+        return None
+    candidates = [
+        region
+        for region in visible
+        if normalize_visible_text(region.text) == "易容术"
+        and region.confidence >= 0.80
+        and 0.45 <= region.box.center.x <= 0.80
+        and 0.45 <= region.box.center.y <= 0.80
+    ]
+    return max(candidates, key=lambda region: region.confidence) if candidates else None
+
+
 def pet_training_entry_control(regions: Iterable[TextRegion]) -> TextRegion | None:
     """Right-side 灵宠 entry for the recorded upgrade/star-up tasks."""
     visible = tuple(regions)

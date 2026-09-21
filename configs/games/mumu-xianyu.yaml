@@ -85,6 +85,12 @@ controls:
     x: 0.840
     y: 0.635
     confirmed: true
+  # 春风里醉客战斗中的紫色控制技能；与治疗及两个群攻技能轮换。
+  ui_control:
+    kind: normalized_hotspot
+    x: 0.935
+    y: 0.635
+    confirmed: true
   # 红尘入世第一段的底部 自动 开关：每个新角色只物理点击一次。
   ui_auto_combat:
     kind: normalized_hotspot

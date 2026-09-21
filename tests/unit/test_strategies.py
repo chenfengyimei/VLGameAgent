@@ -38,7 +38,7 @@ class StrategyRegistryTests(unittest.TestCase):
         root = Path(__file__).parents[2]
         flow = load_recorded_flow(root / "configs/flows/mumu-xianyu-onboarding.yaml")
         self.assertEqual(flow.game_id, MUMU_REGISTRY.game_id)
-        self.assertEqual(len(flow.steps), 153)
+        self.assertEqual(len(flow.steps), 171)
         self.assertEqual(
             {
                 Path(step.evidence).name
@@ -192,6 +192,15 @@ class StrategyRegistryTests(unittest.TestCase):
                 "151-pet-wash-tab.png",
                 "152-pet-wash-action.png",
                 "153-pet-wash-complete-exit.png",
+                "154-encounter-obstruction-navigation.png",
+                "156-encounter-obstruction-dialogue.png",
+                "157-clever-plan-navigation.png",
+                "159-clever-plan-dialogue.png",
+                "160-disguise-technique.png",
+                "162-disguised-infiltration-navigation.png",
+                "165-drunkard-dialogue-task.png",
+                "167-drunkard-cutscene-skip.png",
+                "168-drunken-guest-combat.png",
             },
         )
         for step in flow.steps:
@@ -239,6 +248,10 @@ class StrategyRegistryTests(unittest.TestCase):
         assert heal is not None and heal.hotspot is not None
         self.assertAlmostEqual(heal.hotspot[0], 0.840, places=3)
         self.assertAlmostEqual(heal.hotspot[1], 0.635, places=3)
+        control = profile.binding("ui_control")
+        assert control is not None and control.hotspot is not None
+        self.assertAlmostEqual(control.hotspot[0], 0.935, places=3)
+        self.assertAlmostEqual(control.hotspot[1], 0.635, places=3)
 
     def test_known_game_resolves_to_a_populated_registry(self) -> None:
         registry = registry_for("mumu-xianyu")
@@ -300,6 +313,7 @@ class StrategyRegistryTests(unittest.TestCase):
             "ocr_demon_sect_disciple_group_attack_fast",
             "ocr_black_clad_leader_combat_fast",
             "ocr_heroic_rescue_combat_fast",
+            "ocr_drunken_guest_combat_fast",
             "ocr_red_dust_auto_once_fast",
             "ocr_pet_training_entry_fast",
             "ocr_pet_information_tab_fast",
@@ -326,6 +340,7 @@ class StrategyRegistryTests(unittest.TestCase):
             "ocr_cultivation_manual_tab_fast",
             "ocr_cultivation_manual_activate_fast",
             "ocr_cultivation_manual_complete_back_fast",
+            "ocr_disguise_technique_fast",
             "ocr_xuanling_tower_entry_fast",
             "ocr_xuanling_tower_challenge_fast",
             "ocr_xuanling_tower_battle_wait",
@@ -850,6 +865,64 @@ class PlannerStrategyScopingTests(unittest.TestCase):
         self.assertEqual(
             planner.last_decision_source,
             "ocr_heroic_rescue_combat_fast",
+        )
+
+    def test_disguise_control_and_drunken_guest_rotation_are_quest_scoped(self) -> None:
+        planner = GroundedVlmPlanner(
+            _Client([]),
+            max_temporal_frames=1,
+            max_target_crops=0,
+            compact_output=True,
+            prefer_ocr_task_panel=True,
+            strategy_registry=MUMU_REGISTRY,
+            heal_hotspot=(0.840, 0.635),
+            control_hotspot=(0.935, 0.635),
+            secondary_group_attack_hotspot=(0.790, 0.745),
+            group_attack_hotspot=(0.770, 0.890),
+        )
+        disguise = _onboarding_snapshot(
+            TextRegion("主线", NormalizedBox(0.04, 0.16, 0.11, 0.21), 0.99),
+            TextRegion("妖术易容", NormalizedBox(0.04, 0.22, 0.18, 0.27), 0.99),
+            TextRegion(
+                "施展秘术乔装化形",
+                NormalizedBox(0.04, 0.27, 0.25, 0.32),
+                0.99,
+            ),
+            TextRegion("易容术", NormalizedBox(0.55, 0.56, 0.64, 0.64), 0.99),
+        )
+        outcome = planner._ocr_fast_path(disguise)  # type: ignore[attr-defined]
+        assert outcome is not None and outcome.action is not None
+        self.assertEqual(outcome.action.target_label, "易容术")
+        self.assertEqual(planner.last_decision_source, "ocr_disguise_technique_fast")
+
+        unrelated = _onboarding_snapshot(
+            TextRegion("易容术", NormalizedBox(0.55, 0.56, 0.64, 0.64), 0.99),
+        )
+        outcome = planner._ocr_fast_path(unrelated)  # type: ignore[attr-defined]
+        self.assertIsNone(outcome)
+
+        combat = _onboarding_snapshot(
+            TextRegion("主线", NormalizedBox(0.04, 0.16, 0.11, 0.21), 0.99),
+            TextRegion("拔刀相助", NormalizedBox(0.04, 0.22, 0.18, 0.27), 0.99),
+            TextRegion(
+                "制服醉酒的客人，平定骚乱",
+                NormalizedBox(0.04, 0.27, 0.28, 0.32),
+                0.99,
+            ),
+            TextRegion("煞和尚 Lv.24", NormalizedBox(0.34, 0.07, 0.61, 0.14), 0.99),
+        )
+        labels: list[str] = []
+        for _ in range(4):
+            outcome = planner._ocr_fast_path(combat)  # type: ignore[attr-defined]
+            assert outcome is not None and outcome.action is not None
+            labels.append(outcome.action.target_label)
+        self.assertEqual(
+            labels,
+            ["ui_heal", "ui_control", "ui_secondary_group_attack", "ui_group_attack"],
+        )
+        self.assertEqual(
+            planner.last_decision_source,
+            "ocr_drunken_guest_combat_fast",
         )
 
     def test_realm_breakthrough_submits_claims_confirms_and_exits(self) -> None:

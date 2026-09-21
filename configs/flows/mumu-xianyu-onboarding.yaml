@@ -1083,3 +1083,129 @@ steps:
     recognize: {all: [灵宠, 洗髓, 属性提升], state: any_attribute_numerator_positive}
     action: click_hotspot:ui_back
     expected: 确认洗髓属性已提升后点击左上角退出
+  - id: encounter_obstruction_task
+    order: 1540
+    evidence: docs/assets/mumu-xianyu/onboarding/154-encounter-obstruction-navigation.png
+    source: ocr_task_panel_fast
+    recognize: {all: [主线], any_task: [遭遇阻拦, 春风里似乎被人围了起来]}
+    action: click_task_tracker
+    expected: 点击左上任务并自动寻路前往春风里
+  - id: encounter_obstruction_navigation_wait
+    order: 1550
+    evidence: docs/assets/mumu-xianyu/onboarding/154-encounter-obstruction-navigation.png
+    source: ocr_auto_navigation_wait
+    recognize: {all: [自动寻路中], any_task: [遭遇阻拦, 春风里似乎被人围了起来]}
+    action: wait
+    expected: 等待自动寻路到达遭遇阻拦剧情点
+  - id: encounter_obstruction_dialogue
+    order: 1560
+    evidence: docs/assets/mumu-xianyu/onboarding/156-encounter-obstruction-dialogue.png
+    source: ocr_dialogue_click_fast
+    recognize: {all: [回顾剧情, 秒后自动继续]}
+    action: click_hotspot:ui_dialogue_advance
+    expected: 使用通用对话规则快速推进恶徒剧情
+  - id: clever_plan_task
+    order: 1570
+    evidence: docs/assets/mumu-xianyu/onboarding/157-clever-plan-navigation.png
+    source: ocr_task_panel_fast
+    recognize: {all: [主线], any_task: [心生一计, 云梦有办法混入春风里]}
+    action: click_task_tracker
+    expected: 点击左上任务并自动寻路寻找云梦
+  - id: clever_plan_navigation_wait
+    order: 1580
+    evidence: docs/assets/mumu-xianyu/onboarding/157-clever-plan-navigation.png
+    source: ocr_auto_navigation_wait
+    recognize: {all: [自动寻路中], any_task: [心生一计, 云梦有办法混入春风里]}
+    action: wait
+    expected: 等待自动寻路到达云梦处
+  - id: clever_plan_dialogue
+    order: 1590
+    evidence: docs/assets/mumu-xianyu/onboarding/159-clever-plan-dialogue.png
+    source: ocr_dialogue_click_fast
+    recognize: {all: [回顾剧情, 秒后自动继续]}
+    action: click_hotspot:ui_dialogue_advance
+    expected: 使用通用对话规则快速推进仙女井风剧情
+  - id: disguise_task
+    order: 1600
+    evidence: docs/assets/mumu-xianyu/onboarding/160-disguise-technique.png
+    source: ocr_task_panel_fast
+    recognize: {all: [主线], any_task: [妖术易容, 施展秘术乔装化形]}
+    action: click_task_tracker
+    expected: 点击左上任务并前往可施展易容术的位置
+  - id: disguise_technique
+    order: 1610
+    evidence: docs/assets/mumu-xianyu/onboarding/160-disguise-technique.png
+    source: ocr_disguise_technique_fast
+    recognize: {any_task: [妖术易容, 施展秘术乔装化形], control: 易容术}
+    action: click_text:易容术
+    expected: 点击场景中的易容术并完成乔装化形
+  - id: disguised_infiltration_task
+    order: 1620
+    evidence: docs/assets/mumu-xianyu/onboarding/162-disguised-infiltration-navigation.png
+    source: ocr_task_panel_fast
+    recognize: {all: [主线], any_task: [变身潜入, 尝试变装潜入春风里]}
+    action: click_task_tracker
+    expected: 点击左上任务并以乔装身份潜入春风里
+  - id: disguised_infiltration_navigation_wait
+    order: 1630
+    evidence: docs/assets/mumu-xianyu/onboarding/162-disguised-infiltration-navigation.png
+    source: ocr_auto_navigation_wait
+    recognize: {all: [自动寻路中], any_task: [变身潜入, 尝试变装潜入春风里]}
+    action: wait
+    expected: 等待自动寻路完成潜入
+  - id: disguised_infiltration_dialogue
+    order: 1640
+    evidence: owner-described:no-screenshot
+    source: ocr_dialogue_click_fast
+    recognize: {state: generic_dialogue_after_disguised_navigation, evidence_status: owner_described_no_screenshot}
+    action: click_hotspot:ui_dialogue_advance
+    expected: 到达后使用通用对话规则快速推进潜入剧情
+  - id: drunkard_dialogue_task
+    order: 1650
+    evidence: docs/assets/mumu-xianyu/onboarding/165-drunkard-dialogue-task.png
+    source: ocr_task_panel_fast
+    recognize: {all: [主线], any_task: [醉客耍疯, 与煞和尚对话]}
+    action: click_task_tracker
+    expected: 点击左上任务并前往与煞和尚对话
+  - id: drunkard_dialogue
+    order: 1660
+    evidence: owner-described:no-screenshot
+    source: ocr_dialogue_click_fast
+    recognize: {state: generic_dialogue_with_drunkard, evidence_status: owner_described_no_screenshot}
+    action: click_hotspot:ui_dialogue_advance
+    expected: 使用通用对话规则快速推进煞和尚剧情
+  - id: drunkard_cutscene_skip
+    order: 1670
+    evidence: docs/assets/mumu-xianyu/onboarding/167-drunkard-cutscene-skip.png
+    source: ocr_cutscene_skip_fast
+    recognize: {control: 跳过, location: upper_right}
+    action: click_text:跳过
+    expected: 跳过春风里醉客战斗前演出
+  - id: drunken_guest_combat_heal
+    order: 1680
+    evidence: docs/assets/mumu-xianyu/onboarding/168-drunken-guest-combat.png
+    source: ocr_drunken_guest_combat_fast
+    recognize: {any_task: [拔刀相助, 制服醉酒的客人, 平定骚乱], enemy: 煞和尚, rotation: 1}
+    action: click_hotspot:ui_heal
+    expected: 战斗中先使用治疗技能保持血量
+  - id: drunken_guest_combat_control
+    order: 1690
+    evidence: docs/assets/mumu-xianyu/onboarding/168-drunken-guest-combat.png
+    source: ocr_drunken_guest_combat_fast
+    recognize: {any_task: [拔刀相助, 制服醉酒的客人, 平定骚乱], enemy: 煞和尚, rotation: 2}
+    action: click_hotspot:ui_control
+    expected: 使用控制技能限制煞和尚
+  - id: drunken_guest_combat_upper_group_attack
+    order: 1700
+    evidence: docs/assets/mumu-xianyu/onboarding/168-drunken-guest-combat.png
+    source: ocr_drunken_guest_combat_fast
+    recognize: {any_task: [拔刀相助, 制服醉酒的客人, 平定骚乱], enemy: 煞和尚, rotation: 3}
+    action: click_hotspot:ui_secondary_group_attack
+    expected: 使用上方群攻技能攻击醉客
+  - id: drunken_guest_combat_lower_group_attack
+    order: 1710
+    evidence: docs/assets/mumu-xianyu/onboarding/168-drunken-guest-combat.png
+    source: ocr_drunken_guest_combat_fast
+    recognize: {any_task: [拔刀相助, 制服醉酒的客人, 平定骚乱], enemy: 煞和尚, rotation: 4}
+    action: click_hotspot:ui_group_attack
+    expected: 使用下方群攻技能后继续循环直至战斗结束
