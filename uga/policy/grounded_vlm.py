@@ -24,6 +24,8 @@ from uga.agent.session_state import (
     find_close_glyph,
     find_market_entry,
     find_xiuxian_path_quest_line,
+    fourth_skill_learn_control,
+    fourth_skill_training_complete,
     heroic_rescue_combat_active,
     invasion_combat_active,
     invasion_group_attack_control,
@@ -50,6 +52,7 @@ from uga.agent.session_state import (
     pet_star_tab_control,
     pet_training_entry_control,
     pet_upgrade_control,
+    quest_is_fourth_skill_learning_task,
     quest_is_market_task,
     quest_is_pet_companion_task,
     quest_is_pet_star_task,
@@ -64,6 +67,7 @@ from uga.agent.session_state import (
     realm_promotion_ready,
     red_dust_auto_enable_ready,
     rescue_little_dragon_choice,
+    skill_control_node_control,
     skill_learn_control,
     skill_training_complete,
     skill_training_entry_control,
@@ -1273,6 +1277,44 @@ class GroundedVlmPlanner:
                 action_kind=GuiActionKind.CLICK,
             )
         skill_task = quest_is_skill_learning_task(quest_text)
+        fourth_skill_task = quest_is_fourth_skill_learning_task(quest_text)
+        if (
+            self._back_hotspot is not None
+            and fourth_skill_training_complete(
+                snapshot.visible_text,
+                task_active=fourth_skill_task,
+            )
+        ):
+            return self._exit_action(
+                snapshot,
+                "ocr_fourth_skill_complete_back_fast",
+            )
+        control_node = skill_control_node_control(
+            snapshot.visible_text,
+            task_active=fourth_skill_task,
+        )
+        if control_node is not None:
+            self._last_decision_source = "ocr_skill_control_node_fast"
+            return self._ocr_action(
+                snapshot,
+                control_node,
+                source="ocr_skill_control_node_fast",
+                expected_effect="the tutorial's control skill is selected",
+                action_kind=GuiActionKind.CLICK,
+            )
+        fourth_skill_learn = fourth_skill_learn_control(
+            snapshot.visible_text,
+            task_active=fourth_skill_task,
+        )
+        if fourth_skill_learn is not None:
+            self._last_decision_source = "ocr_fourth_skill_learn_fast"
+            return self._ocr_action(
+                snapshot,
+                fourth_skill_learn,
+                source="ocr_fourth_skill_learn_fast",
+                expected_effect="花灵庇佑 is learned at level one",
+                action_kind=GuiActionKind.CLICK,
+            )
         if (
             self._back_hotspot is not None
             and skill_training_complete(

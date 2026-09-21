@@ -921,6 +921,17 @@ def quest_is_skill_learning_task(quest_text: str | None) -> bool:
     return "招式传授" in normalized or "学习第3个技能" in normalized
 
 
+def quest_is_fourth_skill_learning_task(quest_text: str | None) -> bool:
+    """Whether the durable task is the recorded fourth-skill tutorial."""
+    if not quest_text:
+        return False
+    normalized = normalize_visible_text(quest_text)
+    return any(
+        cue in normalized
+        for cue in ("无上招式", "学习第4个技能", "学习第四个技能")
+    )
+
+
 def skill_training_entry_control(regions: Iterable[TextRegion]) -> TextRegion | None:
     """Right-side 技能 entry while the third-skill tutorial is tracked."""
     visible = tuple(regions)
@@ -986,6 +997,28 @@ def skill_treatment_node_control(
     return max(candidates, key=lambda region: region.confidence) if candidates else None
 
 
+def skill_control_node_control(
+    regions: Iterable[TextRegion], *, task_active: bool
+) -> TextRegion | None:
+    """The tutorial-highlighted 控制 node for the fourth-skill task."""
+    if not task_active:
+        return None
+    visible = tuple(regions)
+    if not _skill_upgrade_page_visible(visible):
+        return None
+    if any("花灵庇佑" in normalize_visible_text(region.text) for region in visible):
+        return None
+    candidates = [
+        region
+        for region in visible
+        if normalize_visible_text(region.text) == "控制"
+        and region.confidence >= 0.80
+        and 0.35 <= region.box.center.x <= 0.55
+        and 0.45 <= region.box.center.y <= 0.75
+    ]
+    return max(candidates, key=lambda region: region.confidence) if candidates else None
+
+
 def skill_learn_control(
     regions: Iterable[TextRegion], *, task_active: bool
 ) -> TextRegion | None:
@@ -1022,6 +1055,50 @@ def skill_training_complete(
     visible = tuple(regions)
     return _skill_upgrade_page_visible(visible) and any(
         re.search(r"花语素心\D{0,3}[1-9]\d*级", normalize_visible_text(region.text))
+        and region.confidence >= 0.75
+        for region in visible
+    )
+
+
+def fourth_skill_learn_control(
+    regions: Iterable[TextRegion], *, task_active: bool
+) -> TextRegion | None:
+    """Learn 花灵庇佑 once while its displayed level is still zero."""
+    if not task_active:
+        return None
+    visible = tuple(regions)
+    if not _skill_upgrade_page_visible(visible):
+        return None
+    unlearned = any(
+        re.search(r"花灵庇佑\+?\D{0,3}0级", normalize_visible_text(region.text))
+        and region.confidence >= 0.75
+        for region in visible
+    )
+    if not unlearned:
+        return None
+    candidates = [
+        region
+        for region in visible
+        if "学习" in normalize_visible_text(region.text)
+        and region.confidence >= 0.80
+        and region.box.center.x >= 0.65
+        and region.box.center.y >= 0.70
+    ]
+    return max(candidates, key=lambda region: region.confidence) if candidates else None
+
+
+def fourth_skill_training_complete(
+    regions: Iterable[TextRegion], *, task_active: bool
+) -> bool:
+    """The requested 花灵庇佑 skill visibly reached level one."""
+    if not task_active:
+        return False
+    visible = tuple(regions)
+    return _skill_upgrade_page_visible(visible) and any(
+        re.search(
+            r"花灵庇佑\+?\D{0,3}[1-9]\d*级",
+            normalize_visible_text(region.text),
+        )
         and region.confidence >= 0.75
         for region in visible
     )

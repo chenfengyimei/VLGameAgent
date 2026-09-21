@@ -803,3 +803,38 @@ steps:
     recognize: {all: [回顾剧情], any: [秒后自动继续, 仙女井凤]}
     action: click_hotspot:ui_dialogue_advance
     expected: 正常推进抵达悬铃会分部后的剧情
+  - id: fourth_skill_task_entry
+    order: 1140
+    evidence: owner-described:no-screenshot
+    source: ocr_task_panel_fast
+    recognize: {any_task: [学习第4个技能, 学习第四个技能], evidence_status: owner_described_no_screenshot}
+    action: click_task_tracker
+    expected: 点击左上任务并打开第四技能学习界面
+  - id: fourth_skill_control_node
+    order: 1150
+    evidence: docs/assets/mumu-xianyu/onboarding/115-fourth-skill-control-node.png
+    source: ocr_skill_control_node_fast
+    recognize: {all: [升级, 技能点], quest_memory: 学习第四个技能, control: 控制节点}
+    action: click_text:控制
+    expected: 选中教学高亮的控制技能节点
+  - id: fourth_skill_learn
+    order: 1160
+    evidence: docs/assets/mumu-xianyu/onboarding/116-fourth-skill-learn.png
+    source: ocr_fourth_skill_learn_fast
+    recognize: {all: [升级, 技能点, 花灵庇佑, 0级], control: 学习}
+    action: click_text:学习
+    expected: 消耗一个技能点学习花灵庇佑
+  - id: fourth_skill_complete_exit
+    order: 1170
+    evidence: owner-described:no-screenshot
+    source: ocr_fourth_skill_complete_back_fast
+    recognize: {all: [升级, 技能点, 花灵庇佑, 1级], evidence_status: owner_described_no_screenshot}
+    action: click_hotspot:ui_back
+    expected: 第四技能学习完成后点击左上角退出升级界面
+  - id: fourth_skill_submit
+    order: 1180
+    evidence: docs/assets/mumu-xianyu/onboarding/118-fourth-skill-submit.png
+    source: ocr_task_panel_fast
+    recognize: {any_task: [无上招式, 任务已完成点击提交]}
+    action: click_task_tracker
+    expected: 点击左上任务提交无上招式并领取奖励
