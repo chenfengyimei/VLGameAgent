@@ -422,6 +422,29 @@ def black_clad_leader_combat_active(regions: Iterable[TextRegion]) -> bool:
     return task_active and boss_visible
 
 
+def heroic_rescue_combat_active(regions: Iterable[TextRegion]) -> bool:
+    """Recorded 英雄救美 fight against 姚九 and his accomplices."""
+    visible = tuple(regions)
+    task_active = any(
+        any(
+            cue in normalize_visible_text(region.text)
+            for cue in ("英雄救美", "击败池早和姚九")
+        )
+        and region.confidence >= 0.75
+        and region.box.center.x <= 0.38
+        and 0.14 <= region.box.center.y <= 0.45
+        for region in visible
+    )
+    enemy_visible = any(
+        "姚九" in normalize_visible_text(region.text)
+        and region.confidence >= 0.75
+        and 0.25 <= region.box.center.x <= 0.75
+        and 0.10 <= region.box.center.y <= 0.65
+        for region in visible
+    )
+    return task_active and enemy_visible
+
+
 def pet_training_entry_control(regions: Iterable[TextRegion]) -> TextRegion | None:
     """Right-side 灵宠 entry for the recorded upgrade/star-up tasks."""
     visible = tuple(regions)

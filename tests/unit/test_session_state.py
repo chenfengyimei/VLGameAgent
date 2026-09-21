@@ -13,6 +13,7 @@ from uga.agent.session_state import (
     demon_sect_disciple_combat_active,
     demonized_spirit_combat_active,
     find_xiuxian_path_quest_line,
+    heroic_rescue_combat_active,
     master_message_event_control,
     mumu_close_dialog_cancel,
     notice_board_event_stage,
@@ -322,6 +323,17 @@ class QuestMemoryTests(unittest.TestCase):
         )
         self.assertTrue(black_clad_leader_combat_active(boss))
         self.assertFalse(black_clad_leader_combat_active(regions("幕后黑手")))
+
+        heroic_rescue = regions("英雄救美", "击败池早和姚九 0/1") + (
+            TextRegion("姚九", NormalizedBox(0.52, 0.22, 0.61, 0.30), 0.99),
+        )
+        self.assertTrue(heroic_rescue_combat_active(heroic_rescue))
+        self.assertFalse(heroic_rescue_combat_active(regions("英雄救美")))
+        self.assertFalse(
+            heroic_rescue_combat_active(
+                (TextRegion("姚九", NormalizedBox(0.52, 0.22, 0.61, 0.30), 0.99),)
+            )
+        )
 
     def test_peach_talisman_barrier_requires_instruction_and_countdown(self) -> None:
         instruction = TextRegion(

@@ -754,3 +754,52 @@ steps:
     recognize: {all: [回顾剧情], any: [秒后自动继续, 洛青阳]}
     action: click_hotspot:ui_dialogue_advance
     expected: 正常推进洛青阳对话
+  - id: river_city_intro_dialogue
+    order: 1070
+    evidence: docs/assets/mumu-xianyu/onboarding/107-city-intro-dialogue.png
+    source: ocr_dialogue_click_fast
+    recognize: {all: [回顾剧情], any: [秒后自动继续, 洛青阳]}
+    action: click_hotspot:ui_dialogue_advance
+    expected: 正常推进河洛城介绍剧情
+  - id: yao_jiu_dialogue
+    order: 1080
+    evidence: docs/assets/mumu-xianyu/onboarding/108-yao-jiu-dialogue.png
+    source: ocr_dialogue_click_fast
+    recognize: {all: [回顾剧情], any: [秒后自动继续, 姚九]}
+    action: click_hotspot:ui_dialogue_advance
+    expected: 正常推进姚九出现后的剧情
+  - id: heroic_rescue_combat
+    order: 1090
+    evidence: docs/assets/mumu-xianyu/onboarding/109-heroic-rescue-combat.png
+    source: ocr_heroic_rescue_combat_fast
+    recognize: {any_task: [英雄救美, 击败池早和姚九], enemy: 姚九}
+    action: cycle_hotspots:[ui_pet_group_attack,ui_heal,ui_secondary_group_attack,ui_group_attack]
+    expected: 循环三枚群攻与治疗技能，击败池早和姚九并保持生存
+  - id: girl_azi_task
+    order: 1100
+    evidence: docs/assets/mumu-xianyu/onboarding/110-girl-azi-task.png
+    source: ocr_task_panel_fast
+    recognize: {all: [主线], any_task: [少女阿紫, 与阿紫对话]}
+    action: click_task_tracker
+    expected: 自动寻路至阿紫并开始对话
+  - id: girl_azi_dialogue
+    order: 1110
+    evidence: docs/assets/mumu-xianyu/onboarding/111-girl-azi-dialogue.png
+    source: ocr_dialogue_click_fast
+    recognize: {all: [回顾剧情], any: [秒后自动继续, 阿紫]}
+    action: click_hotspot:ui_dialogue_advance
+    expected: 正常推进与阿紫的剧情对话
+  - id: xuanling_branch_task
+    order: 1120
+    evidence: docs/assets/mumu-xianyu/onboarding/112-xuanling-branch-task.png
+    source: ocr_task_panel_fast
+    recognize: {all: [主线], any_task: [悬铃分部, 跟着阿紫去悬铃会分部]}
+    action: click_task_tracker
+    expected: 跟随阿紫自动寻路至悬铃会分部
+  - id: xuanling_branch_dialogue
+    order: 1130
+    evidence: docs/assets/mumu-xianyu/onboarding/113-xuanling-branch-dialogue.png
+    source: ocr_dialogue_click_fast
+    recognize: {all: [回顾剧情], any: [秒后自动继续, 仙女井凤]}
+    action: click_hotspot:ui_dialogue_advance
+    expected: 正常推进抵达悬铃会分部后的剧情

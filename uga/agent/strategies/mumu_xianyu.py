@@ -109,6 +109,19 @@ _RULES: tuple[StrategyRule, ...] = (
         cooldown_s=0.0,
     ),
     StrategyRule(
+        name="heroic_rescue_combat",
+        source="ocr_heroic_rescue_combat_fast",
+        game_id=GAME_ID,
+        summary=(
+            "英雄救美/击败池早和姚九任务与姚九敌人同时可见时，依次轮换"
+            "灵宠群攻、治疗、上方群攻和下方群攻，直至进入战后剧情。"
+        ),
+        allowed_action="click(recorded combat skill hotspot rotation)",
+        risk="combat",
+        effect="Yao Jiu and his accomplices are defeated while the player stays healthy",
+        cooldown_s=0.0,
+    ),
+    StrategyRule(
         name="red_dust_auto_once",
         source="ocr_red_dust_auto_once_fast",
         game_id=GAME_ID,

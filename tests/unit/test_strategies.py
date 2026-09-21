@@ -38,7 +38,7 @@ class StrategyRegistryTests(unittest.TestCase):
         root = Path(__file__).parents[2]
         flow = load_recorded_flow(root / "configs/flows/mumu-xianyu-onboarding.yaml")
         self.assertEqual(flow.game_id, MUMU_REGISTRY.game_id)
-        self.assertEqual(len(flow.steps), 106)
+        self.assertEqual(len(flow.steps), 113)
         self.assertEqual(
             {
                 Path(step.evidence).name
@@ -153,6 +153,13 @@ class StrategyRegistryTests(unittest.TestCase):
                 "104-notice-board-left.png",
                 "105-notice-board-right.png",
                 "106-post-notice-board-dialogue.png",
+                "107-city-intro-dialogue.png",
+                "108-yao-jiu-dialogue.png",
+                "109-heroic-rescue-combat.png",
+                "110-girl-azi-task.png",
+                "111-girl-azi-dialogue.png",
+                "112-xuanling-branch-task.png",
+                "113-xuanling-branch-dialogue.png",
             },
         )
         for step in flow.steps:
@@ -260,6 +267,7 @@ class StrategyRegistryTests(unittest.TestCase):
             "ocr_raging_tree_spirit_group_attack_fast",
             "ocr_demon_sect_disciple_group_attack_fast",
             "ocr_black_clad_leader_combat_fast",
+            "ocr_heroic_rescue_combat_fast",
             "ocr_red_dust_auto_once_fast",
             "ocr_pet_training_entry_fast",
             "ocr_pet_information_tab_fast",
@@ -742,6 +750,49 @@ class PlannerStrategyScopingTests(unittest.TestCase):
         self.assertEqual(
             planner.last_decision_source,
             "ocr_black_clad_leader_combat_fast",
+        )
+
+    def test_heroic_rescue_fight_rotates_attack_heal_and_attacks(self) -> None:
+        planner = GroundedVlmPlanner(
+            _Client([]),
+            max_temporal_frames=1,
+            max_target_crops=0,
+            compact_output=True,
+            prefer_ocr_task_panel=True,
+            strategy_registry=MUMU_REGISTRY,
+            pet_group_attack_hotspot=(0.950, 0.500),
+            heal_hotspot=(0.840, 0.635),
+            secondary_group_attack_hotspot=(0.790, 0.745),
+            group_attack_hotspot=(0.770, 0.890),
+        )
+        snapshot = _onboarding_snapshot(
+            TextRegion("主线", NormalizedBox(0.04, 0.16, 0.11, 0.21), 0.99),
+            TextRegion("英雄救美", NormalizedBox(0.04, 0.22, 0.18, 0.27), 0.99),
+            TextRegion(
+                "击败池早和姚九 0/1",
+                NormalizedBox(0.04, 0.27, 0.25, 0.32),
+                0.99,
+            ),
+            TextRegion("姚九", NormalizedBox(0.52, 0.22, 0.61, 0.30), 0.99),
+        )
+
+        labels: list[str] = []
+        for _ in range(4):
+            outcome = planner._ocr_fast_path(snapshot)  # type: ignore[attr-defined]
+            assert outcome is not None and outcome.action is not None
+            labels.append(outcome.action.target_label)
+        self.assertEqual(
+            labels,
+            [
+                "ui_pet_group_attack",
+                "ui_heal",
+                "ui_secondary_group_attack",
+                "ui_group_attack",
+            ],
+        )
+        self.assertEqual(
+            planner.last_decision_source,
+            "ocr_heroic_rescue_combat_fast",
         )
 
     def test_realm_breakthrough_submits_claims_confirms_and_exits(self) -> None:

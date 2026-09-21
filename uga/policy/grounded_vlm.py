@@ -24,6 +24,7 @@ from uga.agent.session_state import (
     find_close_glyph,
     find_market_entry,
     find_xiuxian_path_quest_line,
+    heroic_rescue_combat_active,
     invasion_combat_active,
     invasion_group_attack_control,
     invasion_task_navigation_target,
@@ -481,6 +482,7 @@ class GroundedVlmPlanner:
         self._raging_tree_combat_skill_index = 0
         self._demon_sect_combat_skill_index = 0
         self._black_clad_leader_combat_skill_index = 0
+        self._heroic_rescue_combat_skill_index = 0
         self._task_panel_cooldown_s = 25.0
         self._last_task_panel_click: tuple[str, float] | None = None
         self._last_stall_item_click: float | None = None
@@ -1460,6 +1462,29 @@ class GroundedVlmPlanner:
                     hotspot,
                     "ocr_black_clad_leader_combat_fast",
                     "the black-clad leader takes damage while the player remains healthy",
+                )
+        if heroic_rescue_combat_active(snapshot.visible_text):
+            skills = tuple(
+                (label, hotspot)
+                for label, hotspot in (
+                    ("ui_pet_group_attack", self._pet_group_attack_hotspot),
+                    ("ui_heal", self._heal_hotspot),
+                    ("ui_secondary_group_attack", self._secondary_group_attack_hotspot),
+                    ("ui_group_attack", self._group_attack_hotspot),
+                )
+                if hotspot is not None
+            )
+            if skills:
+                label, hotspot = skills[
+                    self._heroic_rescue_combat_skill_index % len(skills)
+                ]
+                self._heroic_rescue_combat_skill_index += 1
+                return self._hotspot_click_action(
+                    snapshot,
+                    label,
+                    hotspot,
+                    "ocr_heroic_rescue_combat_fast",
+                    "Yao Jiu and his accomplices take damage while the player stays healthy",
                 )
         auto_combat_enabled = bool(
             session_context and "auto_combat_enabled=true" in session_context
