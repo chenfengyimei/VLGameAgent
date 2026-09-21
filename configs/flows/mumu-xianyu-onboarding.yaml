@@ -565,3 +565,66 @@ steps:
     recognize: {control: 跳过, region: game_top_right}
     action: click_text:跳过
     expected: 点击右上跳过，结束战后过场剧情
+  - id: peach_heaven_illusion_quest
+    order: 800
+    evidence: docs/assets/mumu-xianyu/onboarding/80-peach-heaven-illusion-quest.png
+    source: ocr_task_panel_fast
+    recognize: {all: [主线], any: [桃天幻境, 进入桃树的结界]}
+    action: click_task_tracker
+    expected: 自动进入桃树结界
+  - id: millennium_peach_immortal_quest
+    order: 810
+    evidence: docs/assets/mumu-xianyu/onboarding/81-millennium-peach-immortal-quest.png
+    source: ocr_task_panel_fast
+    recognize: {all: [主线], any: [千年桃夭, 与桃夭对话]}
+    action: click_task_tracker
+    expected: 自动导航到桃夭并开始对话
+  - id: millennium_peach_immortal_dialogue
+    order: 820
+    evidence: docs/assets/mumu-xianyu/onboarding/82-millennium-peach-immortal-dialogue.png
+    source: ocr_dialogue_click_fast
+    recognize: {all: [回顾剧情], any: [秒后自动继续, 桃天大仙]}
+    action: click_hotspot:ui_dialogue_advance
+    expected: 快速推进与桃夭的剧情对话
+  - id: realm_breakthrough_entry
+    order: 830
+    evidence: docs/assets/mumu-xianyu/onboarding/83-realm-breakthrough-entry.png
+    source: ocr_realm_breakthrough_entry_fast
+    recognize: {any_task: [境界突破, 境界达到炼气前期], control: 变强}
+    action: click_text:变强
+    expected: 打开境界突破页面
+  - id: realm_breakthrough_submit
+    order: 840
+    evidence: docs/assets/mumu-xianyu/onboarding/84-realm-breakthrough-submit.png
+    source: ocr_realm_breakthrough_control_fast
+    recognize: {all: [境界, 直面天劫突破自身, 1/1], control: 提交}
+    action: click_text:提交
+    expected: 先提交已完成的境界目标
+  - id: realm_breakthrough_claim
+    order: 850
+    evidence: docs/assets/mumu-xianyu/onboarding/85-realm-breakthrough-claim.png
+    source: ocr_realm_breakthrough_control_fast
+    recognize: {all: [境界, 直面天劫突破自身, 已完成], control: 领取}
+    action: click_text:领取
+    expected: 提交完成后领取今日境界奖励
+  - id: realm_breakthrough_animation
+    order: 860
+    evidence: docs/assets/mumu-xianyu/onboarding/86-realm-breakthrough-animation.png
+    source: ocr_realm_breakthrough_animation_wait
+    recognize: {all: [境界, 突破瓶颈, 已完成, 已领取]}
+    action: wait
+    expected: 等待突破瓶颈动画完成并出现结果弹窗
+  - id: realm_breakthrough_confirm
+    order: 870
+    evidence: docs/assets/mumu-xianyu/onboarding/87-realm-breakthrough-confirm.png
+    source: ocr_realm_breakthrough_control_fast
+    recognize: {all: [炼气前期, 属性总览], control: 确定}
+    action: click_text:确定
+    expected: 确认炼气前期属性与奖励
+  - id: realm_breakthrough_success_exit
+    order: 880
+    evidence: owner-described:no-screenshot
+    source: ocr_realm_breakthrough_success_back_fast
+    recognize: {all: [突破成功], evidence_status: owner_described_no_screenshot}
+    action: click_hotspot:ui_back
+    expected: 突破成功后点击左上角退出按钮返回世界页

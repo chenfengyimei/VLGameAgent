@@ -23,6 +23,10 @@ from uga.agent.session_state import (
     quest_level_target,
     quest_page_keyword,
     raging_tree_spirit_combat_active,
+    realm_breakthrough_animation_active,
+    realm_breakthrough_control,
+    realm_breakthrough_entry_control,
+    realm_breakthrough_success,
     red_dust_auto_enable_ready,
     stable_anchor_tokens,
     xiuxian_path_objective_goto,
@@ -164,6 +168,58 @@ class QuestMemoryTests(unittest.TestCase):
             )
         )
 
+    def test_realm_breakthrough_controls_are_ordered_and_narrow(self) -> None:
+        entry = (
+            TextRegion(
+                "境界突破 境界达到炼气前期 0/1",
+                NormalizedBox(0.03, 0.23, 0.30, 0.34),
+                0.99,
+            ),
+            TextRegion("变强", NormalizedBox(0.18, 0.07, 0.27, 0.16), 0.99),
+        )
+        self.assertIsNotNone(realm_breakthrough_entry_control(entry))
+        self.assertIsNone(realm_breakthrough_entry_control(entry[1:]))
+
+        page = (
+            TextRegion("境界", NormalizedBox(0.05, 0.05, 0.18, 0.13), 0.99),
+            TextRegion(
+                "直面天劫突破自身",
+                NormalizedBox(0.61, 0.23, 0.82, 0.32),
+                0.99,
+            ),
+            TextRegion("提交", NormalizedBox(0.79, 0.29, 0.91, 0.38), 0.99),
+            TextRegion("领取", NormalizedBox(0.69, 0.86, 0.82, 0.95), 0.99),
+        )
+        control = realm_breakthrough_control(page)
+        self.assertIsNotNone(control)
+        assert control is not None
+        self.assertEqual(control[0], "submit")
+
+        claimed = page[:2] + (
+            TextRegion("已完成", NormalizedBox(0.79, 0.29, 0.91, 0.38), 0.99),
+            page[-1],
+        )
+        control = realm_breakthrough_control(claimed)
+        self.assertIsNotNone(control)
+        assert control is not None
+        self.assertEqual(control[0], "claim")
+
+        animation = claimed + (
+            TextRegion("突破瓶颈", NormalizedBox(0.25, 0.40, 0.42, 0.59), 0.99),
+            TextRegion("已领取", NormalizedBox(0.70, 0.86, 0.82, 0.95), 0.99),
+        )
+        self.assertTrue(realm_breakthrough_animation_active(animation))
+        self.assertTrue(
+            realm_breakthrough_success(
+                (
+                    TextRegion(
+                        "突破成功",
+                        NormalizedBox(0.38, 0.18, 0.62, 0.28),
+                        0.99,
+                    ),
+                )
+            )
+        )
     def setUp(self) -> None:
         self.state = GameSessionState()
 

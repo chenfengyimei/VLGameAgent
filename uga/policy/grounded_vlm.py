@@ -49,6 +49,10 @@ from uga.agent.session_state import (
     quest_page_keyword,
     raging_tree_spirit_combat_active,
     real_name_gate_active,
+    realm_breakthrough_animation_active,
+    realm_breakthrough_control,
+    realm_breakthrough_entry_control,
+    realm_breakthrough_success,
     realm_promotion_ready,
     red_dust_auto_enable_ready,
     rescue_little_dragon_choice,
@@ -975,6 +979,60 @@ class GroundedVlmPlanner:
                 source="ocr_peach_talisman_continue_fast",
                 expected_effect="the peach-talisman reward presentation closes",
                 action_kind=GuiActionKind.CLICK,
+            )
+        realm_entry = realm_breakthrough_entry_control(snapshot.visible_text)
+        if realm_entry is not None:
+            self._last_decision_source = "ocr_realm_breakthrough_entry_fast"
+            return self._ocr_action(
+                snapshot,
+                realm_entry,
+                source="ocr_realm_breakthrough_entry_fast",
+                expected_effect="the realm breakthrough page opens",
+                action_kind=GuiActionKind.CLICK,
+            )
+        realm_control = realm_breakthrough_control(snapshot.visible_text)
+        if realm_control is not None:
+            stage, control = realm_control
+            expected_effect = {
+                "submit": "the completed realm objective is submitted",
+                "claim": "the realm reward is claimed and breakthrough begins",
+                "confirm": "the breakthrough result modal closes",
+            }[stage]
+            self._last_decision_source = "ocr_realm_breakthrough_control_fast"
+            return self._ocr_action(
+                snapshot,
+                control,
+                source="ocr_realm_breakthrough_control_fast",
+                expected_effect=expected_effect,
+                action_kind=GuiActionKind.CLICK,
+            )
+        if realm_breakthrough_animation_active(snapshot.visible_text):
+            self._last_decision_source = "ocr_realm_breakthrough_animation_wait"
+            return PlannerOutcome(
+                uuid.uuid4().hex,
+                snapshot.frame_id,
+                snapshot.frame_sequence,
+                snapshot.window_identity.window_generation,
+                snapshot.geometry_generation,
+                snapshot.task_generation,
+                DecisionKind.WAIT,
+                "the realm breakthrough animation is running",
+                snapshot.text,
+                GoalStatus.IN_PROGRESS,
+                1.0,
+                None,
+                WaitReason.ANIMATION,
+                explanation=(
+                    "突破瓶颈, 已完成 and 已领取 are visible; wait for the result modal"
+                ),
+            )
+        if (
+            self._back_hotspot is not None
+            and realm_breakthrough_success(snapshot.visible_text)
+        ):
+            return self._exit_action(
+                snapshot,
+                "ocr_realm_breakthrough_success_back_fast",
             )
         pet_entry = pet_training_entry_control(snapshot.visible_text)
         if pet_entry is not None:

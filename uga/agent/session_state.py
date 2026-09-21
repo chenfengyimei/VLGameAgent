@@ -1274,6 +1274,119 @@ def realm_promotion_ready(regions: Iterable[TextRegion]) -> bool:
     return has_title and done_count >= 2
 
 
+def realm_breakthrough_entry_control(regions: Iterable[TextRegion]) -> TextRegion | None:
+    """The top-left 变强 shortcut for the recorded 境界突破 main quest."""
+    visible = tuple(regions)
+    has_task = any(
+        "境界突破" in normalize_visible_text(region.text)
+        and region.confidence >= 0.80
+        and region.box.center.x <= 0.35
+        and 0.15 <= region.box.center.y <= 0.45
+        for region in visible
+    )
+    if not has_task:
+        return None
+    candidates = [
+        region
+        for region in visible
+        if normalize_visible_text(region.text) == "变强"
+        and region.confidence >= 0.80
+        and 0.12 <= region.box.center.x <= 0.35
+        and 0.05 <= region.box.center.y <= 0.22
+    ]
+    return max(candidates, key=lambda region: region.confidence) if candidates else None
+
+
+def realm_breakthrough_control(
+    regions: Iterable[TextRegion],
+) -> tuple[str, TextRegion] | None:
+    """Return the ordered control on the recorded realm-breakthrough page.
+
+    The objective page initially exposes both 提交 and the daily-reward 领取
+    button.  Submission must win until it becomes 已完成; only then may the
+    reward be claimed.  The later modal confirmation is independently anchored
+    by 炼气前期 + 属性总览.
+    """
+    visible = tuple(regions)
+    normalized = tuple(
+        (region, normalize_visible_text(region.text)) for region in visible
+    )
+    confirm = next(
+        (
+            region
+            for region, text in normalized
+            if text == "确定"
+            and region.confidence >= 0.85
+            and region.box.center.y >= 0.70
+        ),
+        None,
+    )
+    if confirm is not None and any(
+        "炼气前期" in text for _, text in normalized
+    ) and any("属性总览" in text for _, text in normalized):
+        return "confirm", confirm
+
+    has_title = any(
+        text == "境界"
+        and region.confidence >= 0.85
+        and region.box.center.x <= 0.30
+        and region.box.center.y <= 0.18
+        for region, text in normalized
+    )
+    if not has_title:
+        return None
+
+    has_objective = any("直面天劫突破自身" in text for _, text in normalized)
+    if not has_objective:
+        return None
+    submit = next(
+        (
+            region
+            for region, text in normalized
+            if text == "提交"
+            and region.confidence >= 0.85
+            and region.box.center.x >= 0.65
+            and 0.20 <= region.box.center.y <= 0.55
+        ),
+        None,
+    )
+    if submit is not None:
+        return "submit", submit
+    claim = next(
+        (
+            region
+            for region, text in normalized
+            if text == "领取"
+            and region.confidence >= 0.85
+            and region.box.center.x >= 0.60
+            and region.box.center.y >= 0.65
+        ),
+        None,
+    )
+    return ("claim", claim) if claim is not None else None
+
+
+def realm_breakthrough_animation_active(regions: Iterable[TextRegion]) -> bool:
+    """Whether 突破瓶颈 is animating after submit and reward collection."""
+    visible = tuple(regions)
+    texts = tuple(normalize_visible_text(region.text) for region in visible)
+    return (
+        any(text == "境界" for text in texts)
+        and any("突破瓶颈" in text for text in texts)
+        and any("已完成" in text for text in texts)
+        and any("已领取" in text for text in texts)
+    )
+
+
+def realm_breakthrough_success(regions: Iterable[TextRegion]) -> bool:
+    """Owner-described terminal page shown after realm breakthrough succeeds."""
+    return any(
+        "突破成功" in normalize_visible_text(region.text)
+        and region.confidence >= 0.80
+        for region in regions
+    )
+
+
 def stable_anchor_tokens(values: Iterable[str]) -> frozenset[str]:
     """Digit-stripped tokens for effect detection.
 

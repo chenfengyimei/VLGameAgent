@@ -38,9 +38,13 @@ class StrategyRegistryTests(unittest.TestCase):
         root = Path(__file__).parents[2]
         flow = load_recorded_flow(root / "configs/flows/mumu-xianyu-onboarding.yaml")
         self.assertEqual(flow.game_id, MUMU_REGISTRY.game_id)
-        self.assertEqual(len(flow.steps), 79)
+        self.assertEqual(len(flow.steps), 88)
         self.assertEqual(
-            {Path(step.evidence).name for step in flow.steps},
+            {
+                Path(step.evidence).name
+                for step in flow.steps
+                if not step.evidence.startswith("owner-described:")
+            },
             {f"{index:02d}-{name}" for index, name in enumerate((
                 "character-create.png",
                 "preset-selection.png",
@@ -121,11 +125,26 @@ class StrategyRegistryTests(unittest.TestCase):
                 "boss-combat.png",
                 "boss-dialogue.png",
                 "boss-cutscene-skip.png",
+                "peach-heaven-illusion-quest.png",
+                "millennium-peach-immortal-quest.png",
+                "millennium-peach-immortal-dialogue.png",
+                "realm-breakthrough-entry.png",
+                "realm-breakthrough-submit.png",
+                "realm-breakthrough-claim.png",
+                "realm-breakthrough-animation.png",
+                "realm-breakthrough-confirm.png",
             ), start=1)},
         )
         for step in flow.steps:
             with self.subTest(step=step.step_id):
-                self.assertTrue((root / step.evidence).is_file())
+                if step.evidence.startswith("owner-described:"):
+                    self.assertEqual(step.evidence, "owner-described:no-screenshot")
+                    self.assertEqual(
+                        step.recognize.get("evidence_status"),
+                        "owner_described_no_screenshot",
+                    )
+                else:
+                    self.assertTrue((root / step.evidence).is_file())
                 self.assertTrue(MUMU_REGISTRY.allows(step.source))
         barrier_step = next(
             step for step in flow.steps if step.step_id == "peach_talisman_barrier_drag"
@@ -258,6 +277,10 @@ class StrategyRegistryTests(unittest.TestCase):
             "ocr_xiuxian_objective_goto_fast",
             "ocr_stall_item_fast",
             "ocr_realm_promote_fast",
+            "ocr_realm_breakthrough_entry_fast",
+            "ocr_realm_breakthrough_control_fast",
+            "ocr_realm_breakthrough_animation_wait",
+            "ocr_realm_breakthrough_success_back_fast",
             "ocr_market_entry_fast",
         ):
             self.assertIn(source, known_sources)
@@ -687,6 +710,75 @@ class PlannerStrategyScopingTests(unittest.TestCase):
         self.assertEqual(
             planner.last_decision_source,
             "ocr_black_clad_leader_combat_fast",
+        )
+
+    def test_realm_breakthrough_submits_claims_confirms_and_exits(self) -> None:
+        planner = GroundedVlmPlanner(
+            _Client([]),
+            max_temporal_frames=1,
+            max_target_crops=0,
+            compact_output=True,
+            prefer_ocr_task_panel=True,
+            strategy_registry=MUMU_REGISTRY,
+            back_hotspot=(0.060, 0.080),
+        )
+        title = TextRegion("境界", NormalizedBox(0.05, 0.05, 0.18, 0.13), 0.99)
+        objective = TextRegion(
+            "直面天劫突破自身",
+            NormalizedBox(0.61, 0.23, 0.82, 0.32),
+            0.99,
+        )
+        submit = _onboarding_snapshot(
+            title,
+            objective,
+            TextRegion("提交", NormalizedBox(0.79, 0.29, 0.91, 0.38), 0.99),
+            TextRegion("领取", NormalizedBox(0.69, 0.86, 0.82, 0.95), 0.99),
+        )
+        outcome = planner._ocr_fast_path(submit)  # type: ignore[attr-defined]
+        assert outcome is not None and outcome.action is not None
+        self.assertEqual(outcome.action.target_label, "提交")
+
+        claim = _onboarding_snapshot(
+            title,
+            objective,
+            TextRegion("已完成", NormalizedBox(0.79, 0.29, 0.91, 0.38), 0.99),
+            TextRegion("领取", NormalizedBox(0.69, 0.86, 0.82, 0.95), 0.99),
+        )
+        outcome = planner._ocr_fast_path(claim)  # type: ignore[attr-defined]
+        assert outcome is not None and outcome.action is not None
+        self.assertEqual(outcome.action.target_label, "领取")
+
+        animation = _onboarding_snapshot(
+            title,
+            objective,
+            TextRegion("已完成", NormalizedBox(0.79, 0.29, 0.91, 0.38), 0.99),
+            TextRegion("已领取", NormalizedBox(0.69, 0.86, 0.82, 0.95), 0.99),
+            TextRegion("突破瓶颈", NormalizedBox(0.25, 0.40, 0.42, 0.59), 0.99),
+        )
+        outcome = planner._ocr_fast_path(animation)  # type: ignore[attr-defined]
+        assert outcome is not None
+        self.assertEqual(outcome.kind, DecisionKind.WAIT)
+        self.assertIsNone(outcome.action)
+
+        confirm = _onboarding_snapshot(
+            title,
+            TextRegion("炼气前期", NormalizedBox(0.42, 0.19, 0.57, 0.32), 0.99),
+            TextRegion("属性总览", NormalizedBox(0.42, 0.43, 0.58, 0.52), 0.99),
+            TextRegion("确定", NormalizedBox(0.42, 0.80, 0.57, 0.90), 0.99),
+        )
+        outcome = planner._ocr_fast_path(confirm)  # type: ignore[attr-defined]
+        assert outcome is not None and outcome.action is not None
+        self.assertEqual(outcome.action.target_label, "确定")
+
+        success = _onboarding_snapshot(
+            TextRegion("突破成功", NormalizedBox(0.38, 0.18, 0.62, 0.28), 0.99),
+        )
+        outcome = planner._ocr_fast_path(success)  # type: ignore[attr-defined]
+        assert outcome is not None and outcome.action is not None
+        self.assertEqual(outcome.action.target_label, "ui_back")
+        self.assertEqual(
+            planner.last_decision_source,
+            "ocr_realm_breakthrough_success_back_fast",
         )
 
     def test_red_dust_auto_is_suppressed_after_the_persisted_once_flag(self) -> None:
