@@ -932,6 +932,14 @@ def quest_is_fourth_skill_learning_task(quest_text: str | None) -> bool:
     )
 
 
+def quest_is_cipher_manual_task(quest_text: str | None) -> bool:
+    """Whether the durable task is the recorded 破解密信功法 tutorial."""
+    if not quest_text:
+        return False
+    normalized = normalize_visible_text(quest_text)
+    return "破解密信" in normalized
+
+
 def quest_is_xuanling_tower_task(quest_text: str | None) -> bool:
     """Whether the durable task is the recorded first 悬铃塔 challenge."""
     if not quest_text:
@@ -1192,6 +1200,143 @@ def skill_training_entry_control(regions: Iterable[TextRegion]) -> TextRegion | 
         and 0.25 <= region.box.center.y <= 0.75
     ]
     return max(candidates, key=lambda region: region.confidence) if candidates else None
+
+
+def cultivation_manual_entry_control(
+    regions: Iterable[TextRegion],
+) -> TextRegion | None:
+    """Right-side 技能 entry for the 破解密信功法 activation tutorial."""
+    visible = tuple(regions)
+    task_active = any(
+        any(
+            cue in normalize_visible_text(region.text)
+            for cue in ("破解密信", "与鬼探花对话")
+        )
+        and region.confidence >= 0.75
+        and region.box.center.x <= 0.38
+        for region in visible
+    )
+    tutorial_active = any(
+        "前往查看功法" in normalize_visible_text(region.text)
+        and region.confidence >= 0.75
+        for region in visible
+    )
+    if not task_active or not tutorial_active:
+        return None
+    candidates = [
+        region
+        for region in visible
+        if normalize_visible_text(region.text) == "技能"
+        and region.confidence >= 0.80
+        and region.box.center.x >= 0.85
+        and 0.25 <= region.box.center.y <= 0.75
+    ]
+    return max(candidates, key=lambda region: region.confidence) if candidates else None
+
+
+def _cultivation_manual_page_visible(regions: Iterable[TextRegion]) -> bool:
+    return any(
+        normalize_visible_text(region.text) == "功法"
+        and region.confidence >= 0.80
+        and region.box.center.x <= 0.30
+        and region.box.center.y <= 0.20
+        for region in regions
+    )
+
+
+def cultivation_manual_tab_control(
+    regions: Iterable[TextRegion], *, task_active: bool
+) -> TextRegion | None:
+    """Right-side 功法 tab while the cipher-manual tutorial is active."""
+    if not task_active:
+        return None
+    candidates = [
+        region
+        for region in regions
+        if normalize_visible_text(region.text) == "功法"
+        and region.confidence >= 0.80
+        and region.box.center.x >= 0.85
+        and 0.25 <= region.box.center.y <= 0.75
+    ]
+    return max(candidates, key=lambda region: region.confidence) if candidates else None
+
+
+def cultivation_manual_activate_control(
+    regions: Iterable[TextRegion], *, task_active: bool
+) -> TextRegion | None:
+    """Activate 长生诀 only on its explicitly guided activation page."""
+    if not task_active:
+        return None
+    visible = tuple(regions)
+    if not _cultivation_manual_page_visible(visible):
+        return None
+    has_manual = any(
+        "长生诀" in normalize_visible_text(region.text)
+        and region.confidence >= 0.75
+        for region in visible
+    )
+    has_activation_cue = any(
+        any(
+            cue in normalize_visible_text(region.text)
+            for cue in ("可激活", "点击激活功法")
+        )
+        and region.confidence >= 0.75
+        for region in visible
+    )
+    if not has_manual or not has_activation_cue:
+        return None
+    candidates = [
+        region
+        for region in visible
+        if normalize_visible_text(region.text) == "激活"
+        and region.confidence >= 0.80
+        and region.box.center.x >= 0.60
+        and region.box.center.y >= 0.75
+    ]
+    return max(candidates, key=lambda region: region.confidence) if candidates else None
+
+
+def cultivation_manual_activation_complete(
+    regions: Iterable[TextRegion], *, task_active: bool
+) -> bool:
+    """Whether 长生诀 visibly changed from activatable to activated."""
+    if not task_active:
+        return False
+    visible = tuple(regions)
+    if not _cultivation_manual_page_visible(visible):
+        return False
+    has_manual = any(
+        "长生诀" in normalize_visible_text(region.text)
+        and region.confidence >= 0.75
+        for region in visible
+    )
+    if not has_manual:
+        return False
+    if any(
+        any(
+            cue in normalize_visible_text(region.text)
+            for cue in ("激活成功", "已激活")
+        )
+        and region.confidence >= 0.75
+        for region in visible
+    ):
+        return True
+    still_activatable = any(
+        any(
+            cue in normalize_visible_text(region.text)
+            for cue in ("可激活", "点击激活功法")
+        )
+        and region.confidence >= 0.75
+        for region in visible
+    )
+    activate_button = any(
+        normalize_visible_text(region.text) == "激活"
+        and region.confidence >= 0.80
+        and region.box.center.x >= 0.60
+        and region.box.center.y >= 0.75
+        for region in visible
+    )
+    return not still_activatable and not activate_button
 
 
 def _skill_upgrade_page_visible(regions: Iterable[TextRegion]) -> bool:

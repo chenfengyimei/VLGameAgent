@@ -17,6 +17,10 @@ from uga.agent.session_state import (
     character_creation_control,
     character_creation_name_prompt_active,
     close_glyph_aim,
+    cultivation_manual_activate_control,
+    cultivation_manual_activation_complete,
+    cultivation_manual_entry_control,
+    cultivation_manual_tab_control,
     cutscene_skip_control,
     demon_sect_disciple_combat_active,
     demonized_spirit_combat_active,
@@ -56,6 +60,7 @@ from uga.agent.session_state import (
     pet_travel_tower_entry_control,
     pet_upgrade_control,
     phrase_scroll_close_control,
+    quest_is_cipher_manual_task,
     quest_is_fourth_skill_learning_task,
     quest_is_market_task,
     quest_is_pet_companion_task,
@@ -499,6 +504,9 @@ class GroundedVlmPlanner:
         self._xuanling_tower_challenge_at: float | None = None
         self._pet_travel_started_at: float | None = None
         self._pet_travel_reward_closed = False
+        self._cultivation_manual_started_at: float | None = None
+        self._cultivation_manual_tab_selected = False
+        self._cultivation_manual_activation_requested = False
         self._task_panel_cooldown_s = 25.0
         self._last_task_panel_click: tuple[str, float] | None = None
         self._last_stall_item_click: float | None = None
@@ -1287,6 +1295,76 @@ class GroundedVlmPlanner:
                 source="ocr_pet_star_action_fast",
                 expected_effect="the pet star-up flow advances",
                 action_kind=GuiActionKind.CLICK,
+            )
+        manual_entry = cultivation_manual_entry_control(snapshot.visible_text)
+        if manual_entry is not None:
+            self._cultivation_manual_started_at = time.monotonic()
+            self._cultivation_manual_tab_selected = False
+            self._cultivation_manual_activation_requested = False
+            self._last_decision_source = "ocr_cultivation_manual_entry_fast"
+            return self._ocr_action(
+                snapshot,
+                manual_entry,
+                source="ocr_cultivation_manual_entry_fast",
+                expected_effect="the cultivation interface opens",
+                action_kind=GuiActionKind.CLICK,
+            )
+        if (
+            self._cultivation_manual_started_at is not None
+            and time.monotonic() - self._cultivation_manual_started_at > 300.0
+        ):
+            self._cultivation_manual_started_at = None
+            self._cultivation_manual_tab_selected = False
+            self._cultivation_manual_activation_requested = False
+        manual_task = quest_is_cipher_manual_task(quest_text)
+        manual_active = (
+            manual_task or self._cultivation_manual_started_at is not None
+        )
+        if not self._cultivation_manual_tab_selected:
+            manual_tab = cultivation_manual_tab_control(
+                snapshot.visible_text,
+                task_active=manual_active,
+            )
+            if manual_tab is not None:
+                self._cultivation_manual_started_at = time.monotonic()
+                self._cultivation_manual_tab_selected = True
+                self._last_decision_source = "ocr_cultivation_manual_tab_fast"
+                return self._ocr_action(
+                    snapshot,
+                    manual_tab,
+                    source="ocr_cultivation_manual_tab_fast",
+                    expected_effect="the cultivation-manual shelf opens",
+                    action_kind=GuiActionKind.CLICK,
+                )
+        manual_activate = cultivation_manual_activate_control(
+            snapshot.visible_text,
+            task_active=manual_active and self._cultivation_manual_tab_selected,
+        )
+        if manual_activate is not None:
+            self._cultivation_manual_started_at = time.monotonic()
+            self._cultivation_manual_activation_requested = True
+            self._last_decision_source = "ocr_cultivation_manual_activate_fast"
+            return self._ocr_action(
+                snapshot,
+                manual_activate,
+                source="ocr_cultivation_manual_activate_fast",
+                expected_effect="长生诀 activates successfully",
+                action_kind=GuiActionKind.CLICK,
+            )
+        if (
+            self._cultivation_manual_activation_requested
+            and self._back_hotspot is not None
+            and cultivation_manual_activation_complete(
+                snapshot.visible_text,
+                task_active=manual_active,
+            )
+        ):
+            self._cultivation_manual_started_at = None
+            self._cultivation_manual_tab_selected = False
+            self._cultivation_manual_activation_requested = False
+            return self._exit_action(
+                snapshot,
+                "ocr_cultivation_manual_complete_back_fast",
             )
         skill_entry = skill_training_entry_control(snapshot.visible_text)
         if skill_entry is not None:

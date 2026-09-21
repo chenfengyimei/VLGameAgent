@@ -1006,3 +1006,45 @@ steps:
     recognize: {all: [根据句首, 将纸条拖到正确位置, 点击任意处关闭界面]}
     action: click_text:点击任意处关闭界面
     expected: 关闭已完成的句首配对纸条界面
+  - id: cipher_manual_skill_entry
+    order: 1430
+    evidence: docs/assets/mumu-xianyu/onboarding/143-cipher-manual-skill-entry.png
+    source: ocr_cultivation_manual_entry_fast
+    recognize: {any_task: [破解密信, 与鬼探花对话], all: [前往查看功法], control: 右侧技能}
+    action: click_text:技能
+    expected: 打开技能与功法界面
+  - id: cipher_manual_tab
+    order: 1440
+    evidence: docs/assets/mumu-xianyu/onboarding/144-cipher-manual-activate.png
+    source: ocr_cultivation_manual_tab_fast
+    recognize: {all: [功法, 长生诀, 可激活], control: 右侧功法标签}
+    action: click_text:功法
+    expected: 选择功法标签并显示长生诀激活详情
+  - id: cipher_manual_activate
+    order: 1450
+    evidence: docs/assets/mumu-xianyu/onboarding/144-cipher-manual-activate.png
+    source: ocr_cultivation_manual_activate_fast
+    recognize: {all: [功法, 长生诀, 可激活, 点击激活功法], control: 激活}
+    action: click_text:激活
+    expected: 激活长生诀功法
+  - id: cipher_manual_complete_exit
+    order: 1460
+    evidence: owner-described:no-screenshot
+    source: ocr_cultivation_manual_complete_back_fast
+    recognize: {all: [功法, 长生诀], state: activation_succeeded, evidence_status: owner_described_no_screenshot}
+    action: click_hotspot:ui_back
+    expected: 确认长生诀激活成功后点击左上角退出
+  - id: cipher_manual_task_continue
+    order: 1470
+    evidence: docs/assets/mumu-xianyu/onboarding/147-cipher-manual-task-continue.png
+    source: ocr_task_panel_fast
+    recognize: {all: [主线], any_task: [破解密信, 与鬼探花对话]}
+    action: click_task_tracker
+    expected: 点击左上任务并继续破解密信主线
+  - id: cipher_manual_dialogue
+    order: 1480
+    evidence: docs/assets/mumu-xianyu/onboarding/148-cipher-manual-dialogue.png
+    source: ocr_dialogue_click_fast
+    recognize: {all: [回顾剧情, 秒后自动继续]}
+    action: click_hotspot:ui_dialogue_advance
+    expected: 使用通用对话规则快速推进后续剧情

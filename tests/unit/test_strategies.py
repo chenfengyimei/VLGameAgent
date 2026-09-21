@@ -38,7 +38,7 @@ class StrategyRegistryTests(unittest.TestCase):
         root = Path(__file__).parents[2]
         flow = load_recorded_flow(root / "configs/flows/mumu-xianyu-onboarding.yaml")
         self.assertEqual(flow.game_id, MUMU_REGISTRY.game_id)
-        self.assertEqual(len(flow.steps), 142)
+        self.assertEqual(len(flow.steps), 148)
         self.assertEqual(
             {
                 Path(step.evidence).name
@@ -183,6 +183,10 @@ class StrategyRegistryTests(unittest.TestCase):
                 "140-ghost-flower-task.png",
                 "141-ghost-flower-dialogue.png",
                 "142-phrase-scroll-close.png",
+                "143-cipher-manual-skill-entry.png",
+                "144-cipher-manual-activate.png",
+                "147-cipher-manual-task-continue.png",
+                "148-cipher-manual-dialogue.png",
             },
         )
         for step in flow.steps:
@@ -308,6 +312,10 @@ class StrategyRegistryTests(unittest.TestCase):
             "ocr_skill_control_node_fast",
             "ocr_fourth_skill_learn_fast",
             "ocr_fourth_skill_complete_back_fast",
+            "ocr_cultivation_manual_entry_fast",
+            "ocr_cultivation_manual_tab_fast",
+            "ocr_cultivation_manual_activate_fast",
+            "ocr_cultivation_manual_complete_back_fast",
             "ocr_xuanling_tower_entry_fast",
             "ocr_xuanling_tower_challenge_fast",
             "ocr_xuanling_tower_battle_wait",
@@ -1662,6 +1670,122 @@ class PlannerStrategyScopingTests(unittest.TestCase):
                 planner.last_decision_source,
                 "ocr_skill_control_node_fast",
             )
+
+    def test_cipher_manual_selects_activates_exits_then_continues(self) -> None:
+        planner = GroundedVlmPlanner(
+            _Client([]),
+            max_temporal_frames=1,
+            max_target_crops=0,
+            compact_output=True,
+            prefer_ocr_task_panel=True,
+            strategy_registry=MUMU_REGISTRY,
+            back_hotspot=(0.060, 0.080),
+            dialogue_hotspot=(0.960, 0.915),
+        )
+        quest = "破解密信 与鬼探花对话"
+
+        entry = _onboarding_snapshot(
+            TextRegion("破解密信", NormalizedBox(0.04, 0.22, 0.18, 0.27), 0.99),
+            TextRegion(
+                "与鬼探花对话",
+                NormalizedBox(0.04, 0.27, 0.25, 0.32),
+                0.99,
+            ),
+            TextRegion(
+                "前往查看功法",
+                NormalizedBox(0.53, 0.60, 0.72, 0.70),
+                0.99,
+            ),
+            TextRegion("技能", NormalizedBox(0.92, 0.48, 0.99, 0.62), 0.99),
+        )
+        outcome = planner._ocr_fast_path(entry, quest_text=quest)  # type: ignore[attr-defined]
+        assert outcome is not None and outcome.action is not None
+        self.assertEqual(outcome.action.target_label, "技能")
+        self.assertEqual(
+            planner.last_decision_source,
+            "ocr_cultivation_manual_entry_fast",
+        )
+
+        manual_page = _onboarding_snapshot(
+            TextRegion("功法", NormalizedBox(0.05, 0.05, 0.18, 0.13), 0.99),
+            TextRegion("长生诀", NormalizedBox(0.18, 0.20, 0.26, 0.38), 0.99),
+            TextRegion("可激活", NormalizedBox(0.16, 0.25, 0.22, 0.34), 0.99),
+            TextRegion(
+                "点击激活功法",
+                NormalizedBox(0.30, 0.86, 0.51, 0.94),
+                0.99,
+            ),
+            TextRegion("功法", NormalizedBox(0.93, 0.44, 0.99, 0.58), 0.99),
+            TextRegion("激活", NormalizedBox(0.70, 0.86, 0.84, 0.94), 0.99),
+        )
+        outcome = planner._ocr_fast_path(  # type: ignore[attr-defined]
+            manual_page,
+            quest_text=quest,
+        )
+        assert outcome is not None and outcome.action is not None
+        self.assertEqual(outcome.action.target_box, manual_page.visible_text[-2].box)
+        self.assertEqual(
+            planner.last_decision_source,
+            "ocr_cultivation_manual_tab_fast",
+        )
+
+        outcome = planner._ocr_fast_path(  # type: ignore[attr-defined]
+            manual_page,
+            quest_text=quest,
+        )
+        assert outcome is not None and outcome.action is not None
+        self.assertEqual(outcome.action.target_label, "激活")
+        self.assertEqual(
+            planner.last_decision_source,
+            "ocr_cultivation_manual_activate_fast",
+        )
+
+        completed = _onboarding_snapshot(
+            TextRegion("功法", NormalizedBox(0.05, 0.05, 0.18, 0.13), 0.99),
+            TextRegion("长生诀", NormalizedBox(0.18, 0.20, 0.26, 0.38), 0.99),
+            TextRegion("已激活", NormalizedBox(0.68, 0.86, 0.84, 0.94), 0.99),
+        )
+        outcome = planner._ocr_fast_path(  # type: ignore[attr-defined]
+            completed,
+            quest_text=quest,
+        )
+        assert outcome is not None and outcome.action is not None
+        self.assertEqual(outcome.action.target_label, "ui_back")
+        self.assertEqual(
+            planner.last_decision_source,
+            "ocr_cultivation_manual_complete_back_fast",
+        )
+
+        task = _onboarding_snapshot(
+            TextRegion("主线", NormalizedBox(0.04, 0.16, 0.11, 0.21), 0.99),
+            TextRegion("破解密信", NormalizedBox(0.04, 0.22, 0.18, 0.27), 0.99),
+            TextRegion(
+                "与鬼探花对话",
+                NormalizedBox(0.04, 0.27, 0.25, 0.32),
+                0.99,
+            ),
+        )
+        outcome = planner._ocr_fast_path(task, quest_text=quest)  # type: ignore[attr-defined]
+        assert outcome is not None and outcome.action is not None
+        self.assertEqual(outcome.action.target_label, "与鬼探花对话")
+        self.assertEqual(planner.last_decision_source, "ocr_task_panel_fast")
+
+        dialogue = _onboarding_snapshot(
+            TextRegion(
+                "回顾剧情",
+                NormalizedBox(0.02, 0.43, 0.05, 0.60),
+                0.99,
+            ),
+            TextRegion(
+                "9秒后自动继续",
+                NormalizedBox(0.80, 0.89, 0.94, 0.95),
+                0.99,
+            ),
+        )
+        outcome = planner._ocr_fast_path(dialogue, quest_text=quest)  # type: ignore[attr-defined]
+        assert outcome is not None and outcome.action is not None
+        self.assertEqual(outcome.action.target_label, "ui_dialogue_advance")
+        self.assertEqual(planner.last_decision_source, "ocr_dialogue_click_fast")
 
     def test_xuanling_tower_enters_challenges_waits_and_leaves(self) -> None:
         planner = GroundedVlmPlanner(
