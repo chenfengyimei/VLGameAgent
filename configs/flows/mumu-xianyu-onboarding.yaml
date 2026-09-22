@@ -1398,3 +1398,59 @@ steps:
     recognize: {all: [摆摊, 我要出售, 我的摊位, 上架成功]}
     action: click_hotspot:ui_back
     expected: 上架成功后点击左上角退出摆摊页面
+  - id: familiar_faces_task
+    order: 1990
+    evidence: docs/assets/mumu-xianyu/onboarding/199-familiar-faces-navigation.png
+    source: ocr_task_panel_fast
+    recognize: {all: [主线], any_task: [熟悉面孔, 竟然在此看见熟人]}
+    action: click_task_tracker
+    expected: 点击左上任务并自动寻路前往熟人处
+  - id: familiar_faces_navigation_wait
+    order: 2000
+    evidence: docs/assets/mumu-xianyu/onboarding/199-familiar-faces-navigation.png
+    source: ocr_auto_navigation_wait
+    recognize: {all: [自动寻路中], any_task: [熟悉面孔, 竟然在此看见熟人]}
+    action: wait
+    expected: 等待自动寻路到达熟人处
+  - id: familiar_faces_dialogue
+    order: 2010
+    evidence: docs/assets/mumu-xianyu/onboarding/200-familiar-faces-dialogue.png
+    source: ocr_dialogue_click_fast
+    recognize: {all: [回顾剧情, 秒后自动继续]}
+    action: click_hotspot:ui_dialogue_advance
+    expected: 使用通用对话规则快速推进熟悉面孔剧情
+  - id: dao_trial_task
+    order: 2020
+    evidence: owner-described:no-screenshot
+    source: ocr_task_panel_fast
+    recognize: {state: generic_dao_trial_task, evidence_status: owner_described_no_screenshot}
+    action: click_task_tracker
+    expected: 按通用任务规则点击问道一试任务
+  - id: dao_trial_navigation_wait
+    order: 2030
+    evidence: owner-described:no-screenshot
+    source: ocr_auto_navigation_wait
+    recognize: {state: generic_auto_navigation_to_dao_trial, evidence_status: owner_described_no_screenshot}
+    action: wait
+    expected: 等待自动寻路到达问道一试场地
+  - id: dao_trial_mirror_entry
+    order: 2040
+    evidence: docs/assets/mumu-xianyu/onboarding/201-dao-trial-mirror-entry.png
+    source: ocr_spirit_mirror_entry_fast
+    recognize: {any_task: [问道一试, 问道一试轮到你上场了], control: 窥灵镜}
+    action: click_text:窥灵镜
+    expected: 点击场景中的窥灵镜进入迷雾互动
+  - id: spirit_mirror_center_click
+    order: 2050
+    evidence: docs/assets/mumu-xianyu/onboarding/202-spirit-mirror-center-click.png
+    source: ocr_spirit_mirror_center_fast
+    recognize: {all: [输入灵力冲散窥灵镜的迷雾, 秒后自动完成]}
+    action: click_hotspot:spirit_mirror_center
+    expected: 只点击一次镜面中心输入灵力
+  - id: spirit_mirror_completion_wait
+    order: 2060
+    evidence: docs/assets/mumu-xianyu/onboarding/202-spirit-mirror-center-click.png
+    source: ocr_spirit_mirror_wait
+    recognize: {all: [输入灵力冲散窥灵镜的迷雾, 秒后自动完成], state: center_already_clicked_once}
+    action: wait
+    expected: 点击一次后等待窥灵镜自动完成，禁止重复点击

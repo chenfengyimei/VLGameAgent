@@ -98,6 +98,8 @@ from uga.agent.session_state import (
     skill_training_entry_control,
     skill_treatment_node_control,
     sky_lantern_release_control,
+    spirit_mirror_entry_control,
+    spirit_mirror_interaction_active,
     stall_listing_control,
     stall_listing_succeeded,
     stall_sell_item_cell,
@@ -533,6 +535,7 @@ class GroundedVlmPlanner:
         self._cultivation_manual_started_at: float | None = None
         self._cultivation_manual_tab_selected = False
         self._cultivation_manual_activation_requested = False
+        self._spirit_mirror_clicked = False
         self._task_panel_cooldown_s = 25.0
         self._last_task_panel_click: tuple[str, float] | None = None
         self._last_stall_item_click: float | None = None
@@ -1058,6 +1061,47 @@ class GroundedVlmPlanner:
                 sky_lantern_release,
                 source="ocr_sky_lantern_release_fast",
                 expected_effect="the sky lantern is released and the wish scene advances",
+                action_kind=GuiActionKind.CLICK,
+            )
+        if spirit_mirror_interaction_active(snapshot.visible_text):
+            if self._spirit_mirror_clicked:
+                self._last_decision_source = "ocr_spirit_mirror_wait"
+                return PlannerOutcome(
+                    uuid.uuid4().hex,
+                    snapshot.frame_id,
+                    snapshot.frame_sequence,
+                    snapshot.window_identity.window_generation,
+                    snapshot.geometry_generation,
+                    snapshot.task_generation,
+                    DecisionKind.WAIT,
+                    "the spirit mirror was clicked once and is completing automatically",
+                    snapshot.text,
+                    GoalStatus.IN_PROGRESS,
+                    1.0,
+                    None,
+                    WaitReason.ANIMATION,
+                    explanation=(
+                        "ocr_spirit_mirror_wait prevents a second click while the "
+                        "five-second completion countdown remains visible"
+                    ),
+                )
+            self._spirit_mirror_clicked = True
+            return self._hotspot_click_action(
+                snapshot,
+                "spirit_mirror_center",
+                (0.515, 0.440),
+                "ocr_spirit_mirror_center_fast",
+                "the spirit mirror receives one click and starts clearing its mist",
+            )
+        spirit_mirror_entry = spirit_mirror_entry_control(snapshot.visible_text)
+        if spirit_mirror_entry is not None:
+            self._spirit_mirror_clicked = False
+            self._last_decision_source = "ocr_spirit_mirror_entry_fast"
+            return self._ocr_action(
+                snapshot,
+                spirit_mirror_entry,
+                source="ocr_spirit_mirror_entry_fast",
+                expected_effect="the spirit-mirror mist-clearing interaction opens",
                 action_kind=GuiActionKind.CLICK,
             )
         notice_board_stage = notice_board_event_stage(snapshot.visible_text)

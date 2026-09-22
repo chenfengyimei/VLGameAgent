@@ -1961,6 +1961,50 @@ def sky_lantern_release_control(regions: Iterable[TextRegion]) -> TextRegion | N
     return max(candidates, key=lambda region: region.confidence) if candidates else None
 
 
+def spirit_mirror_entry_control(regions: Iterable[TextRegion]) -> TextRegion | None:
+    """Scene-bound 窥灵镜 control for the recorded 问道一试 quest."""
+    visible = tuple(regions)
+    task_active = any(
+        any(
+            cue in normalize_visible_text(region.text)
+            for cue in ("问道一试", "问道一试轮到你上场了")
+        )
+        and region.confidence >= 0.75
+        and region.box.center.x <= 0.38
+        and 0.14 <= region.box.center.y <= 0.45
+        for region in visible
+    )
+    if not task_active:
+        return None
+    candidates = [
+        region
+        for region in visible
+        if normalize_visible_text(region.text) == "窥灵镜"
+        and region.confidence >= 0.80
+        and 0.45 <= region.box.center.x <= 0.75
+        and 0.45 <= region.box.center.y <= 0.80
+    ]
+    return max(candidates, key=lambda region: region.confidence) if candidates else None
+
+
+def spirit_mirror_interaction_active(regions: Iterable[TextRegion]) -> bool:
+    """Whether the full-screen 窥灵镜 mist-clearing interaction is visible."""
+    visible = tuple(regions)
+    has_instruction = any(
+        "输入灵力冲散窥灵镜的迷雾" in normalize_visible_text(region.text)
+        and region.confidence >= 0.75
+        and region.box.center.y >= 0.70
+        for region in visible
+    )
+    has_countdown = any(
+        "秒后自动完成" in normalize_visible_text(region.text)
+        and region.confidence >= 0.75
+        and region.box.center.y >= 0.80
+        for region in visible
+    )
+    return has_instruction and has_countdown
+
+
 def artifact_result_close_control(regions: Iterable[TextRegion]) -> TextRegion | None:
     """Dismiss the recorded 承影仙剑 acquisition presentation immediately."""
     visible = tuple(regions)

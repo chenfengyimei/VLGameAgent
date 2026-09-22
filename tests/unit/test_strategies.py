@@ -38,7 +38,7 @@ class StrategyRegistryTests(unittest.TestCase):
         root = Path(__file__).parents[2]
         flow = load_recorded_flow(root / "configs/flows/mumu-xianyu-onboarding.yaml")
         self.assertEqual(flow.game_id, MUMU_REGISTRY.game_id)
-        self.assertEqual(len(flow.steps), 198)
+        self.assertEqual(len(flow.steps), 206)
         self.assertEqual(
             {
                 Path(step.evidence).name
@@ -225,6 +225,10 @@ class StrategyRegistryTests(unittest.TestCase):
                 "196-stall-sell-item.png",
                 "197-stall-sell-listing.png",
                 "198-stall-sell-success-exit.png",
+                "199-familiar-faces-navigation.png",
+                "200-familiar-faces-dialogue.png",
+                "201-dao-trial-mirror-entry.png",
+                "202-spirit-mirror-center-click.png",
             },
         )
         for step in flow.steps:
@@ -276,6 +280,10 @@ class StrategyRegistryTests(unittest.TestCase):
         assert control is not None and control.hotspot is not None
         self.assertAlmostEqual(control.hotspot[0], 0.935, places=3)
         self.assertAlmostEqual(control.hotspot[1], 0.635, places=3)
+        mirror = profile.binding("spirit_mirror_center")
+        assert mirror is not None and mirror.hotspot is not None
+        self.assertAlmostEqual(mirror.hotspot[0], 0.515, places=3)
+        self.assertAlmostEqual(mirror.hotspot[1], 0.440, places=3)
 
     def test_known_game_resolves_to_a_populated_registry(self) -> None:
         registry = registry_for("mumu-xianyu")
@@ -367,6 +375,9 @@ class StrategyRegistryTests(unittest.TestCase):
             "ocr_disguise_technique_fast",
             "ocr_senior_sister_message_event_fast",
             "ocr_sky_lantern_release_fast",
+            "ocr_spirit_mirror_entry_fast",
+            "ocr_spirit_mirror_center_fast",
+            "ocr_spirit_mirror_wait",
             "ocr_xuanling_tower_entry_fast",
             "ocr_xuanling_tower_challenge_fast",
             "ocr_xuanling_tower_battle_wait",
@@ -1537,6 +1548,55 @@ class PlannerStrategyScopingTests(unittest.TestCase):
         )
         outcome = planner._ocr_fast_path(unrelated)  # type: ignore[attr-defined]
         self.assertIsNone(outcome)
+
+    def test_spirit_mirror_entry_clicks_center_once_then_waits(self) -> None:
+        planner = GroundedVlmPlanner(
+            _Client([]),
+            max_temporal_frames=1,
+            max_target_crops=0,
+            compact_output=True,
+            prefer_ocr_task_panel=True,
+            strategy_registry=MUMU_REGISTRY,
+        )
+        entry = _onboarding_snapshot(
+            TextRegion(
+                "问道一试轮到你上场了",
+                NormalizedBox(0.04, 0.22, 0.30, 0.32),
+                0.99,
+            ),
+            TextRegion("窥灵镜", NormalizedBox(0.55, 0.56, 0.65, 0.66), 0.99),
+        )
+        outcome = planner._ocr_fast_path(entry)  # type: ignore[attr-defined]
+        assert outcome is not None and outcome.action is not None
+        self.assertEqual(outcome.action.kind, GuiActionKind.CLICK)
+        self.assertEqual(outcome.action.target_label, "窥灵镜")
+        self.assertEqual(planner.last_decision_source, "ocr_spirit_mirror_entry_fast")
+
+        interaction = _onboarding_snapshot(
+            TextRegion(
+                "输入灵力冲散窥灵镜的迷雾",
+                NormalizedBox(0.34, 0.78, 0.67, 0.87),
+                0.99,
+            ),
+            TextRegion(
+                "5秒后自动完成",
+                NormalizedBox(0.42, 0.90, 0.59, 0.97),
+                0.99,
+            ),
+        )
+        outcome = planner._ocr_fast_path(interaction)  # type: ignore[attr-defined]
+        assert outcome is not None and outcome.action is not None
+        self.assertEqual(outcome.action.kind, GuiActionKind.CLICK)
+        self.assertEqual(outcome.action.target_label, "spirit_mirror_center")
+        self.assertAlmostEqual(outcome.action.target_box.center.x, 0.515)
+        self.assertAlmostEqual(outcome.action.target_box.center.y, 0.440)
+        self.assertEqual(planner.last_decision_source, "ocr_spirit_mirror_center_fast")
+
+        outcome = planner._ocr_fast_path(interaction)  # type: ignore[attr-defined]
+        assert outcome is not None
+        self.assertEqual(outcome.kind, DecisionKind.WAIT)
+        self.assertIsNone(outcome.action)
+        self.assertEqual(planner.last_decision_source, "ocr_spirit_mirror_wait")
 
     def test_notice_board_event_clicks_left_then_right_paper(self) -> None:
         planner = GroundedVlmPlanner(

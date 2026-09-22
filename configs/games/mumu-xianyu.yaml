@@ -103,6 +103,12 @@ controls:
     x: 0.500
     y: 0.500
     confirmed: true
+  # 窥灵镜迷雾互动页：点击用户标注的镜面中心一次，随后等待自动完成。
+  spirit_mirror_center:
+    kind: normalized_hotspot
+    x: 0.515
+    y: 0.440
+    confirmed: true
   # 桃天伴随教学：点击布阵页左侧当前主战灵宠卡，打开候选列表。
   pet_main_slot_card:
     kind: normalized_hotspot
