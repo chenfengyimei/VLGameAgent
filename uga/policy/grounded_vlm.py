@@ -12,9 +12,17 @@ from typing import Any, Protocol
 
 from uga.agent.session_state import (
     academy_message_event_control,
+    ancient_treasure_activate_control,
+    ancient_treasure_bifengzhu_control,
+    ancient_treasure_shelf_visible,
+    ancient_treasure_upgrade_page_visible,
+    ancient_treasure_world_control,
     artifact_result_close_control,
     auto_navigation_active,
+    basic_onboarding_complete,
     black_clad_leader_combat_active,
+    blessing_feed_page_visible,
+    blessing_onboarding_control,
     character_creation_control,
     character_creation_name_prompt_active,
     close_glyph_aim,
@@ -28,6 +36,10 @@ from uga.agent.session_state import (
     dialogue_review_visible,
     disguise_technique_control,
     drunken_guest_combat_active,
+    equipment_dungeon_active,
+    equipment_dungeon_control,
+    equipment_recruiting_visible,
+    equipment_reward_popup_visible,
     find_close_glyph,
     find_market_entry,
     find_xiuxian_path_quest_line,
@@ -91,6 +103,7 @@ from uga.agent.session_state import (
     realm_promotion_ready,
     red_dust_auto_enable_ready,
     rescue_little_dragon_choice,
+    romance_ad_visible,
     sacred_relic_result_close_control,
     second_pet_deployment_complete,
     second_pet_slot_stage,
@@ -117,7 +130,10 @@ from uga.agent.session_state import (
     summon_world_control,
     treasure_page_visible,
     treasure_world_control,
+    world_chat_send_control,
+    world_chat_sent_visible,
     xiuxian_path_objective_goto,
+    xiuxian_path_recorded_objective_control,
     xuanling_tower_challenge_control,
     xuanling_tower_entry_control,
     xuanling_tower_leave_control,
@@ -450,6 +466,10 @@ class GroundedVlmPlanner:
         preferred_action_target: str | None = None,
         back_hotspot: tuple[float, float] | None = None,
         close_hotspot: tuple[float, float] | None = None,
+        ancient_treasure_close_hotspot: tuple[float, float] | None = None,
+        world_chat_collapse_hotspot: tuple[float, float] | None = None,
+        blessing_first_food_hotspot: tuple[float, float] | None = None,
+        romance_ad_close_hotspot: tuple[float, float] | None = None,
         promote_hotspot: tuple[float, float] | None = None,
         dialogue_hotspot: tuple[float, float] | None = None,
         little_dragon_heal_hotspot: tuple[float, float] | None = None,
@@ -482,6 +502,10 @@ class GroundedVlmPlanner:
         for name, hotspot in (
             ("back", back_hotspot),
             ("close", close_hotspot),
+            ("ancient-treasure close", ancient_treasure_close_hotspot),
+            ("world-chat collapse", world_chat_collapse_hotspot),
+            ("blessing first food", blessing_first_food_hotspot),
+            ("romance-ad close", romance_ad_close_hotspot),
             ("promote", promote_hotspot),
             ("dialogue", dialogue_hotspot),
             ("little-dragon heal", little_dragon_heal_hotspot),
@@ -519,6 +543,10 @@ class GroundedVlmPlanner:
         self._preferred_action_target = action_target
         self._back_hotspot = back_hotspot
         self._close_hotspot = close_hotspot
+        self._ancient_treasure_close_hotspot = ancient_treasure_close_hotspot
+        self._world_chat_collapse_hotspot = world_chat_collapse_hotspot
+        self._blessing_first_food_hotspot = blessing_first_food_hotspot
+        self._romance_ad_close_hotspot = romance_ad_close_hotspot
         self._promote_hotspot = promote_hotspot
         self._dialogue_hotspot = dialogue_hotspot
         self._little_dragon_heal_hotspot = little_dragon_heal_hotspot
@@ -546,6 +574,10 @@ class GroundedVlmPlanner:
         self._cultivation_manual_activation_requested = False
         self._spirit_mirror_clicked = False
         self._treasure_started_at: float | None = None
+        self._ancient_treasure_started_at: float | None = None
+        self._ancient_treasure_activation_requested = False
+        self._ancient_treasure_upgrade_closed = False
+        self._blessing_feed_requested = False
         self._task_panel_cooldown_s = 25.0
         self._last_task_panel_click: tuple[str, float] | None = None
         self._last_stall_item_click: float | None = None
@@ -1142,6 +1174,84 @@ class GroundedVlmPlanner:
                 nature_choice,
                 source="ocr_nature_discussion_choice_fast",
                 expected_effect="the selected nature answer advances 无涯子的 dialogue",
+                action_kind=GuiActionKind.CLICK,
+            )
+        if (
+            self._ancient_treasure_started_at is not None
+            and time.monotonic() - self._ancient_treasure_started_at > 300.0
+        ):
+            self._ancient_treasure_started_at = None
+            self._ancient_treasure_activation_requested = False
+            self._ancient_treasure_upgrade_closed = False
+        if (
+            self._ancient_treasure_activation_requested
+            and self._ancient_treasure_close_hotspot is not None
+            and ancient_treasure_upgrade_page_visible(snapshot.visible_text)
+        ):
+            self._ancient_treasure_started_at = time.monotonic()
+            self._ancient_treasure_upgrade_closed = True
+            return self._hotspot_click_action(
+                snapshot,
+                "ancient_treasure_close",
+                self._ancient_treasure_close_hotspot,
+                "ocr_ancient_treasure_upgrade_close_fast",
+                "the ancient-treasure upgrade page closes after activation",
+            )
+        if (
+            self._ancient_treasure_upgrade_closed
+            and self._back_hotspot is not None
+            and ancient_treasure_shelf_visible(snapshot.visible_text)
+        ):
+            self._ancient_treasure_started_at = None
+            self._ancient_treasure_activation_requested = False
+            self._ancient_treasure_upgrade_closed = False
+            return self._exit_action(
+                snapshot,
+                "ocr_ancient_treasure_complete_back_fast",
+            )
+        ancient_activate = ancient_treasure_activate_control(snapshot.visible_text)
+        if ancient_activate is not None:
+            self._ancient_treasure_started_at = time.monotonic()
+            self._ancient_treasure_activation_requested = True
+            self._last_decision_source = "ocr_ancient_treasure_activate_fast"
+            return self._ocr_action(
+                snapshot,
+                ancient_activate,
+                source="ocr_ancient_treasure_activate_fast",
+                expected_effect="避风珠 activates and opens its upgrade preview",
+                action_kind=GuiActionKind.CLICK,
+            )
+        bifengzhu = ancient_treasure_bifengzhu_control(snapshot.visible_text)
+        if bifengzhu is not None:
+            self._ancient_treasure_started_at = time.monotonic()
+            self._last_decision_source = "ocr_ancient_treasure_select_bifengzhu_fast"
+            return self._ocr_action(
+                snapshot,
+                bifengzhu,
+                source="ocr_ancient_treasure_select_bifengzhu_fast",
+                expected_effect="the activatable 避风珠 detail page opens",
+                action_kind=GuiActionKind.CLICK,
+            )
+        ancient_world = ancient_treasure_world_control(snapshot.visible_text)
+        if ancient_world is not None:
+            self._ancient_treasure_started_at = time.monotonic()
+            stage, control = ancient_world
+            source, expected_effect = {
+                "menu": (
+                    "ocr_ancient_treasure_menu_fast",
+                    "the expanded game menu reveals the treasure entry",
+                ),
+                "entry": (
+                    "ocr_ancient_treasure_entry_fast",
+                    "the ancient-treasure shelf opens",
+                ),
+            }[stage]
+            self._last_decision_source = source
+            return self._ocr_action(
+                snapshot,
+                control,
+                source=source,
+                expected_effect=expected_effect,
                 action_kind=GuiActionKind.CLICK,
             )
         if (
@@ -2247,7 +2357,204 @@ class GroundedVlmPlanner:
                 action_kind=GuiActionKind.CLICK,
             )
         self.last_decision_was_dialogue = False
+        if basic_onboarding_complete(snapshot.visible_text):
+            self._last_decision_source = "ocr_basic_onboarding_complete"
+            return PlannerOutcome(
+                uuid.uuid4().hex,
+                snapshot.frame_id,
+                snapshot.frame_sequence,
+                snapshot.window_identity.window_generation,
+                snapshot.geometry_generation,
+                snapshot.task_generation,
+                DecisionKind.DONE,
+                "the owner-confirmed basic onboarding terminal world state is visible",
+                snapshot.text,
+                GoalStatus.SUCCEEDED,
+                1.0,
+                None,
+                explanation=(
+                    "ocr_basic_onboarding_complete observed 洛神大街 and the "
+                    "completed 修仙之路 reward prompt"
+                ),
+            )
+        if (
+            self._romance_ad_close_hotspot is not None
+            and romance_ad_visible(snapshot.visible_text)
+        ):
+            return self._hotspot_click_action(
+                snapshot,
+                "romance_ad_close",
+                self._romance_ad_close_hotspot,
+                "ocr_romance_ad_close_fast",
+                "the optional 倩女幽魂 interstitial closes",
+            )
+        blessing_control = blessing_onboarding_control(snapshot.visible_text)
+        if blessing_control is not None:
+            stage, control = blessing_control
+            source, expected_effect = {
+                "select_yoyo": (
+                    "ocr_blessing_select_yoyo_fast",
+                    "呦呦 is selected as the onboarding blessing companion",
+                ),
+                "adopt": (
+                    "ocr_blessing_adopt_fast",
+                    "the selected 呦呦 companion is adopted",
+                ),
+            }[stage]
+            self._last_decision_source = source
+            return self._ocr_action(
+                snapshot,
+                control,
+                source=source,
+                expected_effect=expected_effect,
+                action_kind=GuiActionKind.CLICK,
+            )
+        if blessing_feed_page_visible(snapshot.visible_text):
+            if (
+                not self._blessing_feed_requested
+                and self._blessing_first_food_hotspot is not None
+            ):
+                self._blessing_feed_requested = True
+                return self._hotspot_click_action(
+                    snapshot,
+                    "blessing_first_food",
+                    self._blessing_first_food_hotspot,
+                    "ocr_blessing_feed_fast",
+                    "one owner-marked green food is fed to 呦呦",
+                )
+            if self._blessing_feed_requested and self._back_hotspot is not None:
+                return self._exit_action(
+                    snapshot,
+                    "ocr_blessing_feed_complete_back_fast",
+                )
+        if (
+            self._world_chat_collapse_hotspot is not None
+            and world_chat_sent_visible(snapshot.visible_text)
+        ):
+            return self._hotspot_click_action(
+                snapshot,
+                "world_chat_collapse",
+                self._world_chat_collapse_hotspot,
+                "ocr_world_chat_collapse_fast",
+                "the world-chat side panel collapses after the message posts",
+            )
+        world_chat_send = world_chat_send_control(snapshot.visible_text)
+        if world_chat_send is not None:
+            self._last_decision_source = "ocr_world_chat_send_fast"
+            return self._ocr_action(
+                snapshot,
+                world_chat_send,
+                source="ocr_world_chat_send_fast",
+                expected_effect="the prefilled onboarding message posts to world chat",
+                action_kind=GuiActionKind.CLICK,
+            )
+        dungeon_control = equipment_dungeon_control(snapshot.visible_text)
+        if dungeon_control is not None:
+            stage, control = dungeon_control
+            source, expected_effect = {
+                "npc_choice": (
+                    "ocr_equipment_dungeon_npc_choice_fast",
+                    "the 30-level equipment-dungeon selection page opens",
+                ),
+                "group": (
+                    "ocr_equipment_dungeon_group_fast",
+                    "the team-finder page opens for 盘丝妖窟",
+                ),
+                "create_team": (
+                    "ocr_equipment_dungeon_create_team_fast",
+                    "a 盘丝妖窟 team is created and recruitment begins",
+                ),
+                "enter_dungeon": (
+                    "ocr_equipment_dungeon_enter_fast",
+                    "the ready team requests entry to the equipment dungeon",
+                ),
+                "confirm_target": (
+                    "ocr_equipment_dungeon_confirm_target_fast",
+                    "the assembled team enters 盘丝妖窟",
+                ),
+            }[stage]
+            self._last_decision_source = source
+            return self._ocr_action(
+                snapshot,
+                control,
+                source=source,
+                expected_effect=expected_effect,
+                action_kind=GuiActionKind.CLICK,
+            )
+        if equipment_recruiting_visible(snapshot.visible_text):
+            self._last_decision_source = "ocr_equipment_dungeon_recruit_wait"
+            return PlannerOutcome(
+                uuid.uuid4().hex,
+                snapshot.frame_id,
+                snapshot.frame_sequence,
+                snapshot.window_identity.window_generation,
+                snapshot.geometry_generation,
+                snapshot.task_generation,
+                DecisionKind.WAIT,
+                "the 盘丝妖窟 team is still recruiting",
+                snapshot.text,
+                GoalStatus.IN_PROGRESS,
+                1.0,
+                None,
+                WaitReason.ANIMATION,
+                explanation=(
+                    "ocr_equipment_dungeon_recruit_wait preserves the active recruitment"
+                ),
+            )
+        if equipment_dungeon_active(snapshot.visible_text):
+            self._last_decision_source = "ocr_equipment_dungeon_auto_wait"
+            return PlannerOutcome(
+                uuid.uuid4().hex,
+                snapshot.frame_id,
+                snapshot.frame_sequence,
+                snapshot.window_identity.window_generation,
+                snapshot.geometry_generation,
+                snapshot.task_generation,
+                DecisionKind.WAIT,
+                "盘丝妖窟 automatic navigation and combat are still resolving",
+                snapshot.text,
+                GoalStatus.IN_PROGRESS,
+                1.0,
+                None,
+                WaitReason.ANIMATION,
+                explanation=(
+                    "ocr_equipment_dungeon_auto_wait leaves game-owned combat uninterrupted"
+                ),
+            )
+        recorded_objective = xiuxian_path_recorded_objective_control(
+            snapshot.visible_text
+        )
+        if recorded_objective is not None:
+            stage, control = recorded_objective
+            source, expected_effect = {
+                "world_chat_goto": (
+                    "ocr_world_chat_objective_goto_fast",
+                    "the world-chat panel opens for the onboarding message",
+                ),
+                "world_chat_claim": (
+                    "ocr_world_chat_objective_claim_fast",
+                    "the completed world-chat objective reward is claimed",
+                ),
+                "equipment_dungeon_goto": (
+                    "ocr_equipment_dungeon_objective_goto_fast",
+                    "the game auto-navigates to the equipment-dungeon messenger",
+                ),
+                "equipment_dungeon_claim": (
+                    "ocr_equipment_dungeon_objective_claim_fast",
+                    "the completed equipment-dungeon objective reward is claimed",
+                ),
+            }[stage]
+            self._last_decision_source = source
+            return self._ocr_action(
+                snapshot,
+                control,
+                source=source,
+                expected_effect=expected_effect,
+                action_kind=GuiActionKind.CLICK,
+            )
         glyph = find_close_glyph(snapshot.visible_text)
+        if glyph is not None and equipment_reward_popup_visible(snapshot.visible_text):
+            return self._close_glyph_action(snapshot, glyph[0], glyph[1])
         if (
             glyph is not None
             and not page_has_action_button(snapshot.visible_text)

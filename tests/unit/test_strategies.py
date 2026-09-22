@@ -38,7 +38,7 @@ class StrategyRegistryTests(unittest.TestCase):
         root = Path(__file__).parents[2]
         flow = load_recorded_flow(root / "configs/flows/mumu-xianyu-onboarding.yaml")
         self.assertEqual(flow.game_id, MUMU_REGISTRY.game_id)
-        self.assertEqual(len(flow.steps), 226)
+        self.assertEqual(len(flow.steps), 258)
         self.assertEqual(
             {
                 Path(step.evidence).name
@@ -243,6 +243,34 @@ class StrategyRegistryTests(unittest.TestCase):
                 "214-ghost-king-combat.png",
                 "215-ghost-relic-pickup.png",
                 "216-sacred-relic-result-close.png",
+                "217-ancient-treasure-menu.png",
+                "218-ancient-treasure-entry.png",
+                "219-ancient-treasure-select-bifengzhu.png",
+                "220-ancient-treasure-activate-bifengzhu.png",
+                "221-ancient-treasure-upgrade-close.png",
+                "222-ancient-treasure-complete-back.png",
+                "223-intense-conflict-task.png",
+                "224-intense-conflict-dialogue.png",
+                "225-cultivation-path-task.png",
+                "226-world-chat-objective-goto.png",
+                "227-world-chat-send.png",
+                "228-world-chat-collapse.png",
+                "229-cultivation-path-reward-task.png",
+                "230-world-chat-objective-claim.png",
+                "231-equipment-dungeon-objective-goto.png",
+                "232-equipment-dungeon-npc-choice.png",
+                "233-equipment-dungeon-group.png",
+                "234-equipment-dungeon-create-team.png",
+                "235-equipment-dungeon-recruit-wait.png",
+                "236-equipment-dungeon-confirm-target.png",
+                "237-equipment-dungeon-auto-wait.png",
+                "238-equipment-dungeon-return.png",
+                "239-equipment-dungeon-objective-claim.png",
+                "240-blessing-select-yoyo.png",
+                "241-blessing-adopt.png",
+                "242-blessing-feed.png",
+                "243-romance-ad-close.png",
+                "244-basic-onboarding-complete.png",
             },
         )
         for step in flow.steps:
@@ -397,6 +425,12 @@ class StrategyRegistryTests(unittest.TestCase):
             "ocr_treasure_menu_fast",
             "ocr_treasure_entry_fast",
             "ocr_treasure_complete_back_fast",
+            "ocr_ancient_treasure_menu_fast",
+            "ocr_ancient_treasure_entry_fast",
+            "ocr_ancient_treasure_select_bifengzhu_fast",
+            "ocr_ancient_treasure_activate_fast",
+            "ocr_ancient_treasure_upgrade_close_fast",
+            "ocr_ancient_treasure_complete_back_fast",
             "ocr_academy_message_event_fast",
             "ocr_ghost_trace_inspect_fast",
             "ocr_ghost_relic_pickup_fast",
@@ -435,6 +469,25 @@ class StrategyRegistryTests(unittest.TestCase):
             "ocr_quest_irrelevant_back_fast",
             "ocr_xiuxian_path_jump_fast",
             "ocr_xiuxian_objective_goto_fast",
+            "ocr_world_chat_objective_goto_fast",
+            "ocr_world_chat_send_fast",
+            "ocr_world_chat_collapse_fast",
+            "ocr_world_chat_objective_claim_fast",
+            "ocr_equipment_dungeon_objective_goto_fast",
+            "ocr_equipment_dungeon_npc_choice_fast",
+            "ocr_equipment_dungeon_group_fast",
+            "ocr_equipment_dungeon_create_team_fast",
+            "ocr_equipment_dungeon_recruit_wait",
+            "ocr_equipment_dungeon_enter_fast",
+            "ocr_equipment_dungeon_confirm_target_fast",
+            "ocr_equipment_dungeon_auto_wait",
+            "ocr_equipment_dungeon_objective_claim_fast",
+            "ocr_blessing_select_yoyo_fast",
+            "ocr_blessing_adopt_fast",
+            "ocr_blessing_feed_fast",
+            "ocr_blessing_feed_complete_back_fast",
+            "ocr_romance_ad_close_fast",
+            "ocr_basic_onboarding_complete",
             "ocr_stall_item_fast",
             "ocr_stall_sell_task_fast",
             "ocr_stall_sell_tab_fast",
@@ -1693,6 +1746,151 @@ class PlannerStrategyScopingTests(unittest.TestCase):
             planner.last_decision_source,
             "ocr_treasure_complete_back_fast",
         )
+
+    def test_ancient_treasure_activation_sequence_is_stateful(self) -> None:
+        planner = GroundedVlmPlanner(
+            _Client([]),
+            max_temporal_frames=1,
+            max_target_crops=0,
+            compact_output=True,
+            prefer_ocr_task_panel=True,
+            strategy_registry=MUMU_REGISTRY,
+            back_hotspot=(0.060, 0.080),
+            ancient_treasure_close_hotspot=(0.966, 0.134),
+        )
+        menu = _onboarding_snapshot(
+            TextRegion("点击菜单", NormalizedBox(0.48, 0.41, 0.69, 0.52), 0.99),
+            TextRegion("菜单", NormalizedBox(0.93, 0.29, 0.99, 0.39), 0.99),
+        )
+        outcome = planner._ocr_fast_path(menu)  # type: ignore[attr-defined]
+        assert outcome is not None and outcome.action is not None
+        self.assertEqual(outcome.action.target_label, "菜单")
+        self.assertEqual(planner.last_decision_source, "ocr_ancient_treasure_menu_fast")
+
+        entry = _onboarding_snapshot(
+            TextRegion("前往激活古宝", NormalizedBox(0.48, 0.41, 0.69, 0.52), 0.99),
+            TextRegion("百宝", NormalizedBox(0.91, 0.70, 0.99, 0.84), 0.99),
+        )
+        outcome = planner._ocr_fast_path(entry)  # type: ignore[attr-defined]
+        assert outcome is not None and outcome.action is not None
+        self.assertEqual(outcome.action.target_label, "百宝")
+
+        shelf = _onboarding_snapshot(
+            TextRegion("古宝", NormalizedBox(0.04, 0.05, 0.16, 0.13), 0.99),
+            TextRegion("后天古宝", NormalizedBox(0.40, 0.13, 0.60, 0.22), 0.99),
+            TextRegion("避风珠", NormalizedBox(0.18, 0.36, 0.32, 0.44), 0.99),
+            TextRegion("可激活", NormalizedBox(0.20, 0.28, 0.31, 0.36), 0.99),
+        )
+        outcome = planner._ocr_fast_path(shelf)  # type: ignore[attr-defined]
+        assert outcome is not None and outcome.action is not None
+        self.assertEqual(outcome.action.target_label, "可激活")
+
+        activate = _onboarding_snapshot(
+            TextRegion("古宝激活", NormalizedBox(0.40, 0.10, 0.60, 0.20), 0.99),
+            TextRegion("避风珠", NormalizedBox(0.18, 0.36, 0.32, 0.44), 0.99),
+            TextRegion("激活", NormalizedBox(0.68, 0.78, 0.80, 0.88), 0.99),
+        )
+        outcome = planner._ocr_fast_path(activate)  # type: ignore[attr-defined]
+        assert outcome is not None and outcome.action is not None
+        self.assertEqual(outcome.action.target_label, "激活")
+
+        upgrade = _onboarding_snapshot(
+            TextRegion("古宝升级", NormalizedBox(0.40, 0.10, 0.60, 0.20), 0.99),
+            TextRegion("升级预览", NormalizedBox(0.65, 0.20, 0.80, 0.28), 0.99),
+            TextRegion("避风珠", NormalizedBox(0.18, 0.36, 0.32, 0.44), 0.99),
+        )
+        outcome = planner._ocr_fast_path(upgrade)  # type: ignore[attr-defined]
+        assert outcome is not None and outcome.action is not None
+        self.assertEqual(outcome.action.target_label, "ancient_treasure_close")
+
+        activated_shelf = _onboarding_snapshot(
+            TextRegion("古宝", NormalizedBox(0.04, 0.05, 0.16, 0.13), 0.99),
+            TextRegion("后天古宝", NormalizedBox(0.40, 0.13, 0.60, 0.22), 0.99),
+            TextRegion("避风珠0级", NormalizedBox(0.18, 0.36, 0.32, 0.44), 0.99),
+        )
+        outcome = planner._ocr_fast_path(activated_shelf)  # type: ignore[attr-defined]
+        assert outcome is not None and outcome.action is not None
+        self.assertEqual(outcome.action.target_label, "ui_back")
+        self.assertEqual(
+            planner.last_decision_source,
+            "ocr_ancient_treasure_complete_back_fast",
+        )
+
+    def test_cultivation_dungeon_and_blessing_terminal_sequence(self) -> None:
+        planner = GroundedVlmPlanner(
+            _Client([]),
+            max_temporal_frames=1,
+            max_target_crops=0,
+            compact_output=True,
+            prefer_ocr_task_panel=True,
+            strategy_registry=MUMU_REGISTRY,
+            back_hotspot=(0.060, 0.080),
+            world_chat_collapse_hotspot=(0.526, 0.536),
+            blessing_first_food_hotspot=(0.599, 0.892),
+            romance_ad_close_hotspot=(0.839, 0.242),
+        )
+        objective = _onboarding_snapshot(
+            TextRegion("修仙之路", NormalizedBox(0.35, 0.14, 0.62, 0.28), 0.99),
+            TextRegion("世界频道发言1次", NormalizedBox(0.40, 0.53, 0.60, 0.57), 0.99),
+            TextRegion("0/1", NormalizedBox(0.40, 0.58, 0.45, 0.61), 0.99),
+            TextRegion("前往", NormalizedBox(0.75, 0.54, 0.82, 0.59), 0.99),
+        )
+        outcome = planner._ocr_fast_path(objective)  # type: ignore[attr-defined]
+        assert outcome is not None and outcome.action is not None
+        self.assertEqual(outcome.action.target_label, "前往")
+        self.assertEqual(
+            planner.last_decision_source,
+            "ocr_world_chat_objective_goto_fast",
+        )
+
+        chat = _onboarding_snapshot(
+            TextRegion("世界", NormalizedBox(0.01, 0.10, 0.09, 0.20), 0.99),
+            TextRegion("仙遇有你，一路同行", NormalizedBox(0.15, 0.90, 0.45, 0.97), 0.99),
+            TextRegion("发送", NormalizedBox(0.40, 0.90, 0.51, 0.97), 0.99),
+        )
+        outcome = planner._ocr_fast_path(chat)  # type: ignore[attr-defined]
+        assert outcome is not None and outcome.action is not None
+        self.assertEqual(outcome.action.target_label, "发送")
+
+        recruiting = _onboarding_snapshot(
+            TextRegion("我的队伍", NormalizedBox(0.02, 0.04, 0.20, 0.12), 0.99),
+            TextRegion("装备秘境-盘丝妖窟", NormalizedBox(0.02, 0.15, 0.30, 0.22), 0.99),
+            TextRegion("招募中", NormalizedBox(0.70, 0.86, 0.82, 0.95), 0.99),
+            TextRegion("前往副本", NormalizedBox(0.84, 0.86, 0.98, 0.95), 0.99),
+        )
+        outcome = planner._ocr_fast_path(recruiting)  # type: ignore[attr-defined]
+        assert outcome is not None
+        self.assertEqual(outcome.kind, DecisionKind.WAIT)
+        self.assertEqual(
+            planner.last_decision_source,
+            "ocr_equipment_dungeon_recruit_wait",
+        )
+
+        feed = _onboarding_snapshot(
+            TextRegion("喂养", NormalizedBox(0.03, 0.05, 0.15, 0.12), 0.99),
+            TextRegion("呦呦", NormalizedBox(0.45, 0.08, 0.56, 0.14), 0.99),
+            TextRegion("剩余孵化时间：46小时", NormalizedBox(0.38, 0.68, 0.64, 0.74), 0.99),
+        )
+        outcome = planner._ocr_fast_path(feed)  # type: ignore[attr-defined]
+        assert outcome is not None and outcome.action is not None
+        self.assertEqual(outcome.action.target_label, "blessing_first_food")
+        outcome = planner._ocr_fast_path(feed)  # type: ignore[attr-defined]
+        assert outcome is not None and outcome.action is not None
+        self.assertEqual(outcome.action.target_label, "ui_back")
+
+        final = _onboarding_snapshot(
+            TextRegion("洛神大街", NormalizedBox(0.08, 0.30, 0.20, 0.36), 0.99),
+            TextRegion("修仙之路", NormalizedBox(0.04, 0.20, 0.14, 0.24), 0.99),
+            TextRegion(
+                "点击前往领取奖励",
+                NormalizedBox(0.04, 0.24, 0.30, 0.28),
+                0.99,
+            ),
+        )
+        outcome = planner._ocr_fast_path(final)  # type: ignore[attr-defined]
+        assert outcome is not None
+        self.assertEqual(outcome.kind, DecisionKind.DONE)
+        self.assertEqual(planner.last_decision_source, "ocr_basic_onboarding_complete")
 
     def test_academy_message_ghost_event_combat_and_relic_sequence(self) -> None:
         planner = GroundedVlmPlanner(

@@ -2140,6 +2140,142 @@ def treasure_page_visible(regions: Iterable[TextRegion]) -> bool:
     return has_title and has_feature
 
 
+def ancient_treasure_world_control(
+    regions: Iterable[TextRegion],
+) -> tuple[str, TextRegion] | None:
+    """Open the menu or 百宝 entry for the recorded ancient-treasure tutorial."""
+    visible = tuple(regions)
+    activation_prompt = any(
+        "前往激活古宝" in normalize_visible_text(region.text)
+        and region.confidence >= 0.75
+        for region in visible
+    )
+    if activation_prompt:
+        entries = [
+            region
+            for region in visible
+            if normalize_visible_text(region.text) == "百宝"
+            and region.confidence >= 0.80
+            and region.box.center.x >= 0.80
+            and region.box.center.y >= 0.55
+        ]
+        if entries:
+            return "entry", max(entries, key=lambda region: region.confidence)
+    menu_prompt = any(
+        normalize_visible_text(region.text) == "点击菜单"
+        and region.confidence >= 0.75
+        for region in visible
+    )
+    if not menu_prompt:
+        return None
+    buttons = [
+        region
+        for region in visible
+        if normalize_visible_text(region.text) == "菜单"
+        and region.confidence >= 0.80
+        and region.box.center.x >= 0.85
+        and 0.20 <= region.box.center.y <= 0.55
+    ]
+    if buttons:
+        return "menu", max(buttons, key=lambda region: region.confidence)
+    return None
+
+
+def ancient_treasure_shelf_visible(regions: Iterable[TextRegion]) -> bool:
+    """Whether the 后天古宝 shelf containing 避风珠 is visible."""
+    visible = tuple(regions)
+    has_title = any(
+        normalize_visible_text(region.text) == "古宝"
+        and region.confidence >= 0.80
+        and region.box.center.x <= 0.25
+        and region.box.center.y <= 0.18
+        for region in visible
+    )
+    has_shelf = any(
+        "后天古宝" in normalize_visible_text(region.text)
+        and region.confidence >= 0.75
+        and region.box.center.y <= 0.30
+        for region in visible
+    )
+    has_artifact = any(
+        "避风珠" in normalize_visible_text(region.text)
+        and region.confidence >= 0.75
+        and region.box.center.x <= 0.45
+        and 0.20 <= region.box.center.y <= 0.60
+        for region in visible
+    )
+    return has_title and has_shelf and has_artifact
+
+
+def ancient_treasure_bifengzhu_control(
+    regions: Iterable[TextRegion],
+) -> TextRegion | None:
+    """Select the owner-marked activatable 避风珠 on the ancient-treasure shelf."""
+    visible = tuple(regions)
+    if not ancient_treasure_shelf_visible(visible):
+        return None
+    candidates = [
+        region
+        for region in visible
+        if normalize_visible_text(region.text) == "可激活"
+        and region.confidence >= 0.80
+        and region.box.center.x <= 0.45
+        and 0.20 <= region.box.center.y <= 0.60
+    ]
+    return max(candidates, key=lambda region: region.confidence) if candidates else None
+
+
+def ancient_treasure_activate_control(
+    regions: Iterable[TextRegion],
+) -> TextRegion | None:
+    """Return the activation button only on the recorded 避风珠 detail page."""
+    visible = tuple(regions)
+    has_page = any(
+        "古宝激活" in normalize_visible_text(region.text)
+        and region.confidence >= 0.80
+        and region.box.center.y <= 0.25
+        for region in visible
+    )
+    has_artifact = any(
+        "避风珠" in normalize_visible_text(region.text)
+        and region.confidence >= 0.75
+        for region in visible
+    )
+    if not has_page or not has_artifact:
+        return None
+    candidates = [
+        region
+        for region in visible
+        if normalize_visible_text(region.text) == "激活"
+        and region.confidence >= 0.80
+        and region.box.center.x >= 0.60
+        and region.box.center.y >= 0.70
+    ]
+    return max(candidates, key=lambda region: region.confidence) if candidates else None
+
+
+def ancient_treasure_upgrade_page_visible(regions: Iterable[TextRegion]) -> bool:
+    """Whether activation advanced 避风珠 to its upgrade-preview page."""
+    visible = tuple(regions)
+    has_page = any(
+        "古宝升级" in normalize_visible_text(region.text)
+        and region.confidence >= 0.80
+        and region.box.center.y <= 0.25
+        for region in visible
+    )
+    has_preview = any(
+        "升级预览" in normalize_visible_text(region.text)
+        and region.confidence >= 0.75
+        for region in visible
+    )
+    has_artifact = any(
+        "避风珠" in normalize_visible_text(region.text)
+        and region.confidence >= 0.75
+        for region in visible
+    )
+    return has_page and has_preview and has_artifact
+
+
 def ghost_trace_inspect_control(regions: Iterable[TextRegion]) -> TextRegion | None:
     """Scene-bound 探查 control after navigation reaches the ghost trace."""
     visible = tuple(regions)
@@ -2459,6 +2595,288 @@ def xiuxian_path_objective_goto(regions: Iterable[TextRegion]) -> TextRegion | N
     if best is None:
         return None
     return best[1]
+
+
+def xiuxian_path_recorded_objective_control(
+    regions: Iterable[TextRegion],
+) -> tuple[str, TextRegion] | None:
+    """Controls for the two owner-recorded 修仙之路 onboarding objectives.
+
+    The generic objective rule intentionally chooses the topmost row.  The
+    recorded onboarding order is different: finish 世界频道发言 first, then
+    the 30-level equipment dungeon.  Match the objective text and its local
+    progress before selecting the nearest 前往/领取 control so unrelated rows
+    cannot be clicked.
+    """
+    visible = tuple(regions)
+    has_title = any(
+        "修仙之路" in normalize_visible_text(region.text)
+        and region.box.center.x > 0.30
+        and region.confidence >= 0.85
+        for region in visible
+    )
+    if not has_title:
+        return None
+
+    controls = [
+        region
+        for region in visible
+        if normalize_visible_text(region.text) in {"前往", "领取"}
+        and region.box.center.x >= 0.70
+        and region.confidence >= 0.85
+    ]
+    if not controls:
+        return None
+
+    objectives = (
+        ("world_chat", "世界频道发言1次", "1/1"),
+        ("equipment_dungeon", "完成3次30级装备秘境", "3/3"),
+    )
+    for name, marker, complete_progress in objectives:
+        rows = [
+            region
+            for region in visible
+            if marker in normalize_visible_text(region.text)
+            and 0.25 <= region.box.center.x <= 0.70
+            and region.confidence >= 0.80
+        ]
+        if not rows:
+            continue
+        row = max(rows, key=lambda region: region.confidence)
+        nearby_text = "".join(
+            region.text.replace(" ", "")
+            for region in visible
+            if abs(region.box.center.y - row.box.center.y) <= 0.075
+        )
+        label = "领取" if complete_progress in nearby_text else "前往"
+        matching = [
+            control
+            for control in controls
+            if normalize_visible_text(control.text) == label
+            and abs(control.box.center.y - row.box.center.y) <= 0.075
+        ]
+        if matching:
+            control = min(
+                matching,
+                key=lambda candidate: abs(candidate.box.center.y - row.box.center.y),
+            )
+            return f"{name}_{'claim' if label == '领取' else 'goto'}", control
+    return None
+
+
+def world_chat_send_control(regions: Iterable[TextRegion]) -> TextRegion | None:
+    """The send button for the prefilled onboarding world-channel message."""
+    visible = tuple(regions)
+    has_world_channel = any(
+        normalize_visible_text(region.text) == "世界"
+        and region.box.center.x <= 0.15
+        and region.confidence >= 0.80
+        for region in visible
+    )
+    has_prefill = any(
+        "仙遇有你" in normalize_visible_text(region.text)
+        and "一路同行" in normalize_visible_text(region.text)
+        and region.box.center.y >= 0.80
+        and region.confidence >= 0.75
+        for region in visible
+    )
+    if not has_world_channel or not has_prefill:
+        return None
+    candidates = [
+        region
+        for region in visible
+        if normalize_visible_text(region.text) == "发送"
+        and region.box.center.y >= 0.80
+        and region.confidence >= 0.85
+    ]
+    return max(candidates, key=lambda region: region.confidence) if candidates else None
+
+
+def world_chat_sent_visible(regions: Iterable[TextRegion]) -> bool:
+    """Whether the recorded world message has posted and chat can collapse."""
+    visible = tuple(regions)
+    has_world_channel = any(
+        normalize_visible_text(region.text) == "世界"
+        and region.box.center.x <= 0.15
+        and region.confidence >= 0.80
+        for region in visible
+    )
+    has_posted_message = any(
+        "想你的风还是吹到了仙遇" in normalize_visible_text(region.text)
+        and region.confidence >= 0.70
+        for region in visible
+    )
+    has_countdown = any(
+        "秒" in normalize_visible_text(region.text)
+        and region.box.center.y >= 0.80
+        and region.confidence >= 0.70
+        for region in visible
+    )
+    return has_world_channel and has_posted_message and has_countdown
+
+
+def equipment_dungeon_control(
+    regions: Iterable[TextRegion],
+) -> tuple[str, TextRegion] | None:
+    """Return the next deterministic control in the equipment-dungeon flow."""
+    visible = tuple(regions)
+    normalized = tuple(normalize_visible_text(region.text) for region in visible)
+
+    if any("秘境使者" in text for text in normalized):
+        choices = [
+            region
+            for region in visible
+            if normalize_visible_text(region.text) == "装备秘境"
+            and region.box.center.x >= 0.55
+            and region.confidence >= 0.80
+        ]
+        if choices:
+            return "npc_choice", max(choices, key=lambda region: region.confidence)
+
+    has_dungeon_page = any(
+        text == "装备秘境" and region.box.center.x <= 0.30
+        for text, region in zip(normalized, visible, strict=True)
+    ) and any("盘丝妖窟" in text for text in normalized)
+    if has_dungeon_page:
+        group_buttons = [
+            region
+            for region in visible
+            if normalize_visible_text(region.text) == "组队"
+            and region.box.center.y >= 0.75
+            and region.confidence >= 0.80
+        ]
+        if group_buttons:
+            return "group", max(group_buttons, key=lambda region: region.confidence)
+
+    if any(text == "寻找队伍" for text in normalized) and any(
+        "装备秘境" in text and "盘丝" in text for text in normalized
+    ):
+        create_buttons = [
+            region
+            for region in visible
+            if normalize_visible_text(region.text) == "创建队伍"
+            and region.box.center.y >= 0.80
+            and region.confidence >= 0.80
+        ]
+        if create_buttons:
+            return "create_team", max(create_buttons, key=lambda region: region.confidence)
+
+    has_team_page = any(text == "我的队伍" for text in normalized) and any(
+        "装备秘境" in text and "盘丝" in text for text in normalized
+    )
+    if has_team_page and not any("招募中" in text for text in normalized):
+        enter_buttons = [
+            region
+            for region in visible
+            if normalize_visible_text(region.text) == "前往副本"
+            and region.box.center.y >= 0.80
+            and region.confidence >= 0.80
+        ]
+        if enter_buttons:
+            return "enter_dungeon", max(enter_buttons, key=lambda region: region.confidence)
+
+    has_ready_prompt = any(
+        "当前人数" in text and "是否前往" in text for text in normalized
+    )
+    if has_ready_prompt:
+        targets = [
+            region
+            for region in visible
+            if normalize_visible_text(region.text) == "前往目标"
+            and region.box.center.y >= 0.65
+            and region.confidence >= 0.80
+        ]
+        if targets:
+            return "confirm_target", max(targets, key=lambda region: region.confidence)
+    return None
+
+
+def equipment_recruiting_visible(regions: Iterable[TextRegion]) -> bool:
+    """Whether the created equipment-dungeon team is still recruiting."""
+    normalized = tuple(normalize_visible_text(region.text) for region in regions)
+    return (
+        any(text == "我的队伍" for text in normalized)
+        and any("装备秘境" in text and "盘丝" in text for text in normalized)
+        and any("招募中" in text for text in normalized)
+    )
+
+
+def equipment_dungeon_active(regions: Iterable[TextRegion]) -> bool:
+    """Whether 盘丝妖窟 automatic navigation/combat is still in progress."""
+    normalized = tuple(normalize_visible_text(region.text) for region in regions)
+    has_dungeon = any("盘丝妖窟" in text for text in normalized)
+    has_objective = any(
+        ("击杀" in text and ("夜叉兽" in text or "/8" in text))
+        or "掉落预览" in text
+        for text in normalized
+    )
+    return has_dungeon and has_objective
+
+
+def equipment_reward_popup_visible(regions: Iterable[TextRegion]) -> bool:
+    """Whether a post-dungeon level-30 equipment suggestion popup blocks view."""
+    normalized = tuple(normalize_visible_text(region.text) for region in regions)
+    return (
+        any(text == "使用" for text in normalized)
+        and any("30级" in text for text in normalized)
+        and any("仙路漫漫" in text for text in normalized)
+    )
+
+
+def blessing_onboarding_control(
+    regions: Iterable[TextRegion],
+) -> tuple[str, TextRegion] | None:
+    """Text-grounded controls in the post-objective 灵佑 onboarding."""
+    visible = tuple(regions)
+    normalized = tuple(normalize_visible_text(region.text) for region in visible)
+    if any("选择一个灵佑" in text for text in normalized):
+        choices = [
+            region
+            for region in visible
+            if normalize_visible_text(region.text) == "呦呦"
+            and region.box.center.x <= 0.50
+            and region.confidence >= 0.80
+        ]
+        if choices:
+            return "select_yoyo", max(choices, key=lambda region: region.confidence)
+    if any("契约书" in text for text in normalized):
+        adopt = [
+            region
+            for region in visible
+            if "点击领养灵佑" in normalize_visible_text(region.text)
+            and region.box.center.y >= 0.55
+            and region.confidence >= 0.75
+        ]
+        if adopt:
+            return "adopt", max(adopt, key=lambda region: region.confidence)
+    return None
+
+
+def blessing_feed_page_visible(regions: Iterable[TextRegion]) -> bool:
+    """Whether the 呦呦 feeding tutorial page is visible."""
+    normalized = tuple(normalize_visible_text(region.text) for region in regions)
+    return (
+        any(text == "喂养" for text in normalized)
+        and any(text == "呦呦" for text in normalized)
+        and any("加速孵化" in text or "剩余孵化时间" in text for text in normalized)
+    )
+
+
+def romance_ad_visible(regions: Iterable[TextRegion]) -> bool:
+    """Whether the owner-recorded 倩女幽魂 interstitial ad is visible."""
+    normalized = tuple(normalize_visible_text(region.text) for region in regions)
+    return any("倩女幽魂" in text for text in normalized) and any(
+        "立即前往" in text or "今日不再提示" in text for text in normalized
+    )
+
+
+def basic_onboarding_complete(regions: Iterable[TextRegion]) -> bool:
+    """The owner-confirmed world state after the complete basic flow."""
+    normalized = tuple(normalize_visible_text(region.text) for region in regions)
+    has_next_main = any("洛神大街" in text for text in normalized)
+    has_path_title = any("修仙之路" in text for text in normalized)
+    has_path_reward = any("领取奖励" in text for text in normalized)
+    return has_next_main and has_path_title and has_path_reward
 
 
 def find_market_entry(regions: Iterable[TextRegion]) -> TextRegion | None:

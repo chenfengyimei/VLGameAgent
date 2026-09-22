@@ -41,6 +41,31 @@ controls:
     x: 0.881
     y: 0.186
     confirmed: true
+  # 避风珠激活后的古宝升级页使用贴近右上角的独立 X；保留通用 ui_close
+  # 坐标不变，避免影响其他功能页的恢复路径。
+  ancient_treasure_close:
+    kind: normalized_hotspot
+    x: 0.966
+    y: 0.134
+    confirmed: true
+  # 世界频道发送后，右侧蓝色箭头用于收起聊天侧栏。
+  world_chat_collapse:
+    kind: normalized_hotspot
+    x: 0.526
+    y: 0.536
+    confirmed: true
+  # 呦呦喂养教学的第一份绿色食物；仅在完整喂养页锚点下点击一次。
+  blessing_first_food:
+    kind: normalized_hotspot
+    x: 0.599
+    y: 0.892
+    confirmed: true
+  # 倩女幽魂活动插屏的紫色关闭按钮，位置与通用功能页 X 不同。
+  romance_ad_close:
+    kind: normalized_hotspot
+    x: 0.839
+    y: 0.242
+    confirmed: true
   # 境界页中央的晋升奖章（图形控件 OCR 读不出，规则层在目标全完成后点击）
   ui_promote:
     kind: normalized_hotspot

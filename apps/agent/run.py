@@ -376,6 +376,10 @@ async def _run(args: argparse.Namespace) -> int:
     game_session: GameSessionState | None = None
     back_hotspot: tuple[float, float] | None = None
     close_hotspot: tuple[float, float] | None = None
+    ancient_treasure_close_hotspot: tuple[float, float] | None = None
+    world_chat_collapse_hotspot: tuple[float, float] | None = None
+    blessing_first_food_hotspot: tuple[float, float] | None = None
+    romance_ad_close_hotspot: tuple[float, float] | None = None
     promote_hotspot: tuple[float, float] | None = None
     dialogue_hotspot: tuple[float, float] | None = None
     little_dragon_heal_hotspot: tuple[float, float] | None = None
@@ -388,6 +392,10 @@ async def _run(args: argparse.Namespace) -> int:
     for hotspot_name in (
         "ui_back",
         "ui_close",
+        "ancient_treasure_close",
+        "world_chat_collapse",
+        "blessing_first_food",
+        "romance_ad_close",
         "ui_promote",
         "ui_dialogue_advance",
         "ui_little_dragon_heal",
@@ -408,6 +416,14 @@ async def _run(args: argparse.Namespace) -> int:
                 back_hotspot = binding.hotspot
             elif hotspot_name == "ui_close":
                 close_hotspot = binding.hotspot
+            elif hotspot_name == "ancient_treasure_close":
+                ancient_treasure_close_hotspot = binding.hotspot
+            elif hotspot_name == "world_chat_collapse":
+                world_chat_collapse_hotspot = binding.hotspot
+            elif hotspot_name == "blessing_first_food":
+                blessing_first_food_hotspot = binding.hotspot
+            elif hotspot_name == "romance_ad_close":
+                romance_ad_close_hotspot = binding.hotspot
             elif hotspot_name == "ui_promote":
                 promote_hotspot = binding.hotspot
             elif hotspot_name == "ui_dialogue_advance":
@@ -470,6 +486,10 @@ async def _run(args: argparse.Namespace) -> int:
                 preferred_action_target=goal_action_target,
                 back_hotspot=back_hotspot,
                 close_hotspot=close_hotspot,
+                ancient_treasure_close_hotspot=ancient_treasure_close_hotspot,
+                world_chat_collapse_hotspot=world_chat_collapse_hotspot,
+                blessing_first_food_hotspot=blessing_first_food_hotspot,
+                romance_ad_close_hotspot=romance_ad_close_hotspot,
                 promote_hotspot=promote_hotspot,
                 dialogue_hotspot=dialogue_hotspot,
                 little_dragon_heal_hotspot=little_dragon_heal_hotspot,

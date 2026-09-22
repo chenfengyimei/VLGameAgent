@@ -9,9 +9,16 @@ from uga.agent.session_state import (
     GameSessionState,
     ScreenType,
     artifact_result_close_control,
+    basic_onboarding_complete,
     black_clad_leader_combat_active,
+    blessing_feed_page_visible,
+    blessing_onboarding_control,
     demon_sect_disciple_combat_active,
     demonized_spirit_combat_active,
+    equipment_dungeon_active,
+    equipment_dungeon_control,
+    equipment_recruiting_visible,
+    equipment_reward_popup_visible,
     find_xiuxian_path_quest_line,
     heroic_rescue_combat_active,
     master_message_event_control,
@@ -36,12 +43,16 @@ from uga.agent.session_state import (
     realm_breakthrough_entry_control,
     realm_breakthrough_success,
     red_dust_auto_enable_ready,
+    romance_ad_visible,
     stable_anchor_tokens,
     summon_bell_interaction_active,
     summon_once_control,
     summon_result_close_control,
     summon_world_control,
+    world_chat_send_control,
+    world_chat_sent_visible,
     xiuxian_path_objective_goto,
+    xiuxian_path_recorded_objective_control,
 )
 from uga.control.lease import ControlMode
 from uga.perception.schema import NormalizedBox, PerceptionSnapshot, TextRegion
@@ -1091,6 +1102,136 @@ class XiuxianPathQuestLineTests(unittest.TestCase):
                         NormalizedBox(0.423, 0.311, 0.558, 0.344),
                         1.00,
                     ),
+                )
+            )
+        )
+
+
+class RecordedCultivationPathTests(unittest.TestCase):
+    @staticmethod
+    def _region(
+        text: str,
+        box: tuple[float, float, float, float],
+        confidence: float = 1.0,
+    ) -> TextRegion:
+        return TextRegion(text, NormalizedBox(*box), confidence)
+
+    def test_world_chat_row_precedes_topmost_generic_objective(self) -> None:
+        regions = (
+            self._region("修仙之路", (0.35, 0.14, 0.62, 0.28)),
+            self._region("完成3次30级装备秘境", (0.40, 0.31, 0.60, 0.35)),
+            self._region("前往", (0.75, 0.32, 0.82, 0.37)),
+            self._region("世界频道发言1次", (0.40, 0.53, 0.60, 0.57)),
+            self._region("0/1", (0.40, 0.58, 0.45, 0.61)),
+            self._region("前往", (0.75, 0.54, 0.82, 0.59)),
+        )
+
+        result = xiuxian_path_recorded_objective_control(regions)
+
+        assert result is not None
+        self.assertEqual(result[0], "world_chat_goto")
+        self.assertAlmostEqual(result[1].box.center.y, 0.565)
+
+    def test_completed_recorded_objectives_select_claim(self) -> None:
+        world = xiuxian_path_recorded_objective_control(
+            (
+                self._region("修仙之路", (0.35, 0.14, 0.62, 0.28)),
+                self._region("世界频道发言1次", (0.40, 0.30, 0.60, 0.34)),
+                self._region("1/1", (0.40, 0.35, 0.45, 0.38)),
+                self._region("领取", (0.75, 0.31, 0.82, 0.36)),
+            )
+        )
+        equipment = xiuxian_path_recorded_objective_control(
+            (
+                self._region("修仙之路", (0.35, 0.14, 0.62, 0.28)),
+                self._region("完成3次30级装备秘境", (0.40, 0.30, 0.60, 0.34)),
+                self._region("3/3", (0.40, 0.35, 0.45, 0.38)),
+                self._region("领取", (0.75, 0.31, 0.82, 0.36)),
+            )
+        )
+
+        self.assertEqual(world and world[0], "world_chat_claim")
+        self.assertEqual(equipment and equipment[0], "equipment_dungeon_claim")
+
+    def test_world_chat_send_and_collapse_require_recorded_text(self) -> None:
+        send_regions = (
+            self._region("世界", (0.01, 0.10, 0.09, 0.20)),
+            self._region("仙遇有你，一路同行", (0.15, 0.90, 0.45, 0.97)),
+            self._region("发送", (0.40, 0.90, 0.51, 0.97)),
+        )
+        sent_regions = (
+            self._region("世界", (0.01, 0.10, 0.09, 0.20)),
+            self._region("想你的风还是吹到了仙遇", (0.40, 0.40, 0.70, 0.46)),
+            self._region("9秒", (0.40, 0.90, 0.51, 0.97)),
+        )
+
+        self.assertEqual(world_chat_send_control(send_regions).text, "发送")  # type: ignore[union-attr]
+        self.assertTrue(world_chat_sent_visible(sent_regions))
+
+    def test_equipment_dungeon_controls_and_wait_states(self) -> None:
+        npc = equipment_dungeon_control(
+            (
+                self._region("秘境使者", (0.10, 0.75, 0.28, 0.83)),
+                self._region("装备秘境", (0.68, 0.69, 0.92, 0.79)),
+            )
+        )
+        group = equipment_dungeon_control(
+            (
+                self._region("装备秘境", (0.02, 0.04, 0.20, 0.12)),
+                self._region("盘丝妖窟", (0.18, 0.25, 0.35, 0.35)),
+                self._region("组队", (0.65, 0.86, 0.80, 0.95)),
+            )
+        )
+        recruiting = (
+            self._region("我的队伍", (0.02, 0.04, 0.20, 0.12)),
+            self._region("装备秘境-盘丝妖窟", (0.02, 0.15, 0.30, 0.22)),
+            self._region("招募中", (0.70, 0.86, 0.82, 0.95)),
+            self._region("前往副本", (0.84, 0.86, 0.98, 0.95)),
+        )
+        battle = (
+            self._region("盘丝妖窟", (0.05, 0.15, 0.20, 0.22)),
+            self._region("击杀夜叉兽0/8", (0.04, 0.30, 0.22, 0.36)),
+        )
+
+        self.assertEqual(npc and npc[0], "npc_choice")
+        self.assertEqual(group and group[0], "group")
+        self.assertIsNone(equipment_dungeon_control(recruiting))
+        self.assertTrue(equipment_recruiting_visible(recruiting))
+        self.assertTrue(equipment_dungeon_active(battle))
+
+    def test_blessing_ad_and_terminal_anchors_are_narrow(self) -> None:
+        select = blessing_onboarding_control(
+            (
+                self._region("选择一个灵佑", (0.35, 0.10, 0.65, 0.20)),
+                self._region("呦呦", (0.24, 0.30, 0.37, 0.38)),
+                self._region("啾啾", (0.65, 0.30, 0.78, 0.38)),
+            )
+        )
+        feed = (
+            self._region("喂养", (0.03, 0.05, 0.15, 0.12)),
+            self._region("呦呦", (0.45, 0.08, 0.56, 0.14)),
+            self._region("剩余孵化时间：46小时", (0.38, 0.68, 0.64, 0.74)),
+        )
+        ad = (
+            self._region("倩女幽魂", (0.20, 0.18, 0.50, 0.75)),
+            self._region("立即前往", (0.42, 0.75, 0.60, 0.85)),
+        )
+        final = (
+            self._region("洛神大街", (0.08, 0.30, 0.20, 0.36)),
+            self._region("修仙之路", (0.04, 0.20, 0.14, 0.24)),
+            self._region("点击前往领取奖励", (0.04, 0.24, 0.30, 0.28)),
+        )
+
+        self.assertEqual(select and select[0], "select_yoyo")
+        self.assertTrue(blessing_feed_page_visible(feed))
+        self.assertTrue(romance_ad_visible(ad))
+        self.assertTrue(basic_onboarding_complete(final))
+        self.assertTrue(
+            equipment_reward_popup_visible(
+                (
+                    self._region("仙路漫漫", (0.05, 0.30, 0.20, 0.36)),
+                    self._region("30级", (0.60, 0.50, 0.68, 0.56)),
+                    self._region("使用", (0.60, 0.62, 0.70, 0.68)),
                 )
             )
         )

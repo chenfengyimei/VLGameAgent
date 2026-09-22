@@ -1594,3 +1594,227 @@ steps:
     recognize: {all: [问道圣物, 点击任意处关闭]}
     action: click_text:点击任意处关闭
     expected: 关闭问道圣物获得展示并继续流程
+  - id: ancient_treasure_menu_open
+    order: 2270
+    evidence: docs/assets/mumu-xianyu/onboarding/217-ancient-treasure-menu.png
+    source: ocr_ancient_treasure_menu_fast
+    recognize: {all: [点击菜单], control: 菜单}
+    action: click_text:菜单
+    expected: 点击右侧菜单展开古宝激活入口
+  - id: ancient_treasure_entry_open
+    order: 2280
+    evidence: docs/assets/mumu-xianyu/onboarding/218-ancient-treasure-entry.png
+    source: ocr_ancient_treasure_entry_fast
+    recognize: {all: [前往激活古宝], control: 百宝}
+    action: click_text:百宝
+    expected: 点击百宝进入古宝列表
+  - id: ancient_treasure_select_bifengzhu
+    order: 2290
+    evidence: docs/assets/mumu-xianyu/onboarding/219-ancient-treasure-select-bifengzhu.png
+    source: ocr_ancient_treasure_select_bifengzhu_fast
+    recognize: {all: [古宝, 后天古宝, 避风珠], control: 可激活}
+    action: click_text:可激活
+    expected: 选择后天古宝列表中可激活的避风珠
+  - id: ancient_treasure_activate_bifengzhu
+    order: 2300
+    evidence: docs/assets/mumu-xianyu/onboarding/220-ancient-treasure-activate-bifengzhu.png
+    source: ocr_ancient_treasure_activate_fast
+    recognize: {all: [古宝激活, 避风珠], control: 激活}
+    action: click_text:激活
+    expected: 消耗已有材料激活避风珠
+  - id: ancient_treasure_upgrade_close
+    order: 2310
+    evidence: docs/assets/mumu-xianyu/onboarding/221-ancient-treasure-upgrade-close.png
+    source: ocr_ancient_treasure_upgrade_close_fast
+    recognize: {all: [古宝升级, 升级预览, 避风珠], control: ancient_treasure_close}
+    action: click_hotspot:ancient_treasure_close
+    expected: 激活成功后点击右上关闭退出升级页
+  - id: ancient_treasure_complete_back
+    order: 2320
+    evidence: docs/assets/mumu-xianyu/onboarding/222-ancient-treasure-complete-back.png
+    source: ocr_ancient_treasure_complete_back_fast
+    recognize: {all: [古宝, 后天古宝, 避风珠], absent: 可激活, control: ui_back}
+    action: click_hotspot:ui_back
+    expected: 返回古宝列表后点击左上返回退出古宝流程
+  - id: intense_conflict_task
+    order: 2330
+    evidence: docs/assets/mumu-xianyu/onboarding/223-intense-conflict-task.png
+    source: ocr_task_panel_fast
+    recognize: {any_task: [激烈冲突, 与红莲对话]}
+    action: click_task
+    expected: 复用通用任务点击并自动寻路到红莲
+  - id: intense_conflict_dialogue
+    order: 2340
+    evidence: docs/assets/mumu-xianyu/onboarding/224-intense-conflict-dialogue.png
+    source: ocr_dialogue_click_fast
+    recognize: {all: [回顾剧情, 秒后自动继续]}
+    action: click_hotspot:ui_dialogue_advance
+    expected: 复用通用剧情推进直至返回世界
+  - id: cultivation_path_task
+    order: 2350
+    evidence: docs/assets/mumu-xianyu/onboarding/225-cultivation-path-task.png
+    source: ocr_xiuxian_path_jump_fast
+    recognize: {all: [仙路漫漫, 完成2个修仙之路目标]}
+    action: click_task
+    expected: 打开修仙之路目标页
+  - id: world_chat_objective_goto
+    order: 2360
+    evidence: docs/assets/mumu-xianyu/onboarding/226-world-chat-objective-goto.png
+    source: ocr_world_chat_objective_goto_fast
+    recognize: {all: [修仙之路, 世界频道发言1次, 0/1], control: 前往}
+    action: click_text:前往
+    expected: 打开世界频道聊天侧栏
+  - id: world_chat_send
+    order: 2370
+    evidence: docs/assets/mumu-xianyu/onboarding/227-world-chat-send.png
+    source: ocr_world_chat_send_fast
+    recognize: {all: [世界, 仙遇有你，一路同行], control: 发送}
+    action: click_text:发送
+    expected: 发送用户指定的预填世界频道消息一次
+  - id: world_chat_collapse
+    order: 2380
+    evidence: docs/assets/mumu-xianyu/onboarding/228-world-chat-collapse.png
+    source: ocr_world_chat_collapse_fast
+    recognize: {all: [世界, 想你的风还是吹到了仙遇, 秒], control: world_chat_collapse}
+    action: click_hotspot:world_chat_collapse
+    expected: 消息发送成功后收起聊天侧栏
+  - id: cultivation_path_reward_task
+    order: 2390
+    evidence: docs/assets/mumu-xianyu/onboarding/229-cultivation-path-reward-task.png
+    source: ocr_xiuxian_path_jump_fast
+    recognize: {all: [修仙之路, 点击前往领取奖励]}
+    action: click_task
+    expected: 再次打开修仙之路目标页
+  - id: world_chat_objective_claim
+    order: 2400
+    evidence: docs/assets/mumu-xianyu/onboarding/230-world-chat-objective-claim.png
+    source: ocr_world_chat_objective_claim_fast
+    recognize: {all: [修仙之路, 世界频道发言1次, 1/1], control: 领取}
+    action: click_text:领取
+    expected: 领取世界频道发言目标奖励
+  - id: equipment_dungeon_objective_goto
+    order: 2410
+    evidence: docs/assets/mumu-xianyu/onboarding/231-equipment-dungeon-objective-goto.png
+    source: ocr_equipment_dungeon_objective_goto_fast
+    recognize: {all: [修仙之路, 完成3次30级装备秘境, 0/3], control: 前往}
+    action: click_text:前往
+    expected: 自动寻路到秘境使者
+  - id: equipment_dungeon_npc_choice
+    order: 2420
+    evidence: docs/assets/mumu-xianyu/onboarding/232-equipment-dungeon-npc-choice.png
+    source: ocr_equipment_dungeon_npc_choice_fast
+    recognize: {all: [秘境使者], control: 装备秘境}
+    action: click_text:装备秘境
+    expected: 打开30级装备秘境盘丝妖窟
+  - id: equipment_dungeon_group
+    order: 2430
+    evidence: docs/assets/mumu-xianyu/onboarding/233-equipment-dungeon-group.png
+    source: ocr_equipment_dungeon_group_fast
+    recognize: {all: [装备秘境, 盘丝妖窟], control: 组队}
+    action: click_text:组队
+    expected: 打开寻找队伍界面
+  - id: equipment_dungeon_create_team
+    order: 2440
+    evidence: docs/assets/mumu-xianyu/onboarding/234-equipment-dungeon-create-team.png
+    source: ocr_equipment_dungeon_create_team_fast
+    recognize: {all: [寻找队伍, 装备秘境, 盘丝], control: 创建队伍}
+    action: click_text:创建队伍
+    expected: 创建队伍并开始招募队员
+  - id: equipment_dungeon_recruit_wait
+    order: 2450
+    evidence: docs/assets/mumu-xianyu/onboarding/235-equipment-dungeon-recruit-wait.png
+    source: ocr_equipment_dungeon_recruit_wait
+    recognize: {all: [我的队伍, 装备秘境, 盘丝, 招募中]}
+    action: wait
+    expected: 招募中保持等待，不提前打断组队
+  - id: equipment_dungeon_enter
+    order: 2460
+    evidence: docs/assets/mumu-xianyu/onboarding/235-equipment-dungeon-recruit-wait.png
+    source: ocr_equipment_dungeon_enter_fast
+    recognize: {all: [我的队伍, 装备秘境, 盘丝], absent: 招募中, control: 前往副本}
+    action: click_text:前往副本
+    expected: 招募完成后申请进入盘丝妖窟
+  - id: equipment_dungeon_confirm_target
+    order: 2470
+    evidence: docs/assets/mumu-xianyu/onboarding/236-equipment-dungeon-confirm-target.png
+    source: ocr_equipment_dungeon_confirm_target_fast
+    recognize: {all: [当前人数, 是否前往], control: 前往目标}
+    action: click_text:前往目标
+    expected: 确认由当前队伍进入副本
+  - id: equipment_dungeon_auto_wait
+    order: 2480
+    evidence: docs/assets/mumu-xianyu/onboarding/237-equipment-dungeon-auto-wait.png
+    source: ocr_equipment_dungeon_auto_wait
+    recognize: {all: [盘丝妖窟, 击杀夜叉兽]}
+    action: wait
+    expected: 游戏自动寻路和战斗期间持续等待
+  - id: equipment_dungeon_reward_popup_close
+    order: 2490
+    evidence: docs/assets/mumu-xianyu/onboarding/238-equipment-dungeon-return.png
+    source: ocr_close_glyph_fast
+    recognize: {all: [仙路漫漫, 30级, 使用], control: X}
+    action: click_text:X
+    expected: 关闭副本返回后的装备推荐弹窗
+  - id: equipment_dungeon_repeat_task
+    order: 2500
+    evidence: docs/assets/mumu-xianyu/onboarding/238-equipment-dungeon-return.png
+    source: ocr_xiuxian_path_jump_fast
+    recognize: {all: [仙路漫漫, 完成2个修仙之路目标, 1/2]}
+    action: click_task
+    expected: 重复打开修仙之路并继续装备秘境目标
+  - id: equipment_dungeon_repeat_objective
+    order: 2510
+    evidence: docs/assets/mumu-xianyu/onboarding/231-equipment-dungeon-objective-goto.png
+    source: ocr_equipment_dungeon_objective_goto_fast
+    recognize: {all: [完成3次30级装备秘境], progress_lt: 3/3, control: 前往}
+    action: click_text:前往
+    expected: 重复组队与自动战斗流程直至装备秘境达到3/3
+  - id: equipment_dungeon_objective_claim
+    order: 2520
+    evidence: docs/assets/mumu-xianyu/onboarding/239-equipment-dungeon-objective-claim.png
+    source: ocr_equipment_dungeon_objective_claim_fast
+    recognize: {all: [修仙之路, 完成3次30级装备秘境, 3/3], control: 领取}
+    action: click_text:领取
+    expected: 领取装备秘境目标奖励
+  - id: blessing_select_yoyo
+    order: 2530
+    evidence: docs/assets/mumu-xianyu/onboarding/240-blessing-select-yoyo.png
+    source: ocr_blessing_select_yoyo_fast
+    recognize: {all: [选择一个灵佑], control: 呦呦}
+    action: click_text:呦呦
+    expected: 按用户标注选择左侧呦呦
+  - id: blessing_adopt
+    order: 2540
+    evidence: docs/assets/mumu-xianyu/onboarding/241-blessing-adopt.png
+    source: ocr_blessing_adopt_fast
+    recognize: {all: [契约书, 呦呦], control: 点击领养灵佑}
+    action: click_text:点击领养灵佑
+    expected: 领养选择的呦呦灵佑
+  - id: blessing_feed
+    order: 2550
+    evidence: docs/assets/mumu-xianyu/onboarding/242-blessing-feed.png
+    source: ocr_blessing_feed_fast
+    recognize: {all: [喂养, 呦呦, 加速孵化], control: blessing_first_food}
+    action: click_hotspot:blessing_first_food
+    expected: 使用第一份绿色食物喂养一次
+  - id: blessing_feed_complete_back
+    order: 2560
+    evidence: docs/assets/mumu-xianyu/onboarding/242-blessing-feed.png
+    source: ocr_blessing_feed_complete_back_fast
+    recognize: {all: [喂养, 呦呦], after: blessing_feed, control: ui_back}
+    action: click_hotspot:ui_back
+    expected: 喂养后点击左上退出
+  - id: romance_ad_close
+    order: 2570
+    evidence: docs/assets/mumu-xianyu/onboarding/243-romance-ad-close.png
+    source: ocr_romance_ad_close_fast
+    recognize: {all: [倩女幽魂, 立即前往], control: romance_ad_close}
+    action: click_hotspot:romance_ad_close
+    expected: 如出现活动广告则点击紫色叉关闭
+  - id: basic_onboarding_complete
+    order: 2580
+    evidence: docs/assets/mumu-xianyu/onboarding/244-basic-onboarding-complete.png
+    source: ocr_basic_onboarding_complete
+    recognize: {all: [洛神大街, 修仙之路, 点击前往领取奖励]}
+    action: done
+    expected: 基础流程全部完成并停止继续操作
