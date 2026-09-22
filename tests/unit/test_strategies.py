@@ -38,7 +38,7 @@ class StrategyRegistryTests(unittest.TestCase):
         root = Path(__file__).parents[2]
         flow = load_recorded_flow(root / "configs/flows/mumu-xianyu-onboarding.yaml")
         self.assertEqual(flow.game_id, MUMU_REGISTRY.game_id)
-        self.assertEqual(len(flow.steps), 212)
+        self.assertEqual(len(flow.steps), 226)
         self.assertEqual(
             {
                 Path(step.evidence).name
@@ -234,6 +234,15 @@ class StrategyRegistryTests(unittest.TestCase):
                 "205-post-plot-cutscene-skip.png",
                 "206-treasure-menu-entry.png",
                 "207-treasure-page-exit.png",
+                "208-inform-plot-task.png",
+                "209-inform-plot-dialogue.png",
+                "210-academy-second-trial-message.png",
+                "211-second-trial-departure-continue.png",
+                "212-ghost-king-trace-task.png",
+                "213-ghost-trace-navigation.png",
+                "214-ghost-king-combat.png",
+                "215-ghost-relic-pickup.png",
+                "216-sacred-relic-result-close.png",
             },
         )
         for step in flow.steps:
@@ -351,6 +360,7 @@ class StrategyRegistryTests(unittest.TestCase):
             "ocr_black_clad_leader_combat_fast",
             "ocr_heroic_rescue_combat_fast",
             "ocr_drunken_guest_combat_fast",
+            "ocr_ghost_king_combat_fast",
             "ocr_red_dust_auto_once_fast",
             "ocr_pet_training_entry_fast",
             "ocr_pet_information_tab_fast",
@@ -387,6 +397,10 @@ class StrategyRegistryTests(unittest.TestCase):
             "ocr_treasure_menu_fast",
             "ocr_treasure_entry_fast",
             "ocr_treasure_complete_back_fast",
+            "ocr_academy_message_event_fast",
+            "ocr_ghost_trace_inspect_fast",
+            "ocr_ghost_relic_pickup_fast",
+            "ocr_sacred_relic_result_close_fast",
             "ocr_xuanling_tower_entry_fast",
             "ocr_xuanling_tower_challenge_fast",
             "ocr_xuanling_tower_battle_wait",
@@ -1678,6 +1692,131 @@ class PlannerStrategyScopingTests(unittest.TestCase):
         self.assertEqual(
             planner.last_decision_source,
             "ocr_treasure_complete_back_fast",
+        )
+
+    def test_academy_message_ghost_event_combat_and_relic_sequence(self) -> None:
+        planner = GroundedVlmPlanner(
+            _Client([]),
+            max_temporal_frames=1,
+            max_target_crops=0,
+            compact_output=True,
+            prefer_ocr_task_panel=True,
+            strategy_registry=MUMU_REGISTRY,
+            pet_group_attack_hotspot=(0.950, 0.500),
+            heal_hotspot=(0.840, 0.635),
+            control_hotspot=(0.935, 0.635),
+            secondary_group_attack_hotspot=(0.790, 0.745),
+            group_attack_hotspot=(0.770, 0.890),
+        )
+        letter = _onboarding_snapshot(
+            TextRegion("仙友亲启", NormalizedBox(0.44, 0.19, 0.57, 0.25), 0.99),
+            TextRegion(
+                "恭喜仙友通过问道大会一轮考核，第二轮考核任务是击败枫林晚闹事的鬼王",
+                NormalizedBox(0.44, 0.28, 0.72, 0.52),
+                0.99,
+            ),
+            TextRegion("——无涯书院", NormalizedBox(0.55, 0.71, 0.70, 0.82), 0.99),
+        )
+        outcome = planner._ocr_fast_path(letter)  # type: ignore[attr-defined]
+        assert outcome is not None and outcome.action is not None
+        self.assertEqual(outcome.action.target_label, "——无涯书院")
+        self.assertEqual(
+            planner.last_decision_source,
+            "ocr_academy_message_event_fast",
+        )
+
+        navigating = _onboarding_snapshot(
+            TextRegion("鬼迷心窍", NormalizedBox(0.04, 0.22, 0.18, 0.27), 0.99),
+            TextRegion(
+                "发现鬼王踪迹",
+                NormalizedBox(0.04, 0.27, 0.22, 0.32),
+                0.99,
+            ),
+            TextRegion("自动寻路中...", NormalizedBox(0.42, 0.66, 0.58, 0.72), 0.99),
+            TextRegion("探查", NormalizedBox(0.76, 0.62, 0.84, 0.71), 0.99),
+        )
+        outcome = planner._ocr_fast_path(navigating)  # type: ignore[attr-defined]
+        assert outcome is not None
+        self.assertEqual(outcome.kind, DecisionKind.WAIT)
+        self.assertIsNone(outcome.action)
+        self.assertEqual(planner.last_decision_source, "ocr_auto_navigation_wait")
+
+        inspect = _onboarding_snapshot(
+            TextRegion("鬼迷心窍", NormalizedBox(0.04, 0.22, 0.18, 0.27), 0.99),
+            TextRegion(
+                "发现鬼王踪迹",
+                NormalizedBox(0.04, 0.27, 0.22, 0.32),
+                0.99,
+            ),
+            TextRegion("探查", NormalizedBox(0.76, 0.62, 0.84, 0.71), 0.99),
+        )
+        outcome = planner._ocr_fast_path(inspect)  # type: ignore[attr-defined]
+        assert outcome is not None and outcome.action is not None
+        self.assertEqual(outcome.action.target_label, "探查")
+        self.assertEqual(planner.last_decision_source, "ocr_ghost_trace_inspect_fast")
+
+        combat = _onboarding_snapshot(
+            TextRegion("击败鬼王", NormalizedBox(0.04, 0.22, 0.18, 0.27), 0.99),
+            TextRegion(
+                "击败鬼王获得圣物",
+                NormalizedBox(0.04, 0.27, 0.24, 0.32),
+                0.99,
+            ),
+            TextRegion("无常 Lv.29", NormalizedBox(0.35, 0.07, 0.60, 0.14), 0.99),
+        )
+        labels: list[str] = []
+        for _ in range(5):
+            outcome = planner._ocr_fast_path(combat)  # type: ignore[attr-defined]
+            assert outcome is not None and outcome.action is not None
+            labels.append(outcome.action.target_label)
+        self.assertEqual(
+            labels,
+            [
+                "ui_pet_group_attack",
+                "ui_heal",
+                "ui_control",
+                "ui_secondary_group_attack",
+                "ui_group_attack",
+            ],
+        )
+        self.assertEqual(planner.last_decision_source, "ocr_ghost_king_combat_fast")
+
+        pickup = _onboarding_snapshot(
+            TextRegion("鬼王信物", NormalizedBox(0.04, 0.22, 0.18, 0.27), 0.99),
+            TextRegion(
+                "捡起掉落的圣物",
+                NormalizedBox(0.04, 0.27, 0.22, 0.32),
+                0.99,
+            ),
+            TextRegion("拾起", NormalizedBox(0.56, 0.57, 0.64, 0.68), 0.99),
+        )
+        outcome = planner._ocr_fast_path(pickup)  # type: ignore[attr-defined]
+        assert outcome is not None and outcome.action is not None
+        self.assertEqual(outcome.action.target_label, "拾起")
+        self.assertEqual(planner.last_decision_source, "ocr_ghost_relic_pickup_fast")
+
+        result = _onboarding_snapshot(
+            TextRegion("问道圣物", NormalizedBox(0.47, 0.34, 0.61, 0.42), 0.99),
+            TextRegion(
+                "点击任意处关闭(21秒)",
+                NormalizedBox(0.40, 0.87, 0.61, 0.95),
+                0.99,
+            ),
+        )
+        outcome = planner._ocr_fast_path(result)  # type: ignore[attr-defined]
+        assert outcome is not None and outcome.action is not None
+        self.assertEqual(outcome.action.target_label, "点击任意处关闭(21秒)")
+        self.assertEqual(
+            planner.last_decision_source,
+            "ocr_sacred_relic_result_close_fast",
+        )
+
+        unrelated = _onboarding_snapshot(
+            TextRegion("探查", NormalizedBox(0.76, 0.62, 0.84, 0.71), 0.99),
+            TextRegion("拾起", NormalizedBox(0.56, 0.57, 0.64, 0.68), 0.99),
+        )
+        self.assertIsNone(
+            planner._ocr_fast_path(unrelated)  # type: ignore[attr-defined]
         )
 
     def test_notice_board_event_clicks_left_then_right_paper(self) -> None:

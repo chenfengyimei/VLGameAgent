@@ -11,6 +11,7 @@ from difflib import SequenceMatcher
 from typing import Any, Protocol
 
 from uga.agent.session_state import (
+    academy_message_event_control,
     artifact_result_close_control,
     auto_navigation_active,
     black_clad_leader_combat_active,
@@ -32,6 +33,9 @@ from uga.agent.session_state import (
     find_xiuxian_path_quest_line,
     fourth_skill_learn_control,
     fourth_skill_training_complete,
+    ghost_king_combat_active,
+    ghost_relic_pickup_control,
+    ghost_trace_inspect_control,
     heroic_rescue_combat_active,
     invasion_combat_active,
     invasion_group_attack_control,
@@ -87,6 +91,7 @@ from uga.agent.session_state import (
     realm_promotion_ready,
     red_dust_auto_enable_ready,
     rescue_little_dragon_choice,
+    sacred_relic_result_close_control,
     second_pet_deployment_complete,
     second_pet_slot_stage,
     second_pet_unlock_confirm_control,
@@ -529,6 +534,7 @@ class GroundedVlmPlanner:
         self._black_clad_leader_combat_skill_index = 0
         self._heroic_rescue_combat_skill_index = 0
         self._drunken_guest_combat_skill_index = 0
+        self._ghost_king_combat_skill_index = 0
         self._xuanling_tower_challenge_at: float | None = None
         self._second_pet_started_at: float | None = None
         self._pet_travel_started_at: float | None = None
@@ -1027,6 +1033,26 @@ class GroundedVlmPlanner:
                 expected_effect="the senior sister's rendezvous invitation is accepted",
                 action_kind=GuiActionKind.CLICK,
             )
+        academy_message = academy_message_event_control(snapshot.visible_text)
+        if academy_message is not None:
+            self._last_decision_source = "ocr_academy_message_event_fast"
+            return self._ocr_action(
+                snapshot,
+                academy_message,
+                source="ocr_academy_message_event_fast",
+                expected_effect="the academy's second-trial message is accepted",
+                action_kind=GuiActionKind.CLICK,
+            )
+        sacred_relic_close = sacred_relic_result_close_control(snapshot.visible_text)
+        if sacred_relic_close is not None:
+            self._last_decision_source = "ocr_sacred_relic_result_close_fast"
+            return self._ocr_action(
+                snapshot,
+                sacred_relic_close,
+                source="ocr_sacred_relic_result_close_fast",
+                expected_effect="the acquired sacred-relic presentation closes",
+                action_kind=GuiActionKind.CLICK,
+            )
         artifact_result_close = artifact_result_close_control(snapshot.visible_text)
         if artifact_result_close is not None:
             self._last_decision_source = "ocr_artifact_result_close_fast"
@@ -1148,6 +1174,26 @@ class GroundedVlmPlanner:
                 control,
                 source=source,
                 expected_effect=expected_effect,
+                action_kind=GuiActionKind.CLICK,
+            )
+        ghost_pickup = ghost_relic_pickup_control(snapshot.visible_text)
+        if ghost_pickup is not None:
+            self._last_decision_source = "ocr_ghost_relic_pickup_fast"
+            return self._ocr_action(
+                snapshot,
+                ghost_pickup,
+                source="ocr_ghost_relic_pickup_fast",
+                expected_effect="the dropped sacred relic is collected",
+                action_kind=GuiActionKind.CLICK,
+            )
+        ghost_inspect = ghost_trace_inspect_control(snapshot.visible_text)
+        if ghost_inspect is not None:
+            self._last_decision_source = "ocr_ghost_trace_inspect_fast"
+            return self._ocr_action(
+                snapshot,
+                ghost_inspect,
+                source="ocr_ghost_trace_inspect_fast",
+                expected_effect="the ghost trace is inspected and the king encounter begins",
                 action_kind=GuiActionKind.CLICK,
             )
         notice_board_stage = notice_board_event_stage(snapshot.visible_text)
@@ -2095,6 +2141,30 @@ class GroundedVlmPlanner:
                     hotspot,
                     "ocr_drunken_guest_combat_fast",
                     "the drunken guest is controlled and damaged while the player stays healthy",
+                )
+        if ghost_king_combat_active(snapshot.visible_text):
+            skills = tuple(
+                (label, hotspot)
+                for label, hotspot in (
+                    ("ui_pet_group_attack", self._pet_group_attack_hotspot),
+                    ("ui_heal", self._heal_hotspot),
+                    ("ui_control", self._control_hotspot),
+                    ("ui_secondary_group_attack", self._secondary_group_attack_hotspot),
+                    ("ui_group_attack", self._group_attack_hotspot),
+                )
+                if hotspot is not None
+            )
+            if skills:
+                label, hotspot = skills[
+                    self._ghost_king_combat_skill_index % len(skills)
+                ]
+                self._ghost_king_combat_skill_index += 1
+                return self._hotspot_click_action(
+                    snapshot,
+                    label,
+                    hotspot,
+                    "ocr_ghost_king_combat_fast",
+                    "the ghost king and its minions are controlled and damaged",
                 )
         auto_combat_enabled = bool(
             session_context and "auto_combat_enabled=true" in session_context

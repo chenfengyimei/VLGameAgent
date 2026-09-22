@@ -468,6 +468,29 @@ def drunken_guest_combat_active(regions: Iterable[TextRegion]) -> bool:
     return task_active and enemy_visible
 
 
+def ghost_king_combat_active(regions: Iterable[TextRegion]) -> bool:
+    """Recorded second-trial fight against 鬼王无常 and its minions."""
+    visible = tuple(regions)
+    task_active = any(
+        any(
+            cue in normalize_visible_text(region.text)
+            for cue in ("击败鬼王", "击败鬼王获得圣物")
+        )
+        and region.confidence >= 0.75
+        and region.box.center.x <= 0.38
+        and 0.14 <= region.box.center.y <= 0.45
+        for region in visible
+    )
+    boss_visible = any(
+        "无常" in normalize_visible_text(region.text)
+        and region.confidence >= 0.75
+        and 0.25 <= region.box.center.x <= 0.75
+        and 0.05 <= region.box.center.y <= 0.30
+        for region in visible
+    )
+    return task_active and boss_visible
+
+
 def disguise_technique_control(regions: Iterable[TextRegion]) -> TextRegion | None:
     """Scene-bound 易容术 control for the recorded 妖术易容 quest."""
     visible = tuple(regions)
@@ -1935,6 +1958,35 @@ def senior_sister_message_event_control(
     return max(candidates, key=lambda region: region.confidence) if candidates else None
 
 
+def academy_message_event_control(regions: Iterable[TextRegion]) -> TextRegion | None:
+    """Clickable 无涯书院 signature on the recorded second-trial message."""
+    visible = tuple(regions)
+    has_salutation = any(
+        "仙友亲启" in normalize_visible_text(region.text)
+        and region.confidence >= 0.80
+        for region in visible
+    )
+    has_second_trial = any(
+        any(
+            cue in normalize_visible_text(region.text)
+            for cue in ("问道大会二轮", "问道大会一轮考核", "击败枫林晚闹事的鬼王")
+        )
+        and region.confidence >= 0.75
+        for region in visible
+    )
+    if not has_salutation or not has_second_trial:
+        return None
+    candidates = [
+        region
+        for region in visible
+        if "无涯书院" in normalize_visible_text(region.text)
+        and region.confidence >= 0.80
+        and 0.45 <= region.box.center.x <= 0.75
+        and 0.60 <= region.box.center.y <= 0.90
+    ]
+    return max(candidates, key=lambda region: region.confidence) if candidates else None
+
+
 def sky_lantern_release_control(regions: Iterable[TextRegion]) -> TextRegion | None:
     """Scene-bound 放灯 control for the recorded 天灯寄愿 quest."""
     visible = tuple(regions)
@@ -2086,6 +2138,83 @@ def treasure_page_visible(regions: Iterable[TextRegion]) -> bool:
         for region in visible
     )
     return has_title and has_feature
+
+
+def ghost_trace_inspect_control(regions: Iterable[TextRegion]) -> TextRegion | None:
+    """Scene-bound 探查 control after navigation reaches the ghost trace."""
+    visible = tuple(regions)
+    if auto_navigation_active(visible):
+        return None
+    task_active = any(
+        any(
+            cue in normalize_visible_text(region.text)
+            for cue in ("鬼迷心窍", "发现鬼王踪迹")
+        )
+        and region.confidence >= 0.75
+        and region.box.center.x <= 0.38
+        and 0.14 <= region.box.center.y <= 0.45
+        for region in visible
+    )
+    if not task_active:
+        return None
+    candidates = [
+        region
+        for region in visible
+        if normalize_visible_text(region.text) == "探查"
+        and region.confidence >= 0.80
+        and region.box.center.x >= 0.65
+        and 0.45 <= region.box.center.y <= 0.85
+    ]
+    return max(candidates, key=lambda region: region.confidence) if candidates else None
+
+
+def ghost_relic_pickup_control(regions: Iterable[TextRegion]) -> TextRegion | None:
+    """Scene-bound 拾起 control for the 鬼王信物 quest."""
+    visible = tuple(regions)
+    task_active = any(
+        any(
+            cue in normalize_visible_text(region.text)
+            for cue in ("鬼王信物", "捡起掉落的圣物")
+        )
+        and region.confidence >= 0.75
+        and region.box.center.x <= 0.38
+        and 0.14 <= region.box.center.y <= 0.45
+        for region in visible
+    )
+    if not task_active:
+        return None
+    candidates = [
+        region
+        for region in visible
+        if normalize_visible_text(region.text) == "拾起"
+        and region.confidence >= 0.80
+        and 0.45 <= region.box.center.x <= 0.75
+        and 0.45 <= region.box.center.y <= 0.85
+    ]
+    return max(candidates, key=lambda region: region.confidence) if candidates else None
+
+
+def sacred_relic_result_close_control(
+    regions: Iterable[TextRegion],
+) -> TextRegion | None:
+    """Dismiss the recorded 问道圣物 acquisition presentation."""
+    visible = tuple(regions)
+    has_relic = any(
+        "问道圣物" in normalize_visible_text(region.text)
+        and region.confidence >= 0.80
+        for region in visible
+    )
+    if not has_relic:
+        return None
+    candidates = [
+        region
+        for region in visible
+        if "点击任意" in normalize_visible_text(region.text)
+        and "关闭" in normalize_visible_text(region.text)
+        and region.confidence >= 0.75
+        and region.box.center.y >= 0.75
+    ]
+    return max(candidates, key=lambda region: region.confidence) if candidates else None
 
 
 def artifact_result_close_control(regions: Iterable[TextRegion]) -> TextRegion | None:

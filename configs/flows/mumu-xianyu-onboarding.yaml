@@ -1496,3 +1496,101 @@ steps:
     recognize: {all: [神兵, 淬炼属性], control: ui_back}
     action: click_hotspot:ui_back
     expected: 确认百宝神兵界面已打开后立即点击左上返回
+  - id: inform_plot_repeat_task
+    order: 2130
+    evidence: docs/assets/mumu-xianyu/onboarding/208-inform-plot-task.png
+    source: ocr_task_panel_fast
+    recognize: {all: [主线], any_task: [告知阴谋, 与无涯子对话]}
+    action: click_task_tracker
+    expected: 返回世界后点击告知阴谋任务继续剧情
+  - id: inform_plot_repeat_dialogue
+    order: 2140
+    evidence: docs/assets/mumu-xianyu/onboarding/209-inform-plot-dialogue.png
+    source: ocr_dialogue_click_fast
+    recognize: {all: [回顾剧情, 秒后自动继续]}
+    action: click_hotspot:ui_dialogue_advance
+    expected: 使用通用对话规则快速推进无涯子剧情
+  - id: academy_second_trial_message
+    order: 2150
+    evidence: docs/assets/mumu-xianyu/onboarding/210-academy-second-trial-message.png
+    source: ocr_academy_message_event_fast
+    recognize: {all: [仙友亲启, 问道大会, 鬼王], control: 无涯书院}
+    action: click_text:无涯书院
+    expected: 点击无涯书院落款接受问道大会二轮任务
+  - id: second_trial_departure_continue
+    order: 2160
+    evidence: docs/assets/mumu-xianyu/onboarding/211-second-trial-departure-continue.png
+    source: ocr_narrative_continue_fast
+    recognize: {all: [霜叶镇, 点击任意处继续]}
+    action: click_text:点击任意处继续
+    expected: 继续前往霜叶镇的二轮考核剧情
+  - id: ghost_king_trace_task
+    order: 2170
+    evidence: docs/assets/mumu-xianyu/onboarding/212-ghost-king-trace-task.png
+    source: ocr_task_panel_fast
+    recognize: {all: [主线], any_task: [鬼王踪迹, 试试用天眼通]}
+    action: click_task_tracker
+    expected: 点击鬼王踪迹任务并使用天眼通寻找线索
+  - id: ghost_trace_navigation_wait
+    order: 2180
+    evidence: docs/assets/mumu-xianyu/onboarding/213-ghost-trace-navigation.png
+    source: ocr_auto_navigation_wait
+    recognize: {all: [自动寻路中], any_task: [鬼迷心窍, 发现鬼王踪迹]}
+    action: wait
+    expected: 等待自动寻路到达鬼王踪迹处
+  - id: ghost_trace_inspect
+    order: 2190
+    evidence: owner-described:no-screenshot
+    source: ocr_ghost_trace_inspect_fast
+    recognize: {any_task: [鬼迷心窍, 发现鬼王踪迹], absent: 自动寻路中, control: 探查, evidence_status: owner_described_no_screenshot}
+    action: click_text:探查
+    expected: 到达后点击探查触发鬼王战斗
+  - id: ghost_king_combat_pet_group_attack
+    order: 2200
+    evidence: docs/assets/mumu-xianyu/onboarding/214-ghost-king-combat.png
+    source: ocr_ghost_king_combat_fast
+    recognize: {any_task: [击败鬼王, 击败鬼王获得圣物], enemy: 无常, rotation: 1}
+    action: click_hotspot:ui_pet_group_attack
+    expected: 使用灵宠群攻攻击鬼王与小鬼
+  - id: ghost_king_combat_heal
+    order: 2210
+    evidence: docs/assets/mumu-xianyu/onboarding/214-ghost-king-combat.png
+    source: ocr_ghost_king_combat_fast
+    recognize: {any_task: [击败鬼王, 击败鬼王获得圣物], enemy: 无常, rotation: 2}
+    action: click_hotspot:ui_heal
+    expected: 使用治疗技能保持血量
+  - id: ghost_king_combat_control
+    order: 2220
+    evidence: docs/assets/mumu-xianyu/onboarding/214-ghost-king-combat.png
+    source: ocr_ghost_king_combat_fast
+    recognize: {any_task: [击败鬼王, 击败鬼王获得圣物], enemy: 无常, rotation: 3}
+    action: click_hotspot:ui_control
+    expected: 使用控制技能限制鬼王
+  - id: ghost_king_combat_secondary_group_attack
+    order: 2230
+    evidence: docs/assets/mumu-xianyu/onboarding/214-ghost-king-combat.png
+    source: ocr_ghost_king_combat_fast
+    recognize: {any_task: [击败鬼王, 击败鬼王获得圣物], enemy: 无常, rotation: 4}
+    action: click_hotspot:ui_secondary_group_attack
+    expected: 使用上方群攻继续攻击鬼王与小鬼
+  - id: ghost_king_combat_group_attack
+    order: 2240
+    evidence: docs/assets/mumu-xianyu/onboarding/214-ghost-king-combat.png
+    source: ocr_ghost_king_combat_fast
+    recognize: {any_task: [击败鬼王, 击败鬼王获得圣物], enemy: 无常, rotation: 5}
+    action: click_hotspot:ui_group_attack
+    expected: 使用下方群攻并循环技能直至战斗结束
+  - id: ghost_relic_pickup
+    order: 2250
+    evidence: docs/assets/mumu-xianyu/onboarding/215-ghost-relic-pickup.png
+    source: ocr_ghost_relic_pickup_fast
+    recognize: {any_task: [鬼王信物, 捡起掉落的圣物], control: 拾起}
+    action: click_text:拾起
+    expected: 点击拾起收取鬼王掉落的圣物
+  - id: sacred_relic_result_close
+    order: 2260
+    evidence: docs/assets/mumu-xianyu/onboarding/216-sacred-relic-result-close.png
+    source: ocr_sacred_relic_result_close_fast
+    recognize: {all: [问道圣物, 点击任意处关闭]}
+    action: click_text:点击任意处关闭
+    expected: 关闭问道圣物获得展示并继续流程
