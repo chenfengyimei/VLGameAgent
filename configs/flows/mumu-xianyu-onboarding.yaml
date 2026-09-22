@@ -1356,3 +1356,45 @@ steps:
     recognize: {all: [灵宠, 主战位, 布阵总修为, 2/3]}
     action: click_hotspot:ui_back
     expected: 确认两只灵宠已上阵后返回世界界面
+  - id: stall_sell_task
+    order: 1930
+    evidence: docs/assets/mumu-xianyu/onboarding/193-stall-sell-task.png
+    source: ocr_stall_sell_task_fast
+    recognize: {all: [主线], any_task: [摆摊出售, 出售一件商品]}
+    action: click_task_tracker
+    expected: 点击左上任务并显示高亮市场入口
+  - id: stall_sell_market_entry
+    order: 1940
+    evidence: docs/assets/mumu-xianyu/onboarding/194-stall-sell-market-entry.png
+    source: ocr_market_entry_fast
+    recognize: {any_task: [摆摊出售, 出售一件商品], control: 市场}
+    action: click_text:市场
+    expected: 打开摆摊市场页面
+  - id: stall_sell_tab
+    order: 1950
+    evidence: docs/assets/mumu-xianyu/onboarding/195-stall-sell-tab.png
+    source: ocr_stall_sell_tab_fast
+    recognize: {all: [摆摊, 请选择装备商品分类], control: 我要出售}
+    action: click_text:我要出售
+    expected: 切换至我要出售页面并显示可出售物品
+  - id: stall_sell_item
+    order: 1960
+    evidence: docs/assets/mumu-xianyu/onboarding/196-stall-sell-item.png
+    source: ocr_stall_item_fast
+    recognize: {all: [摆摊, 我要出售, 我的物品], item_level: 20级}
+    action: click_text_offset:20级:0,-0.045
+    expected: 点击炼魂伞物品格并打开物品上架弹窗
+  - id: stall_sell_listing
+    order: 1970
+    evidence: docs/assets/mumu-xianyu/onboarding/197-stall-sell-listing.png
+    source: ocr_stall_listing_fast
+    recognize: {all: [物品上架, 炼魂伞, 出售方式], control: 上架}
+    action: click_text:上架
+    expected: 按默认数量和单价上架炼魂伞
+  - id: stall_sell_complete_exit
+    order: 1980
+    evidence: docs/assets/mumu-xianyu/onboarding/198-stall-sell-success-exit.png
+    source: ocr_stall_sell_complete_back_fast
+    recognize: {all: [摆摊, 我要出售, 我的摊位, 上架成功]}
+    action: click_hotspot:ui_back
+    expected: 上架成功后点击左上角退出摆摊页面

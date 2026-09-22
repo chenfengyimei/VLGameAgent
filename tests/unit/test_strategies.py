@@ -38,7 +38,7 @@ class StrategyRegistryTests(unittest.TestCase):
         root = Path(__file__).parents[2]
         flow = load_recorded_flow(root / "configs/flows/mumu-xianyu-onboarding.yaml")
         self.assertEqual(flow.game_id, MUMU_REGISTRY.game_id)
-        self.assertEqual(len(flow.steps), 192)
+        self.assertEqual(len(flow.steps), 198)
         self.assertEqual(
             {
                 Path(step.evidence).name
@@ -219,6 +219,12 @@ class StrategyRegistryTests(unittest.TestCase):
                 "190-second-pet-slot-empty.png",
                 "191-second-pet-select-xiaoqinglong.png",
                 "192-second-pet-complete-exit.png",
+                "193-stall-sell-task.png",
+                "194-stall-sell-market-entry.png",
+                "195-stall-sell-tab.png",
+                "196-stall-sell-item.png",
+                "197-stall-sell-listing.png",
+                "198-stall-sell-success-exit.png",
             },
         )
         for step in flow.steps:
@@ -396,6 +402,10 @@ class StrategyRegistryTests(unittest.TestCase):
             "ocr_xiuxian_path_jump_fast",
             "ocr_xiuxian_objective_goto_fast",
             "ocr_stall_item_fast",
+            "ocr_stall_sell_task_fast",
+            "ocr_stall_sell_tab_fast",
+            "ocr_stall_listing_fast",
+            "ocr_stall_sell_complete_back_fast",
             "ocr_realm_promote_fast",
             "ocr_realm_breakthrough_entry_fast",
             "ocr_realm_breakthrough_control_fast",
@@ -1313,6 +1323,105 @@ class PlannerStrategyScopingTests(unittest.TestCase):
         self.assertEqual(
             planner.last_decision_source,
             "ocr_second_pet_complete_back_fast",
+        )
+
+    def test_stall_sell_flow_lists_one_item_then_exits(self) -> None:
+        planner = GroundedVlmPlanner(
+            _Client([]),
+            max_temporal_frames=1,
+            max_target_crops=0,
+            compact_output=True,
+            prefer_ocr_task_panel=True,
+            strategy_registry=MUMU_REGISTRY,
+            back_hotspot=(0.060, 0.080),
+        )
+        quest = "摆摊出售 出售一件商品"
+        task = _onboarding_snapshot(
+            TextRegion("主线", NormalizedBox(0.04, 0.16, 0.11, 0.21), 0.99),
+            TextRegion("摆摊出售", NormalizedBox(0.04, 0.22, 0.18, 0.27), 0.99),
+            TextRegion(
+                "出售一件商品",
+                NormalizedBox(0.04, 0.27, 0.25, 0.32),
+                0.99,
+            ),
+        )
+        outcome = planner._ocr_fast_path(  # type: ignore[attr-defined]
+            task,
+            quest_text=quest,
+        )
+        assert outcome is not None and outcome.action is not None
+        self.assertEqual(outcome.action.target_label, "出售一件商品")
+        self.assertEqual(planner.last_decision_source, "ocr_stall_sell_task_fast")
+
+        market = _onboarding_snapshot(
+            *task.visible_text,
+            TextRegion("市场", NormalizedBox(0.66, 0.06, 0.73, 0.16), 0.99),
+        )
+        outcome = planner._ocr_fast_path(  # type: ignore[attr-defined]
+            market,
+            quest_text=quest,
+        )
+        assert outcome is not None and outcome.action is not None
+        self.assertEqual(outcome.action.target_label, "市场")
+        self.assertEqual(planner.last_decision_source, "ocr_market_entry_fast")
+
+        title = TextRegion("摆摊", NormalizedBox(0.05, 0.05, 0.15, 0.13), 0.99)
+        sell_tab = _onboarding_snapshot(
+            title,
+            TextRegion("我要购买", NormalizedBox(0.02, 0.16, 0.16, 0.22), 0.99),
+            TextRegion("我要出售", NormalizedBox(0.16, 0.16, 0.29, 0.22), 0.99),
+            TextRegion(
+                "请选择装备商品分类",
+                NormalizedBox(0.20, 0.25, 0.48, 0.32),
+                0.99,
+            ),
+        )
+        outcome = planner._ocr_fast_path(  # type: ignore[attr-defined]
+            sell_tab,
+            quest_text=quest,
+        )
+        assert outcome is not None and outcome.action is not None
+        self.assertEqual(outcome.action.target_label, "我要出售")
+        self.assertEqual(planner.last_decision_source, "ocr_stall_sell_tab_fast")
+
+        item = _onboarding_snapshot(
+            title,
+            TextRegion("我要出售", NormalizedBox(0.16, 0.16, 0.29, 0.22), 0.99),
+            TextRegion("我的物品", NormalizedBox(0.12, 0.24, 0.23, 0.30), 0.99),
+            TextRegion("20级", NormalizedBox(0.04, 0.38, 0.09, 0.44), 0.99),
+        )
+        outcome = planner._ocr_fast_path(item, quest_text=quest)  # type: ignore[attr-defined]
+        assert outcome is not None and outcome.action is not None
+        self.assertEqual(outcome.action.target_label, "20级")
+        self.assertAlmostEqual(outcome.action.pointer_offset_y, -0.045)
+        self.assertEqual(planner.last_decision_source, "ocr_stall_item_fast")
+
+        listing = _onboarding_snapshot(
+            TextRegion("物品上架", NormalizedBox(0.14, 0.12, 0.28, 0.19), 0.99),
+            TextRegion("炼魂伞", NormalizedBox(0.53, 0.24, 0.64, 0.31), 0.99),
+            TextRegion("出售方式", NormalizedBox(0.45, 0.39, 0.57, 0.46), 0.99),
+            TextRegion("上架", NormalizedBox(0.55, 0.80, 0.68, 0.88), 0.99),
+        )
+        outcome = planner._ocr_fast_path(  # type: ignore[attr-defined]
+            listing,
+            quest_text=quest,
+        )
+        assert outcome is not None and outcome.action is not None
+        self.assertEqual(outcome.action.target_label, "上架")
+        self.assertEqual(planner.last_decision_source, "ocr_stall_listing_fast")
+
+        success = _onboarding_snapshot(
+            title,
+            TextRegion("我要出售", NormalizedBox(0.16, 0.16, 0.29, 0.22), 0.99),
+            TextRegion("我的摊位:1/50", NormalizedBox(0.56, 0.25, 0.70, 0.31), 0.99),
+            TextRegion("上架成功", NormalizedBox(0.43, 0.39, 0.58, 0.46), 0.99),
+        )
+        outcome = planner._ocr_fast_path(success)  # type: ignore[attr-defined]
+        assert outcome is not None and outcome.action is not None
+        self.assertEqual(outcome.action.target_label, "ui_back")
+        self.assertEqual(
+            planner.last_decision_source,
+            "ocr_stall_sell_complete_back_fast",
         )
 
     def test_post_companion_story_clicks_event_closes_reward_and_skips(self) -> None:

@@ -2227,6 +2227,107 @@ def find_market_entry(regions: Iterable[TextRegion]) -> TextRegion | None:
     return best
 
 
+def stall_sell_task_control(regions: Iterable[TextRegion]) -> TextRegion | None:
+    """Tracked 出售一件商品 line before the highlighted market entry appears."""
+    visible = tuple(regions)
+    has_task_title = any(
+        "摆摊出售" in normalize_visible_text(region.text)
+        and region.confidence >= 0.75
+        and region.box.center.x <= 0.38
+        and region.box.center.y <= 0.40
+        for region in visible
+    )
+    if not has_task_title:
+        return None
+    candidates = [
+        region
+        for region in visible
+        if "出售一件商品" in normalize_visible_text(region.text)
+        and region.confidence >= 0.80
+        and region.box.center.x <= 0.38
+        and region.box.center.y <= 0.45
+    ]
+    return max(candidates, key=lambda region: region.confidence) if candidates else None
+
+
+def stall_sell_tab_control(regions: Iterable[TextRegion]) -> TextRegion | None:
+    """我要出售 tab on the initial stall-buying page."""
+    visible = tuple(regions)
+    has_stall_title = any(
+        normalize_visible_text(region.text) == "摆摊"
+        and region.confidence >= 0.80
+        and region.box.center.x <= 0.25
+        and region.box.center.y <= 0.18
+        for region in visible
+    )
+    has_buying_page = any(
+        "请选择装备商品分类" in normalize_visible_text(region.text)
+        and region.confidence >= 0.75
+        for region in visible
+    )
+    if not has_stall_title or not has_buying_page:
+        return None
+    candidates = [
+        region
+        for region in visible
+        if normalize_visible_text(region.text) == "我要出售"
+        and region.confidence >= 0.80
+        and region.box.center.x <= 0.38
+        and region.box.center.y <= 0.30
+    ]
+    return max(candidates, key=lambda region: region.confidence) if candidates else None
+
+
+def stall_listing_control(regions: Iterable[TextRegion]) -> TextRegion | None:
+    """上架 button in the recorded 炼魂伞 listing dialog."""
+    visible = tuple(regions)
+    has_dialog = any(
+        "物品上架" in normalize_visible_text(region.text)
+        and region.confidence >= 0.80
+        for region in visible
+    )
+    has_item = any(
+        normalize_visible_text(region.text) == "炼魂伞"
+        and region.confidence >= 0.75
+        for region in visible
+    )
+    has_sale_form = any(
+        "出售方式" in normalize_visible_text(region.text)
+        and region.confidence >= 0.75
+        for region in visible
+    )
+    if not has_dialog or not has_item or not has_sale_form:
+        return None
+    candidates = [
+        region
+        for region in visible
+        if normalize_visible_text(region.text) == "上架"
+        and region.confidence >= 0.80
+        and 0.40 <= region.box.center.x <= 0.75
+        and region.box.center.y >= 0.70
+    ]
+    return max(candidates, key=lambda region: region.confidence) if candidates else None
+
+
+def stall_listing_succeeded(regions: Iterable[TextRegion]) -> bool:
+    """Whether the stall page confirms the recorded item was listed."""
+    visible = tuple(regions)
+    normalized = tuple(normalize_visible_text(region.text) for region in visible)
+    has_stall_title = any(
+        text == "摆摊"
+        and region.confidence >= 0.80
+        and region.box.center.x <= 0.25
+        and region.box.center.y <= 0.18
+        for region, text in zip(visible, normalized, strict=True)
+    )
+    return (
+        has_stall_title
+        and "我要出售" in normalized
+        and any("我的摊位" in text for text in normalized)
+        and any("上架成功" in text for text in normalized)
+    )
+
+
 def stall_sell_item_cell(regions: Iterable[TextRegion]) -> TextRegion | None:
     """The level label of the first item cell on the stall sell page.
 

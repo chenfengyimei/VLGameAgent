@@ -98,7 +98,11 @@ from uga.agent.session_state import (
     skill_training_entry_control,
     skill_treatment_node_control,
     sky_lantern_release_control,
+    stall_listing_control,
+    stall_listing_succeeded,
     stall_sell_item_cell,
+    stall_sell_tab_control,
+    stall_sell_task_control,
     summon_bell_interaction_active,
     summon_once_control,
     summon_result_close_control,
@@ -2139,6 +2143,26 @@ class GroundedVlmPlanner:
             quest_is_market_task(quest_text)
             and self._back_hotspot is not None
         ):
+            listing = stall_listing_control(snapshot.visible_text)
+            if listing is not None:
+                self._last_decision_source = "ocr_stall_listing_fast"
+                return self._ocr_action(
+                    snapshot,
+                    listing,
+                    source="ocr_stall_listing_fast",
+                    expected_effect="the selected item is listed for sale",
+                    action_kind=GuiActionKind.CLICK,
+                )
+            sell_tab = stall_sell_tab_control(snapshot.visible_text)
+            if sell_tab is not None:
+                self._last_decision_source = "ocr_stall_sell_tab_fast"
+                return self._ocr_action(
+                    snapshot,
+                    sell_tab,
+                    source="ocr_stall_sell_tab_fast",
+                    expected_effect="the player's sellable items are shown",
+                    action_kind=GuiActionKind.CLICK,
+                )
             item_cell = stall_sell_item_cell(snapshot.visible_text)
             now_mono = time.monotonic()
             if (
@@ -2159,6 +2183,13 @@ class GroundedVlmPlanner:
                     action_kind=GuiActionKind.CLICK,
                     pointer_offset=(0.0, -0.045),
                 )
+        if self._back_hotspot is not None and stall_listing_succeeded(
+            snapshot.visible_text
+        ):
+            return self._exit_action(
+                snapshot,
+                "ocr_stall_sell_complete_back_fast",
+            )
         if (
             self._promote_hotspot is not None
             and realm_promotion_ready(snapshot.visible_text)
@@ -2183,6 +2214,16 @@ class GroundedVlmPlanner:
                     market,
                     source="ocr_market_entry_fast",
                     expected_effect="the market interface opens",
+                    action_kind=GuiActionKind.CLICK,
+                )
+            sell_task = stall_sell_task_control(snapshot.visible_text)
+            if sell_task is not None and self._task_panel_click_allowed(sell_task):
+                self._last_decision_source = "ocr_stall_sell_task_fast"
+                return self._ocr_action(
+                    snapshot,
+                    sell_task,
+                    source="ocr_stall_sell_task_fast",
+                    expected_effect="the highlighted market entry is revealed",
                     action_kind=GuiActionKind.CLICK,
                 )
         if quest_target_level is not None and self._back_hotspot is not None:
