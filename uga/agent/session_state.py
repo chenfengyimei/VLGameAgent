@@ -2005,6 +2005,89 @@ def spirit_mirror_interaction_active(regions: Iterable[TextRegion]) -> bool:
     return has_instruction and has_countdown
 
 
+def nature_discussion_choice_control(
+    regions: Iterable[TextRegion],
+) -> TextRegion | None:
+    """The owner-selected 性本恶 answer in 无涯子的 recorded dialogue."""
+    visible = tuple(regions)
+    has_dialogue_anchor = any(
+        any(
+            cue in normalize_visible_text(region.text)
+            for cue in ("无涯子", "是否应归束本性")
+        )
+        and region.confidence >= 0.75
+        for region in visible
+    )
+    if not has_dialogue_anchor:
+        return None
+    candidates = [
+        region
+        for region in visible
+        if "性本恶" in normalize_visible_text(region.text)
+        and "归束" in normalize_visible_text(region.text)
+        and region.confidence >= 0.80
+        and region.box.center.x >= 0.60
+        and 0.45 <= region.box.center.y <= 0.78
+    ]
+    return max(candidates, key=lambda region: region.confidence) if candidates else None
+
+
+def treasure_world_control(
+    regions: Iterable[TextRegion],
+) -> tuple[str, TextRegion] | None:
+    """Open the world menu or its 百宝 entry for the recorded tutorial cue."""
+    visible = tuple(regions)
+    tutorial_active = any(
+        "前往查看百宝" in normalize_visible_text(region.text)
+        and region.confidence >= 0.75
+        for region in visible
+    )
+    if not tutorial_active:
+        return None
+    treasure_entries = [
+        region
+        for region in visible
+        if normalize_visible_text(region.text) == "百宝"
+        and region.confidence >= 0.80
+        and region.box.center.x >= 0.80
+        and region.box.center.y >= 0.55
+    ]
+    if treasure_entries:
+        return "entry", max(treasure_entries, key=lambda region: region.confidence)
+    menu_buttons = [
+        region
+        for region in visible
+        if normalize_visible_text(region.text) == "菜单"
+        and region.confidence >= 0.80
+        and region.box.center.x >= 0.85
+        and 0.20 <= region.box.center.y <= 0.55
+    ]
+    if menu_buttons:
+        return "menu", max(menu_buttons, key=lambda region: region.confidence)
+    return None
+
+
+def treasure_page_visible(regions: Iterable[TextRegion]) -> bool:
+    """Whether the 百宝 tutorial has opened its 神兵 feature page."""
+    visible = tuple(regions)
+    has_title = any(
+        normalize_visible_text(region.text) == "神兵"
+        and region.confidence >= 0.80
+        and region.box.center.x <= 0.25
+        and region.box.center.y <= 0.18
+        for region in visible
+    )
+    has_feature = any(
+        any(
+            cue in normalize_visible_text(region.text)
+            for cue in ("淬炼属性", "神兵淬炼", "神兵化形")
+        )
+        and region.confidence >= 0.75
+        for region in visible
+    )
+    return has_title and has_feature
+
+
 def artifact_result_close_control(regions: Iterable[TextRegion]) -> TextRegion | None:
     """Dismiss the recorded 承影仙剑 acquisition presentation immediately."""
     visible = tuple(regions)

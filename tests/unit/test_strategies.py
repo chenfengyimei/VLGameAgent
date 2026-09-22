@@ -38,7 +38,7 @@ class StrategyRegistryTests(unittest.TestCase):
         root = Path(__file__).parents[2]
         flow = load_recorded_flow(root / "configs/flows/mumu-xianyu-onboarding.yaml")
         self.assertEqual(flow.game_id, MUMU_REGISTRY.game_id)
-        self.assertEqual(len(flow.steps), 206)
+        self.assertEqual(len(flow.steps), 212)
         self.assertEqual(
             {
                 Path(step.evidence).name
@@ -229,6 +229,11 @@ class StrategyRegistryTests(unittest.TestCase):
                 "200-familiar-faces-dialogue.png",
                 "201-dao-trial-mirror-entry.png",
                 "202-spirit-mirror-center-click.png",
+                "203-nature-dialogue-choice.png",
+                "204-inform-plot-task.png",
+                "205-post-plot-cutscene-skip.png",
+                "206-treasure-menu-entry.png",
+                "207-treasure-page-exit.png",
             },
         )
         for step in flow.steps:
@@ -378,6 +383,10 @@ class StrategyRegistryTests(unittest.TestCase):
             "ocr_spirit_mirror_entry_fast",
             "ocr_spirit_mirror_center_fast",
             "ocr_spirit_mirror_wait",
+            "ocr_nature_discussion_choice_fast",
+            "ocr_treasure_menu_fast",
+            "ocr_treasure_entry_fast",
+            "ocr_treasure_complete_back_fast",
             "ocr_xuanling_tower_entry_fast",
             "ocr_xuanling_tower_challenge_fast",
             "ocr_xuanling_tower_battle_wait",
@@ -1597,6 +1606,79 @@ class PlannerStrategyScopingTests(unittest.TestCase):
         self.assertEqual(outcome.kind, DecisionKind.WAIT)
         self.assertIsNone(outcome.action)
         self.assertEqual(planner.last_decision_source, "ocr_spirit_mirror_wait")
+
+    def test_nature_choice_then_treasure_menu_entry_and_immediate_exit(self) -> None:
+        planner = GroundedVlmPlanner(
+            _Client([]),
+            max_temporal_frames=1,
+            max_target_crops=0,
+            compact_output=True,
+            prefer_ocr_task_panel=True,
+            strategy_registry=MUMU_REGISTRY,
+            back_hotspot=(0.060, 0.080),
+        )
+        choice = _onboarding_snapshot(
+            TextRegion("无涯子", NormalizedBox(0.08, 0.78, 0.20, 0.86), 0.99),
+            TextRegion(
+                "是否应归束本性",
+                NormalizedBox(0.18, 0.84, 0.54, 0.93),
+                0.99,
+            ),
+            TextRegion(
+                "性本恶，当然要归束。",
+                NormalizedBox(0.68, 0.54, 0.94, 0.66),
+                0.99,
+            ),
+            TextRegion(
+                "性本善，应顺心而为。",
+                NormalizedBox(0.68, 0.68, 0.94, 0.80),
+                0.99,
+            ),
+        )
+        outcome = planner._ocr_fast_path(choice)  # type: ignore[attr-defined]
+        assert outcome is not None and outcome.action is not None
+        self.assertEqual(outcome.action.target_label, "性本恶，当然要归束。")
+        self.assertEqual(
+            planner.last_decision_source,
+            "ocr_nature_discussion_choice_fast",
+        )
+
+        prompt = TextRegion(
+            "前往查看百宝",
+            NormalizedBox(0.52, 0.78, 0.73, 0.88),
+            0.99,
+        )
+        menu = _onboarding_snapshot(
+            prompt,
+            TextRegion("菜单", NormalizedBox(0.93, 0.29, 0.99, 0.39), 0.99),
+        )
+        outcome = planner._ocr_fast_path(menu)  # type: ignore[attr-defined]
+        assert outcome is not None and outcome.action is not None
+        self.assertEqual(outcome.action.target_label, "菜单")
+        self.assertEqual(planner.last_decision_source, "ocr_treasure_menu_fast")
+
+        expanded = _onboarding_snapshot(
+            prompt,
+            TextRegion("菜单", NormalizedBox(0.93, 0.29, 0.99, 0.39), 0.99),
+            TextRegion("百宝", NormalizedBox(0.91, 0.70, 0.99, 0.84), 0.99),
+        )
+        outcome = planner._ocr_fast_path(expanded)  # type: ignore[attr-defined]
+        assert outcome is not None and outcome.action is not None
+        self.assertEqual(outcome.action.target_label, "百宝")
+        self.assertEqual(planner.last_decision_source, "ocr_treasure_entry_fast")
+
+        page = _onboarding_snapshot(
+            TextRegion("神兵", NormalizedBox(0.04, 0.05, 0.16, 0.13), 0.99),
+            TextRegion("淬炼属性", NormalizedBox(0.68, 0.24, 0.80, 0.31), 0.99),
+            TextRegion("神兵化形", NormalizedBox(0.40, 0.83, 0.54, 0.94), 0.99),
+        )
+        outcome = planner._ocr_fast_path(page)  # type: ignore[attr-defined]
+        assert outcome is not None and outcome.action is not None
+        self.assertEqual(outcome.action.target_label, "ui_back")
+        self.assertEqual(
+            planner.last_decision_source,
+            "ocr_treasure_complete_back_fast",
+        )
 
     def test_notice_board_event_clicks_left_then_right_paper(self) -> None:
         planner = GroundedVlmPlanner(

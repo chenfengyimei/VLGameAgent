@@ -40,6 +40,7 @@ from uga.agent.session_state import (
     master_message_event_control,
     mumu_close_dialog_cancel,
     narrative_continue_control,
+    nature_discussion_choice_control,
     notice_board_event_stage,
     onboarding_joystick_tutorial_active,
     page_has_action_button,
@@ -109,6 +110,8 @@ from uga.agent.session_state import (
     summon_once_control,
     summon_result_close_control,
     summon_world_control,
+    treasure_page_visible,
+    treasure_world_control,
     xiuxian_path_objective_goto,
     xuanling_tower_challenge_control,
     xuanling_tower_entry_control,
@@ -536,6 +539,7 @@ class GroundedVlmPlanner:
         self._cultivation_manual_tab_selected = False
         self._cultivation_manual_activation_requested = False
         self._spirit_mirror_clicked = False
+        self._treasure_started_at: float | None = None
         self._task_panel_cooldown_s = 25.0
         self._last_task_panel_click: tuple[str, float] | None = None
         self._last_stall_item_click: float | None = None
@@ -1102,6 +1106,48 @@ class GroundedVlmPlanner:
                 spirit_mirror_entry,
                 source="ocr_spirit_mirror_entry_fast",
                 expected_effect="the spirit-mirror mist-clearing interaction opens",
+                action_kind=GuiActionKind.CLICK,
+            )
+        nature_choice = nature_discussion_choice_control(snapshot.visible_text)
+        if nature_choice is not None:
+            self._last_decision_source = "ocr_nature_discussion_choice_fast"
+            return self._ocr_action(
+                snapshot,
+                nature_choice,
+                source="ocr_nature_discussion_choice_fast",
+                expected_effect="the selected nature answer advances 无涯子的 dialogue",
+                action_kind=GuiActionKind.CLICK,
+            )
+        if (
+            self._back_hotspot is not None
+            and self._treasure_started_at is not None
+            and treasure_page_visible(snapshot.visible_text)
+        ):
+            self._treasure_started_at = None
+            return self._exit_action(
+                snapshot,
+                "ocr_treasure_complete_back_fast",
+            )
+        treasure_world = treasure_world_control(snapshot.visible_text)
+        if treasure_world is not None:
+            self._treasure_started_at = time.monotonic()
+            stage, control = treasure_world
+            source, expected_effect = {
+                "menu": (
+                    "ocr_treasure_menu_fast",
+                    "the expanded game menu reveals the treasure entry",
+                ),
+                "entry": (
+                    "ocr_treasure_entry_fast",
+                    "the treasure tutorial opens the divine-weapon page",
+                ),
+            }[stage]
+            self._last_decision_source = source
+            return self._ocr_action(
+                snapshot,
+                control,
+                source=source,
+                expected_effect=expected_effect,
                 action_kind=GuiActionKind.CLICK,
             )
         notice_board_stage = notice_board_event_stage(snapshot.visible_text)

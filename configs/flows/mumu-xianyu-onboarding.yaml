@@ -1454,3 +1454,45 @@ steps:
     recognize: {all: [输入灵力冲散窥灵镜的迷雾, 秒后自动完成], state: center_already_clicked_once}
     action: wait
     expected: 点击一次后等待窥灵镜自动完成，禁止重复点击
+  - id: nature_discussion_choice
+    order: 2070
+    evidence: docs/assets/mumu-xianyu/onboarding/203-nature-dialogue-choice.png
+    source: ocr_nature_discussion_choice_fast
+    recognize: {all: [无涯子, 是否应归束本性], control: 性本恶，当然要归束}
+    action: click_text:性本恶，当然要归束。
+    expected: 选择性本恶并继续无涯子剧情
+  - id: inform_plot_task
+    order: 2080
+    evidence: docs/assets/mumu-xianyu/onboarding/204-inform-plot-task.png
+    source: ocr_task_panel_fast
+    recognize: {all: [主线], any_task: [告知阴谋, 与无涯子对话]}
+    action: click_task_tracker
+    expected: 点击左上任务继续与无涯子对话
+  - id: post_plot_cutscene_skip
+    order: 2090
+    evidence: docs/assets/mumu-xianyu/onboarding/205-post-plot-cutscene-skip.png
+    source: ocr_cutscene_skip_fast
+    recognize: {control: 跳过, location: upper_right}
+    action: click_text:跳过
+    expected: 跳过告知阴谋后的主线演出
+  - id: treasure_menu_open
+    order: 2100
+    evidence: owner-described:no-screenshot
+    source: ocr_treasure_menu_fast
+    recognize: {all: [前往查看百宝], absent: 百宝, control: 菜单, evidence_status: owner_described_no_screenshot}
+    action: click_text:菜单
+    expected: 展开右侧功能菜单并显示百宝入口
+  - id: treasure_entry_open
+    order: 2110
+    evidence: docs/assets/mumu-xianyu/onboarding/206-treasure-menu-entry.png
+    source: ocr_treasure_entry_fast
+    recognize: {all: [前往查看百宝], control: 百宝}
+    action: click_text:百宝
+    expected: 点击百宝并打开神兵界面
+  - id: treasure_page_exit
+    order: 2120
+    evidence: docs/assets/mumu-xianyu/onboarding/207-treasure-page-exit.png
+    source: ocr_treasure_complete_back_fast
+    recognize: {all: [神兵, 淬炼属性], control: ui_back}
+    action: click_hotspot:ui_back
+    expected: 确认百宝神兵界面已打开后立即点击左上返回
