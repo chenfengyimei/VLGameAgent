@@ -1286,3 +1286,73 @@ steps:
     recognize: {any_task: [天灯寄愿, 点一盏天灯祈愿], control: 放灯}
     action: click_text:放灯
     expected: 点击场景中的放灯交互完成天灯寄愿
+  - id: xuanling_tower_second_task
+    order: 1830
+    evidence: docs/assets/mumu-xianyu/onboarding/183-xuanling-tower-second-task.png
+    source: ocr_task_panel_fast
+    recognize: {all: [主线], any_task: [珍稀灵宠, 打悬铃塔通关第2层]}
+    action: click_task_tracker
+    expected: 点击左上任务并打开悬铃塔第2层挑战页面
+  - id: xuanling_tower_second_challenge
+    order: 1840
+    evidence: docs/assets/mumu-xianyu/onboarding/184-xuanling-tower-second-challenge.png
+    source: ocr_xuanling_tower_challenge_fast
+    recognize: {all: [悬铃塔, 第2层, 人元之境], control: 挑战}
+    action: click_text:挑战
+    expected: 进入悬铃塔第2层挑战
+  - id: xuanling_tower_second_battle_wait
+    order: 1850
+    evidence: docs/assets/mumu-xianyu/onboarding/185-xuanling-tower-second-battle.png
+    source: ocr_xuanling_tower_battle_wait
+    recognize: {all: [人元之境, 第2层], state: automatic_combat_after_challenge}
+    action: wait
+    expected: 等待第2层自动攻击完成，不额外点击技能
+  - id: xuanling_tower_second_leave
+    order: 1860
+    evidence: docs/assets/mumu-xianyu/onboarding/186-xuanling-tower-second-leave.png
+    source: ocr_xuanling_tower_leave_fast
+    recognize: {all: [胜利, 人元之境, 第2层], control: 离开}
+    action: click_text:离开
+    expected: 离开已完成的悬铃塔第2层挑战
+  - id: second_pet_use
+    order: 1870
+    evidence: docs/assets/mumu-xianyu/onboarding/187-second-pet-use.png
+    source: ocr_second_pet_use_fast
+    recognize: {any_task: [第二灵宠, 上阵两只灵宠], all: [老猫], control: 使用}
+    action: click_text:使用
+    expected: 使用老猫奖励并进入第二主战位教学
+  - id: second_pet_slot_open
+    order: 1880
+    evidence: docs/assets/mumu-xianyu/onboarding/188-second-pet-slot-open.png
+    source: ocr_second_pet_slot_fast
+    recognize: {all: [灵宠, 主战位, 开启阵位, 第二个主战位开启了]}
+    action: click_hotspot:pet_second_slot_card
+    expected: 点击第二主战位并打开阵位激活弹窗
+  - id: second_pet_slot_confirm
+    order: 1890
+    evidence: docs/assets/mumu-xianyu/onboarding/189-second-pet-slot-confirm.png
+    source: ocr_second_pet_unlock_confirm_fast
+    recognize: {all: [开启阵位, 通关悬铃塔第2层, 点击激活主战位], control: 确定}
+    action: click_text:确定
+    expected: 确认激活第二主战位
+  - id: second_pet_slot_empty
+    order: 1900
+    evidence: docs/assets/mumu-xianyu/onboarding/190-second-pet-slot-empty.png
+    source: ocr_second_pet_slot_fast
+    recognize: {all: [灵宠, 主战位, 未上阵, 多一个灵宠上阵]}
+    action: click_hotspot:pet_second_slot_card
+    expected: 点击空的第二主战位并打开灵宠候选列表
+  - id: second_pet_select_xiaoqinglong
+    order: 1910
+    evidence: docs/assets/mumu-xianyu/onboarding/191-second-pet-select-xiaoqinglong.png
+    source: ocr_second_pet_select_xiaoqinglong_fast
+    recognize: {all: [选择主战位灵宠], control: 小青龙}
+    action: click_text:小青龙
+    expected: 将小青龙上阵到第二主战位
+  - id: second_pet_complete_exit
+    order: 1920
+    evidence: docs/assets/mumu-xianyu/onboarding/192-second-pet-complete-exit.png
+    source: ocr_second_pet_complete_back_fast
+    recognize: {all: [灵宠, 主战位, 布阵总修为, 2/3]}
+    action: click_hotspot:ui_back
+    expected: 确认两只灵宠已上阵后返回世界界面

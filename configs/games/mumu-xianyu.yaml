@@ -109,6 +109,12 @@ controls:
     x: 0.135
     y: 0.430
     confirmed: true
+  # 第二灵宠教学：开启阵位与未上阵状态都点击第二张主战位卡片。
+  pet_second_slot_card:
+    kind: normalized_hotspot
+    x: 0.305
+    y: 0.430
+    confirmed: true
   # 河洛城告示牌事件：先读左侧消息，出现洛神泪提示后再读右侧消息。
   notice_board_left_paper:
     kind: normalized_hotspot

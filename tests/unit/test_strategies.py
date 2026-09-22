@@ -38,7 +38,7 @@ class StrategyRegistryTests(unittest.TestCase):
         root = Path(__file__).parents[2]
         flow = load_recorded_flow(root / "configs/flows/mumu-xianyu-onboarding.yaml")
         self.assertEqual(flow.game_id, MUMU_REGISTRY.game_id)
-        self.assertEqual(len(flow.steps), 182)
+        self.assertEqual(len(flow.steps), 192)
         self.assertEqual(
             {
                 Path(step.evidence).name
@@ -209,6 +209,16 @@ class StrategyRegistryTests(unittest.TestCase):
                 "178-fated-walk-navigation.png",
                 "180-fated-walk-dialogue.png",
                 "181-sky-lantern-wish.png",
+                "183-xuanling-tower-second-task.png",
+                "184-xuanling-tower-second-challenge.png",
+                "185-xuanling-tower-second-battle.png",
+                "186-xuanling-tower-second-leave.png",
+                "187-second-pet-use.png",
+                "188-second-pet-slot-open.png",
+                "189-second-pet-slot-confirm.png",
+                "190-second-pet-slot-empty.png",
+                "191-second-pet-select-xiaoqinglong.png",
+                "192-second-pet-complete-exit.png",
             },
         )
         for step in flow.steps:
@@ -399,6 +409,11 @@ class StrategyRegistryTests(unittest.TestCase):
             "ocr_pet_companion_current_fast",
             "ocr_pet_companion_select_taotian_fast",
             "ocr_pet_companion_complete_back_fast",
+            "ocr_second_pet_use_fast",
+            "ocr_second_pet_slot_fast",
+            "ocr_second_pet_unlock_confirm_fast",
+            "ocr_second_pet_select_xiaoqinglong_fast",
+            "ocr_second_pet_complete_back_fast",
             "ocr_master_message_event_fast",
             "ocr_artifact_result_close_fast",
             "ocr_notice_board_left_fast",
@@ -1165,6 +1180,139 @@ class PlannerStrategyScopingTests(unittest.TestCase):
         self.assertEqual(
             planner.last_decision_source,
             "ocr_pet_companion_complete_back_fast",
+        )
+
+    def test_second_pet_flow_unlocks_slot_and_deploys_xiaoqinglong(self) -> None:
+        planner = GroundedVlmPlanner(
+            _Client([]),
+            max_temporal_frames=1,
+            max_target_crops=0,
+            compact_output=True,
+            prefer_ocr_task_panel=True,
+            strategy_registry=MUMU_REGISTRY,
+            back_hotspot=(0.060, 0.080),
+        )
+        quest = "第二灵宠 上阵两只灵宠 1/2"
+        use = _onboarding_snapshot(
+            TextRegion("第二灵宠", NormalizedBox(0.04, 0.22, 0.18, 0.27), 0.99),
+            TextRegion(
+                "上阵两只灵宠 1/2",
+                NormalizedBox(0.04, 0.27, 0.25, 0.32),
+                0.99,
+            ),
+            TextRegion("老猫", NormalizedBox(0.59, 0.41, 0.67, 0.46), 0.99),
+            TextRegion("使用", NormalizedBox(0.60, 0.59, 0.68, 0.66), 0.99),
+        )
+        outcome = planner._ocr_fast_path(  # type: ignore[attr-defined]
+            use,
+            quest_text=quest,
+        )
+        assert outcome is not None and outcome.action is not None
+        self.assertEqual(outcome.action.target_label, "使用")
+        self.assertEqual(planner.last_decision_source, "ocr_second_pet_use_fast")
+
+        title = TextRegion("灵宠", NormalizedBox(0.05, 0.05, 0.15, 0.13), 0.99)
+        main_slot = TextRegion(
+            "主战位",
+            NormalizedBox(0.26, 0.17, 0.38, 0.24),
+            0.99,
+        )
+        formation = TextRegion(
+            "布阵总修为:2193",
+            NormalizedBox(0.65, 0.35, 0.88, 0.42),
+            0.99,
+        )
+        slot_open = _onboarding_snapshot(
+            title,
+            main_slot,
+            formation,
+            TextRegion("开启阵位", NormalizedBox(0.25, 0.42, 0.37, 0.51), 0.99),
+            TextRegion(
+                "第二个主战位开启了",
+                NormalizedBox(0.44, 0.44, 0.70, 0.56),
+                0.99,
+            ),
+        )
+        outcome = planner._ocr_fast_path(slot_open)  # type: ignore[attr-defined]
+        assert outcome is not None and outcome.action is not None
+        self.assertEqual(outcome.action.target_label, "pet_second_slot_card")
+        self.assertAlmostEqual(outcome.action.target_box.center.x, 0.305)
+        self.assertAlmostEqual(outcome.action.target_box.center.y, 0.430)
+        self.assertEqual(planner.last_decision_source, "ocr_second_pet_slot_fast")
+
+        confirm = _onboarding_snapshot(
+            TextRegion("开启阵位", NormalizedBox(0.25, 0.24, 0.42, 0.31), 0.99),
+            TextRegion(
+                "通关悬铃塔第2层",
+                NormalizedBox(0.29, 0.42, 0.53, 0.49),
+                0.99,
+            ),
+            TextRegion(
+                "点击激活主战位",
+                NormalizedBox(0.70, 0.72, 0.91, 0.82),
+                0.99,
+            ),
+            TextRegion("确定", NormalizedBox(0.43, 0.69, 0.56, 0.78), 0.99),
+        )
+        outcome = planner._ocr_fast_path(confirm)  # type: ignore[attr-defined]
+        assert outcome is not None and outcome.action is not None
+        self.assertEqual(outcome.action.target_label, "确定")
+        self.assertEqual(
+            planner.last_decision_source,
+            "ocr_second_pet_unlock_confirm_fast",
+        )
+
+        empty_slot = _onboarding_snapshot(
+            title,
+            main_slot,
+            formation,
+            TextRegion("未上阵", NormalizedBox(0.25, 0.42, 0.37, 0.51), 0.99),
+            TextRegion(
+                "多一个灵宠上阵，实力更强",
+                NormalizedBox(0.44, 0.44, 0.72, 0.56),
+                0.99,
+            ),
+        )
+        outcome = planner._ocr_fast_path(empty_slot)  # type: ignore[attr-defined]
+        assert outcome is not None and outcome.action is not None
+        self.assertEqual(outcome.action.target_label, "pet_second_slot_card")
+        self.assertEqual(planner.last_decision_source, "ocr_second_pet_slot_fast")
+
+        picker = _onboarding_snapshot(
+            title,
+            main_slot,
+            TextRegion(
+                "选择主战位灵宠",
+                NormalizedBox(0.68, 0.14, 0.88, 0.22),
+                0.99,
+            ),
+            TextRegion("小青龙", NormalizedBox(0.70, 0.23, 0.82, 0.34), 0.99),
+            TextRegion("桃天", NormalizedBox(0.70, 0.38, 0.82, 0.49), 0.99),
+        )
+        outcome = planner._ocr_fast_path(picker)  # type: ignore[attr-defined]
+        assert outcome is not None and outcome.action is not None
+        self.assertEqual(outcome.action.target_label, "小青龙")
+        self.assertEqual(
+            planner.last_decision_source,
+            "ocr_second_pet_select_xiaoqinglong_fast",
+        )
+
+        complete = _onboarding_snapshot(
+            title,
+            main_slot,
+            TextRegion(
+                "布阵总修为:3733",
+                NormalizedBox(0.65, 0.35, 0.88, 0.42),
+                0.99,
+            ),
+            TextRegion("(2/3)", NormalizedBox(0.73, 0.27, 0.82, 0.33), 0.99),
+        )
+        outcome = planner._ocr_fast_path(complete)  # type: ignore[attr-defined]
+        assert outcome is not None and outcome.action is not None
+        self.assertEqual(outcome.action.target_label, "ui_back")
+        self.assertEqual(
+            planner.last_decision_source,
+            "ocr_second_pet_complete_back_fast",
         )
 
     def test_post_companion_story_clicks_event_closes_reward_and_skips(self) -> None:
@@ -2097,6 +2245,70 @@ class PlannerStrategyScopingTests(unittest.TestCase):
             TextRegion("胜利", NormalizedBox(0.12, 0.18, 0.32, 0.48), 0.99),
             TextRegion(
                 "通关 人元之境·第1层",
+                NormalizedBox(0.52, 0.16, 0.82, 0.24),
+                0.99,
+            ),
+            TextRegion("离开", NormalizedBox(0.59, 0.76, 0.72, 0.86), 0.99),
+        )
+        outcome = planner._ocr_fast_path(  # type: ignore[attr-defined]
+            victory,
+            quest_text=quest,
+        )
+        assert outcome is not None and outcome.action is not None
+        self.assertEqual(outcome.action.target_label, "离开")
+        self.assertEqual(planner.last_decision_source, "ocr_xuanling_tower_leave_fast")
+
+    def test_xuanling_tower_second_floor_challenges_waits_and_leaves(self) -> None:
+        planner = GroundedVlmPlanner(
+            _Client([]),
+            max_temporal_frames=1,
+            max_target_crops=0,
+            compact_output=True,
+            prefer_ocr_task_panel=True,
+            strategy_registry=MUMU_REGISTRY,
+        )
+        quest = "珍稀灵宠 打悬铃塔通关第2层 1/2"
+        challenge = _onboarding_snapshot(
+            TextRegion("悬铃塔", NormalizedBox(0.04, 0.05, 0.18, 0.13), 0.99),
+            TextRegion("第2层", NormalizedBox(0.76, 0.10, 0.88, 0.18), 0.99),
+            TextRegion(
+                "人元之境 第2/25层",
+                NormalizedBox(0.73, 0.18, 0.91, 0.24),
+                0.99,
+            ),
+            TextRegion("挑战", NormalizedBox(0.75, 0.85, 0.89, 0.94), 0.99),
+        )
+        outcome = planner._ocr_fast_path(  # type: ignore[attr-defined]
+            challenge,
+            quest_text=quest,
+        )
+        assert outcome is not None and outcome.action is not None
+        self.assertEqual(outcome.action.target_label, "挑战")
+        self.assertEqual(
+            planner.last_decision_source,
+            "ocr_xuanling_tower_challenge_fast",
+        )
+
+        battle = _onboarding_snapshot(
+            TextRegion(
+                "人元之境·第2层",
+                NormalizedBox(0.02, 0.18, 0.25, 0.30),
+                0.99,
+            ),
+        )
+        outcome = planner._ocr_fast_path(  # type: ignore[attr-defined]
+            battle,
+            quest_text=quest,
+        )
+        assert outcome is not None
+        self.assertEqual(outcome.kind, DecisionKind.WAIT)
+        self.assertIsNone(outcome.action)
+        self.assertEqual(planner.last_decision_source, "ocr_xuanling_tower_battle_wait")
+
+        victory = _onboarding_snapshot(
+            TextRegion("胜利", NormalizedBox(0.12, 0.18, 0.32, 0.48), 0.99),
+            TextRegion(
+                "通关 人元之境·第2层",
                 NormalizedBox(0.52, 0.16, 0.82, 0.24),
                 0.99,
             ),

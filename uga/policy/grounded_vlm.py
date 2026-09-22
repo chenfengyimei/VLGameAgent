@@ -73,6 +73,7 @@ from uga.agent.session_state import (
     quest_is_pet_star_task,
     quest_is_pet_travel_task,
     quest_is_pet_wash_task,
+    quest_is_second_pet_task,
     quest_is_skill_learning_task,
     quest_is_xuanling_tower_task,
     quest_page_keyword,
@@ -85,6 +86,11 @@ from uga.agent.session_state import (
     realm_promotion_ready,
     red_dust_auto_enable_ready,
     rescue_little_dragon_choice,
+    second_pet_deployment_complete,
+    second_pet_slot_stage,
+    second_pet_unlock_confirm_control,
+    second_pet_use_control,
+    second_pet_xiaoqinglong_control,
     senior_sister_message_event_control,
     skill_control_node_control,
     skill_learn_control,
@@ -515,6 +521,7 @@ class GroundedVlmPlanner:
         self._heroic_rescue_combat_skill_index = 0
         self._drunken_guest_combat_skill_index = 0
         self._xuanling_tower_challenge_at: float | None = None
+        self._second_pet_started_at: float | None = None
         self._pet_travel_started_at: float | None = None
         self._pet_travel_reward_closed = False
         self._pet_wash_started_at: float | None = None
@@ -1223,6 +1230,75 @@ class GroundedVlmPlanner:
                 expected_effect=expected_effect,
                 action_kind=GuiActionKind.CLICK,
             )
+        second_pet_use = second_pet_use_control(snapshot.visible_text)
+        if second_pet_use is not None:
+            self._second_pet_started_at = time.monotonic()
+            self._last_decision_source = "ocr_second_pet_use_fast"
+            return self._ocr_action(
+                snapshot,
+                second_pet_use,
+                source="ocr_second_pet_use_fast",
+                expected_effect="the second-main-pet formation tutorial opens",
+                action_kind=GuiActionKind.CLICK,
+            )
+        if (
+            self._second_pet_started_at is not None
+            and time.monotonic() - self._second_pet_started_at > 300.0
+        ):
+            self._second_pet_started_at = None
+        second_pet_task = quest_is_second_pet_task(quest_text)
+        second_pet_active = second_pet_task or self._second_pet_started_at is not None
+        if self._back_hotspot is not None and second_pet_deployment_complete(
+            snapshot.visible_text,
+            task_active=second_pet_active,
+        ):
+            self._second_pet_started_at = None
+            return self._exit_action(
+                snapshot,
+                "ocr_second_pet_complete_back_fast",
+            )
+        second_pet_choice = second_pet_xiaoqinglong_control(
+            snapshot.visible_text,
+            task_active=second_pet_active,
+        )
+        if second_pet_choice is not None:
+            self._last_decision_source = "ocr_second_pet_select_xiaoqinglong_fast"
+            return self._ocr_action(
+                snapshot,
+                second_pet_choice,
+                source="ocr_second_pet_select_xiaoqinglong_fast",
+                expected_effect="小青龙 occupies the second main battle slot",
+                action_kind=GuiActionKind.CLICK,
+            )
+        second_pet_confirm = second_pet_unlock_confirm_control(
+            snapshot.visible_text,
+            task_active=second_pet_active,
+        )
+        if second_pet_confirm is not None:
+            self._last_decision_source = "ocr_second_pet_unlock_confirm_fast"
+            return self._ocr_action(
+                snapshot,
+                second_pet_confirm,
+                source="ocr_second_pet_unlock_confirm_fast",
+                expected_effect="the second main battle slot becomes available",
+                action_kind=GuiActionKind.CLICK,
+            )
+        second_pet_slot = second_pet_slot_stage(
+            snapshot.visible_text,
+            task_active=second_pet_active,
+        )
+        if second_pet_slot is not None:
+            expected_effect = {
+                "unlock": "the second-main-slot activation modal opens",
+                "empty": "the pet picker opens for the second main slot",
+            }[second_pet_slot]
+            return self._hotspot_click_action(
+                snapshot,
+                "pet_second_slot_card",
+                (0.305, 0.430),
+                "ocr_second_pet_slot_fast",
+                expected_effect,
+            )
         pet_companion_task = quest_is_pet_companion_task(quest_text)
         if (
             self._back_hotspot is not None
@@ -1574,7 +1650,7 @@ class GroundedVlmPlanner:
                     snapshot,
                     tower_challenge,
                     source="ocr_xuanling_tower_challenge_fast",
-                    expected_effect="the first-floor tower challenge starts",
+                    expected_effect="the selected tower challenge starts",
                     action_kind=GuiActionKind.CLICK,
                 )
         if self._xuanling_tower_challenge_at is not None:
@@ -1604,7 +1680,7 @@ class GroundedVlmPlanner:
                 snapshot,
                 tower_entry,
                 source="ocr_xuanling_tower_entry_fast",
-                expected_effect="the first-floor tower challenge page opens",
+                expected_effect="the tower challenge page opens",
                 action_kind=GuiActionKind.CLICK,
             )
         pet_travel_task = quest_is_pet_travel_task(quest_text)

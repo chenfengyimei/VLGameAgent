@@ -979,6 +979,160 @@ def pet_companion_deployment_complete(
     return has_pet_title and has_formation and has_taotian_card_marker and not picker_open
 
 
+def quest_is_second_pet_task(quest_text: str | None) -> bool:
+    """Whether the durable task asks for a second main-battle pet."""
+    if not quest_text:
+        return False
+    normalized = normalize_visible_text(quest_text)
+    return "第二灵宠" in normalized or "上阵两只灵宠" in normalized
+
+
+def second_pet_use_control(regions: Iterable[TextRegion]) -> TextRegion | None:
+    """Use control on the 老猫 popup that starts the second-slot tutorial."""
+    visible = tuple(regions)
+    task_active = any(
+        any(
+            cue in normalize_visible_text(region.text)
+            for cue in ("第二灵宠", "上阵两只灵宠")
+        )
+        and region.confidence >= 0.75
+        and region.box.center.x <= 0.38
+        for region in visible
+    )
+    has_old_cat = any(
+        normalize_visible_text(region.text) == "老猫"
+        and region.confidence >= 0.80
+        for region in visible
+    )
+    if not task_active or not has_old_cat:
+        return None
+    candidates = [
+        region
+        for region in visible
+        if normalize_visible_text(region.text) == "使用"
+        and region.confidence >= 0.80
+        and 0.50 <= region.box.center.x <= 0.75
+        and 0.45 <= region.box.center.y <= 0.75
+    ]
+    return max(candidates, key=lambda region: region.confidence) if candidates else None
+
+
+def second_pet_slot_stage(
+    regions: Iterable[TextRegion], *, task_active: bool
+) -> str | None:
+    """Return the tutorial stage that requires clicking the second main slot."""
+    if not task_active:
+        return None
+    visible = tuple(regions)
+    normalized = tuple(normalize_visible_text(region.text) for region in visible)
+    has_pet_title = any(
+        text == "灵宠"
+        and region.confidence >= 0.80
+        and region.box.center.x <= 0.25
+        and region.box.center.y <= 0.18
+        for region, text in zip(visible, normalized, strict=True)
+    )
+    has_formation = "主战位" in normalized and any(
+        any(cue in text for cue in ("布阵目标", "布阵总修为"))
+        for text in normalized
+    )
+    if not has_pet_title or not has_formation:
+        return None
+    if any("第二个主战位开启了" in text for text in normalized) and any(
+        "开启阵位" in text for text in normalized
+    ):
+        return "unlock"
+    if any("多一个灵宠上阵" in text for text in normalized) and any(
+        text == "未上阵" for text in normalized
+    ):
+        return "empty"
+    return None
+
+
+def second_pet_unlock_confirm_control(
+    regions: Iterable[TextRegion], *, task_active: bool
+) -> TextRegion | None:
+    """Confirm control in the second-main-slot unlock modal."""
+    if not task_active:
+        return None
+    visible = tuple(regions)
+    normalized = tuple(normalize_visible_text(region.text) for region in visible)
+    has_modal = any(text == "开启阵位" for text in normalized) and any(
+        any(cue in text for cue in ("通关悬铃塔第2层", "点击激活主战位"))
+        for text in normalized
+    )
+    if not has_modal:
+        return None
+    candidates = [
+        region
+        for region, text in zip(visible, normalized, strict=True)
+        if text == "确定"
+        and region.confidence >= 0.80
+        and 0.35 <= region.box.center.x <= 0.65
+        and region.box.center.y >= 0.60
+    ]
+    return max(candidates, key=lambda region: region.confidence) if candidates else None
+
+
+def second_pet_xiaoqinglong_control(
+    regions: Iterable[TextRegion], *, task_active: bool
+) -> TextRegion | None:
+    """小青龙 row in the picker for the newly unlocked second main slot."""
+    if not task_active:
+        return None
+    visible = tuple(regions)
+    has_picker = any(
+        "选择主战位灵宠" in normalize_visible_text(region.text)
+        and region.confidence >= 0.75
+        and region.box.center.x >= 0.55
+        and region.box.center.y <= 0.35
+        for region in visible
+    )
+    if not has_picker:
+        return None
+    candidates = [
+        region
+        for region in visible
+        if normalize_visible_text(region.text) == "小青龙"
+        and region.confidence >= 0.80
+        and region.box.center.x >= 0.60
+        and 0.15 <= region.box.center.y <= 0.45
+    ]
+    return max(candidates, key=lambda region: region.confidence) if candidates else None
+
+
+def second_pet_deployment_complete(
+    regions: Iterable[TextRegion], *, task_active: bool
+) -> bool:
+    """Whether the formation target confirms that two main pets are deployed."""
+    if not task_active:
+        return False
+    visible = tuple(regions)
+    normalized = tuple(
+        (region, normalize_visible_text(region.text)) for region in visible
+    )
+    has_pet_title = any(
+        text == "灵宠"
+        and region.confidence >= 0.80
+        and region.box.center.x <= 0.25
+        and region.box.center.y <= 0.18
+        for region, text in normalized
+    )
+    has_formation = any(text == "主战位" for _, text in normalized) and any(
+        "布阵总修为" in text for _, text in normalized
+    )
+    # normalize_visible_text strips the slash and parentheses from "(2/3)".
+    two_of_three = any(
+        text == "23"
+        and region.confidence >= 0.75
+        and region.box.center.x >= 0.55
+        and 0.15 <= region.box.center.y <= 0.40
+        for region, text in normalized
+    )
+    picker_open = any("选择主战位灵宠" in text for _, text in normalized)
+    return has_pet_title and has_formation and two_of_three and not picker_open
+
+
 def _pet_title_visible(regions: Iterable[TextRegion]) -> bool:
     return any(
         normalize_visible_text(region.text) == "灵宠"
@@ -1144,11 +1298,19 @@ def quest_is_cipher_manual_task(quest_text: str | None) -> bool:
 
 
 def quest_is_xuanling_tower_task(quest_text: str | None) -> bool:
-    """Whether the durable task is the recorded first 悬铃塔 challenge."""
+    """Whether the durable task is one of the recorded 悬铃塔 challenges."""
     if not quest_text:
         return False
     normalized = normalize_visible_text(quest_text)
-    return "悬铃之塔" in normalized or "通关悬铃塔第一层" in normalized
+    return any(
+        cue in normalized
+        for cue in (
+            "悬铃之塔",
+            "通关悬铃塔第一层",
+            "珍稀灵宠",
+            "打悬铃塔通关第2层",
+        )
+    )
 
 
 def quest_is_pet_travel_task(quest_text: str | None) -> bool:
@@ -1317,7 +1479,7 @@ def xuanling_tower_entry_control(regions: Iterable[TextRegion]) -> TextRegion | 
 def xuanling_tower_challenge_control(
     regions: Iterable[TextRegion], *, task_active: bool
 ) -> TextRegion | None:
-    """Challenge button on the first-floor 悬铃塔 page."""
+    """Challenge button on a recorded first- or second-floor 悬铃塔 page."""
     if not task_active:
         return None
     visible = tuple(regions)
@@ -1328,15 +1490,15 @@ def xuanling_tower_challenge_control(
         and region.box.center.y <= 0.20
         for region in visible
     )
-    first_floor = any(
+    recorded_floor = any(
         any(
             cue in normalize_visible_text(region.text)
-            for cue in ("第1层", "第1/25层")
+            for cue in ("第1层", "第1/25层", "第2层", "第2/25层")
         )
         and region.confidence >= 0.75
         for region in visible
     )
-    if not tower_page or not first_floor:
+    if not tower_page or not recorded_floor:
         return None
     candidates = [
         region
@@ -1352,7 +1514,7 @@ def xuanling_tower_challenge_control(
 def xuanling_tower_leave_control(
     regions: Iterable[TextRegion], *, task_active: bool
 ) -> TextRegion | None:
-    """Leave button on the first-floor victory result page."""
+    """Leave button on a recorded first- or second-floor victory result page."""
     if not task_active:
         return None
     visible = tuple(regions)
@@ -1361,13 +1523,16 @@ def xuanling_tower_leave_control(
         and region.confidence >= 0.80
         for region in visible
     )
-    first_floor = any(
+    recorded_floor = any(
         "人元之境" in normalize_visible_text(region.text)
-        and "第1层" in normalize_visible_text(region.text)
+        and any(
+            floor in normalize_visible_text(region.text)
+            for floor in ("第1层", "第2层")
+        )
         and region.confidence >= 0.75
         for region in visible
     )
-    if not victory or not first_floor:
+    if not victory or not recorded_floor:
         return None
     candidates = [
         region
