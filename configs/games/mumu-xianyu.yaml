@@ -60,6 +60,13 @@ controls:
     x: 0.599
     y: 0.892
     confirmed: true
+  # 灵宠数字等级任务可能复用上次打开的“升星”页。竖排“信息”OCR 不稳定，
+  # 在灵宠标题和持久等级任务双重约束下，点击该页签回到升级页。
+  pet_information_tab:
+    kind: normalized_hotspot
+    x: 0.965
+    y: 0.400
+    confirmed: true
   # 倩女幽魂活动插屏的紫色关闭按钮，位置与通用功能页 X 不同。
   romance_ad_close:
     kind: normalized_hotspot

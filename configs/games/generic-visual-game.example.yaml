@@ -1,0 +1,39 @@
+game:
+  id: CHANGE_ME
+  display_name: CHANGE_ME
+process:
+  executable: [CHANGE_ME.exe]
+window:
+  preferred_capture: windows_graphics_capture
+  # Use anchors and an exact title whenever possible. Avoid broad patterns.
+  title_pattern: '^CHANGE_ME$'
+camera:
+  type: absolute_pointer
+planner:
+  prompt_strategy: generic
+perception:
+  ocr_enabled: true
+  ocr_languages: [ch, en]
+  mode_hints:
+    loading: [loading, 加载中]
+    gui: [confirm, cancel, 确定, 取消]
+    dead: [respawn, revive, 重生, 复活]
+  recovery_safe_actions: [back]
+  critical_action_terms:
+    [login, delete, pay, purchase, send, install, 登录, 删除, 支付, 购买, 发送, 安装, 充值, 实名, 身份证]
+  # Adjust this if the target window has a non-game title bar or overlay.
+  no_click_regions: [[0, 0, 1, 0.06]]
+  page_stable_ms: 500
+  action_effect_timeout_ms: 3000
+controls:
+  interact: {kind: mouse_button, code: "left", confirmed: true}
+  menu: {kind: virtual_key, code: 27, confirmed: true}
+  # Optional calibrated controls. Remove them until manually verified.
+  # ui_back: {kind: normalized_hotspot, x: 0.05, y: 0.08, confirmed: true}
+  # ui_close: {kind: normalized_hotspot, x: 0.95, y: 0.08, confirmed: true}
+capabilities:
+  realtime_3d: true
+  gui: true
+  combat: false
+  gamepad: false
+capability_level: 3

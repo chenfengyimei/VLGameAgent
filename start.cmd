@@ -1,16 +1,19 @@
 @echo off
 setlocal
 cd /d "%~dp0"
+if "%~1"=="--help" (
+  powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\run_game_agent.ps1" -Help
+  exit /b %errorlevel%
+)
+if "%~1"=="" (
+  echo [UGA] Missing launch arguments. Run start.cmd --help.
+  echo [UGA] Quick guide: START_HERE.zh-CN.md
+  exit /b 1
+)
 set "PY=.venv\Scripts\python.exe"
 if not exist "%PY%" (
   echo [UGA] .venv not found. Run install.cmd first.
   exit /b 1
 )
-if "%~1"=="--help" (
-  start "" "%~dp0docs\setup-visual.zh-CN.html"
-  "%PY%" -m apps.agent --help
-  exit /b 0
-)
-echo [UGA] This shortcut opens help first. Use start.cmd --help for commands.
-echo [UGA] Real game control still requires explicit runtime configuration and confirmation.
-start "" "%~dp0docs\setup-visual.zh-CN.html"
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\run_game_agent.ps1" %*
+exit /b %errorlevel%

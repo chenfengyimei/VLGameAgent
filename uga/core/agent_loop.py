@@ -55,7 +55,7 @@ from uga.safety.action_gate import (
 )
 from uga.safety.sensitive_page import inspect_sensitive_page
 from uga.time.clock import ClockBackend, UGATime
-from uga.windows.coordinates import CoordinateTransform, Rect
+from uga.windows.coordinates import CoordinateTransform, Point, Rect
 
 _T = TypeVar("_T")
 
@@ -96,6 +96,7 @@ class GroundedPlanner(Protocol):
         session_context: str | None = None,
         quest_target_level: int | None = None,
         quest_text: str | None = None,
+        restored_task_unverified: bool = False,
     ) -> PlannerOutcome: ...
 
 
@@ -560,6 +561,7 @@ class RealtimeAgentLoop:
                         or restored_unverified
                         else session.latest_main_task.raw_text
                     ),
+                    restored_task_unverified=restored_unverified,
                 ), budget)
             except BackendUnavailableError as exc:
                 self._planner_failure_count += 1
@@ -746,7 +748,9 @@ class RealtimeAgentLoop:
                             )
                         )
                     if execution_fresh and outcome.action.target_box is not None:
-                        points = (resolved_click_point(outcome.action),)
+                        points: tuple[Point, ...] = (
+                            resolved_click_point(outcome.action),
+                        )
                         if outcome.action.kind == GuiActionKind.DRAG:
                             points = (outcome.action.target_box.center, *points)
                         for point in points:

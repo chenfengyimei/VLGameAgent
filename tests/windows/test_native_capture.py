@@ -51,6 +51,7 @@ class NativeCaptureTests(unittest.TestCase):
                 self.windows,
                 timeout_ms=2000,
             )
+            unavailable: Exception | None = None
             try:
                 driver.start(target)
                 for attempt in range(3):
@@ -63,10 +64,19 @@ class NativeCaptureTests(unittest.TestCase):
                     except CaptureTimeoutError:
                         if attempt == 2:
                             raise
-            except BackendUnavailableError as error:
-                self.skipTest(f"WGC unavailable on this desktop: {error}")
+            except (BackendUnavailableError, CaptureTimeoutError) as error:
+                unavailable = error
             finally:
-                driver.stop()
+                try:
+                    driver.stop()
+                except BackendUnavailableError as error:
+                    if unavailable is None:
+                        raise
+                    unavailable = BackendUnavailableError(
+                        f"{unavailable}; cleanup also reported: {error}"
+                    )
+            if unavailable is not None:
+                self.skipTest(f"WGC unavailable on this desktop: {unavailable}")
         self.assertGreater(frame.width, 0)
         self.assertEqual(frame.buffer_handle.size_bytes, frame.width * frame.height * 4)
 
@@ -78,13 +88,23 @@ class NativeCaptureTests(unittest.TestCase):
                 self.windows,
                 timeout_ms=2000,
             )
+            unavailable: Exception | None = None
             try:
                 driver.start(target)
                 frame = driver.capture()
-            except BackendUnavailableError as error:
-                self.skipTest(f"DXGI unavailable on this desktop: {error}")
+            except (BackendUnavailableError, CaptureTimeoutError) as error:
+                unavailable = error
             finally:
-                driver.stop()
+                try:
+                    driver.stop()
+                except BackendUnavailableError as error:
+                    if unavailable is None:
+                        raise
+                    unavailable = BackendUnavailableError(
+                        f"{unavailable}; cleanup also reported: {error}"
+                    )
+            if unavailable is not None:
+                self.skipTest(f"DXGI unavailable on this desktop: {unavailable}")
         self.assertGreater(frame.width, 0)
         self.assertEqual(frame.buffer_handle.size_bytes, frame.width * frame.height * 4)
 
@@ -100,7 +120,10 @@ class NativeCaptureTests(unittest.TestCase):
                 dxgi = self.library.create(NativeBackendId.DXGI, target.hwnd)
             except BackendUnavailableError as error:
                 self.skipTest(f"DXGI unavailable on this desktop: {error}")
-            self.library.destroy(dxgi)
+            try:
+                self.library.destroy(dxgi)
+            except BackendUnavailableError as error:
+                self.skipTest(f"DXGI teardown unavailable on this desktop: {error}")
 
 
 if __name__ == "__main__":

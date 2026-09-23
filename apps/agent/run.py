@@ -379,6 +379,7 @@ async def _run(args: argparse.Namespace) -> int:
     ancient_treasure_close_hotspot: tuple[float, float] | None = None
     world_chat_collapse_hotspot: tuple[float, float] | None = None
     blessing_first_food_hotspot: tuple[float, float] | None = None
+    pet_information_tab_hotspot: tuple[float, float] | None = None
     romance_ad_close_hotspot: tuple[float, float] | None = None
     promote_hotspot: tuple[float, float] | None = None
     dialogue_hotspot: tuple[float, float] | None = None
@@ -395,6 +396,7 @@ async def _run(args: argparse.Namespace) -> int:
         "ancient_treasure_close",
         "world_chat_collapse",
         "blessing_first_food",
+        "pet_information_tab",
         "romance_ad_close",
         "ui_promote",
         "ui_dialogue_advance",
@@ -422,6 +424,8 @@ async def _run(args: argparse.Namespace) -> int:
                 world_chat_collapse_hotspot = binding.hotspot
             elif hotspot_name == "blessing_first_food":
                 blessing_first_food_hotspot = binding.hotspot
+            elif hotspot_name == "pet_information_tab":
+                pet_information_tab_hotspot = binding.hotspot
             elif hotspot_name == "romance_ad_close":
                 romance_ad_close_hotspot = binding.hotspot
             elif hotspot_name == "ui_promote":
@@ -489,6 +493,7 @@ async def _run(args: argparse.Namespace) -> int:
                 ancient_treasure_close_hotspot=ancient_treasure_close_hotspot,
                 world_chat_collapse_hotspot=world_chat_collapse_hotspot,
                 blessing_first_food_hotspot=blessing_first_food_hotspot,
+                pet_information_tab_hotspot=pet_information_tab_hotspot,
                 romance_ad_close_hotspot=romance_ad_close_hotspot,
                 promote_hotspot=promote_hotspot,
                 dialogue_hotspot=dialogue_hotspot,

@@ -34,7 +34,9 @@ from uga.agent.session_state import (
     pet_information_tab_control,
     pet_training_entry_control,
     pet_upgrade_control,
+    pet_upgrade_information_tab_control,
     quest_is_pet_companion_task,
+    quest_is_pet_upgrade_task,
     quest_level_target,
     quest_page_keyword,
     raging_tree_spirit_combat_active,
@@ -42,13 +44,16 @@ from uga.agent.session_state import (
     realm_breakthrough_control,
     realm_breakthrough_entry_control,
     realm_breakthrough_success,
+    realm_promotion_completed,
     red_dust_auto_enable_ready,
     romance_ad_visible,
+    settings_page_visible,
     stable_anchor_tokens,
     summon_bell_interaction_active,
     summon_once_control,
     summon_result_close_control,
     summon_world_control,
+    welfare_page_visible,
     world_chat_send_control,
     world_chat_sent_visible,
     xiuxian_path_objective_goto,
@@ -298,6 +303,22 @@ class QuestMemoryTests(unittest.TestCase):
         self.assertIsNotNone(pet_upgrade_control(training_regions, 2))
         self.assertIsNone(pet_upgrade_control(training_regions, 1))
 
+        self.assertTrue(quest_is_pet_upgrade_task("拥有1只灵宠达到10级0/1仙途礼"))
+        self.assertFalse(quest_is_pet_upgrade_task("有1只灵宠达到4星"))
+        wrong_subpage = (
+            TextRegion("灵宠", NormalizedBox(0.05, 0.06, 0.14, 0.12), 0.99),
+            TextRegion("信息", NormalizedBox(0.93, 0.30, 0.99, 0.42), 0.99),
+            TextRegion("升星", NormalizedBox(0.93, 0.43, 0.99, 0.55), 0.99),
+            TextRegion("技能升级", NormalizedBox(0.63, 0.39, 0.76, 0.45), 0.99),
+            TextRegion("成长率", NormalizedBox(0.63, 0.56, 0.73, 0.62), 0.99),
+        )
+        self.assertIsNotNone(
+            pet_upgrade_information_tab_control(wrong_subpage, task_active=True)
+        )
+        self.assertIsNone(
+            pet_upgrade_information_tab_control(wrong_subpage, task_active=False)
+        )
+
     def test_recorded_red_dust_and_combat_anchors_are_narrow(self) -> None:
         def regions(*labels: str) -> tuple[TextRegion, ...]:
             return tuple(
@@ -424,6 +445,23 @@ class QuestMemoryTests(unittest.TestCase):
                 )
             )
         )
+
+        promoted = (
+            TextRegion("境界", NormalizedBox(0.05, 0.05, 0.18, 0.13), 0.99),
+            TextRegion("境界目标", NormalizedBox(0.68, 0.15, 0.83, 0.21), 0.99),
+            TextRegion("上阵两只灵宠", NormalizedBox(0.61, 0.24, 0.78, 0.30), 0.99),
+            TextRegion("1/2", NormalizedBox(0.61, 0.30, 0.67, 0.35), 0.99),
+            TextRegion("去完成", NormalizedBox(0.81, 0.30, 0.91, 0.36), 0.99),
+            TextRegion("悬铃塔通关第2层", NormalizedBox(0.61, 0.39, 0.80, 0.45), 0.99),
+            TextRegion("0/2", NormalizedBox(0.61, 0.46, 0.67, 0.51), 0.99),
+            TextRegion("去完成", NormalizedBox(0.81, 0.46, 0.91, 0.52), 0.99),
+            TextRegion("修为达到10000", NormalizedBox(0.61, 0.55, 0.78, 0.61), 0.99),
+            TextRegion("11665/10000", NormalizedBox(0.61, 0.62, 0.75, 0.67), 0.99),
+            TextRegion("已完成", NormalizedBox(0.82, 0.62, 0.90, 0.67), 0.99),
+            TextRegion("晋升奖励：攻击+50", NormalizedBox(0.25, 0.82, 0.50, 0.88), 0.99),
+        )
+        self.assertTrue(realm_promotion_completed(promoted))
+        self.assertFalse(realm_promotion_completed(promoted[:4]))
     def setUp(self) -> None:
         self.state = GameSessionState()
 
@@ -541,6 +579,47 @@ class ScreenClassificationTests(unittest.TestCase):
 
         self.assertEqual(self.state.screen_type, ScreenType.FEATURE)
         self.assertEqual(self.state.feature_page, "灵宠")
+
+    def test_welfare_page_is_feature_even_though_welfare_is_not_a_quest(self) -> None:
+        regions = (
+            TextRegion("福利", NormalizedBox(0.06, 0.05, 0.16, 0.12), 0.99),
+            TextRegion("在线奖励", NormalizedBox(0.02, 0.17, 0.14, 0.25), 0.99),
+            TextRegion("每日签到", NormalizedBox(0.17, 0.16, 0.34, 0.27), 0.99),
+        )
+        self.assertTrue(welfare_page_visible(regions))
+        self.state.observe_snapshot(
+            snapshot(
+                1,
+                0,
+                visible_text=tuple(
+                    (r.text, (r.box.left, r.box.top, r.box.right, r.box.bottom), r.confidence)
+                    for r in regions
+                ),
+            ),
+            0,
+        )
+        self.assertEqual(self.state.screen_type, ScreenType.FEATURE)
+        self.assertEqual(self.state.feature_page, "福利")
+
+    def test_settings_title_is_a_feature_but_world_entry_is_not(self) -> None:
+        title = TextRegion("设置", NormalizedBox(0.05, 0.04, 0.15, 0.12), 0.99)
+        world_entry = TextRegion("设置", NormalizedBox(0.90, 0.88, 0.99, 0.98), 0.99)
+        self.assertTrue(settings_page_visible((title,)))
+        self.assertFalse(settings_page_visible((world_entry,)))
+
+    def test_feature_pages_survive_missing_decorative_title_ocr(self) -> None:
+        welfare_body = (
+            TextRegion("在线奖励", NormalizedBox(0.01, 0.18, 0.14, 0.25), 0.95),
+            TextRegion("每日签到", NormalizedBox(0.18, 0.17, 0.36, 0.27), 0.95),
+            TextRegion("礼包码兑换", NormalizedBox(0.01, 0.35, 0.15, 0.44), 0.95),
+        )
+        settings_body = (
+            TextRegion("切换角色", NormalizedBox(0.73, 0.16, 0.82, 0.28), 0.95),
+            TextRegion("返回登录", NormalizedBox(0.84, 0.16, 0.94, 0.28), 0.95),
+            TextRegion("音频设置", NormalizedBox(0.03, 0.36, 0.16, 0.44), 0.95),
+        )
+        self.assertTrue(welfare_page_visible(welfare_body))
+        self.assertTrue(settings_page_visible(settings_body))
 
     def test_loading_cue_wins_over_other_screen_types(self) -> None:
         self.state.observe_snapshot(

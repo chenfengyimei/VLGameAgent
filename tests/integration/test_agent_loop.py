@@ -152,9 +152,10 @@ class GroundedClickPlanner:
         session_context: str | None = None,
         quest_target_level: int | None = None,
         quest_text: str | None = None,
+        restored_task_unverified: bool = False,
     ) -> PlannerOutcome:
         del frames, goal, preferred_action_available, session_context
-        del quest_target_level, quest_text
+        del quest_target_level, quest_text, restored_task_unverified
         self.high_resolution_retries.append(high_resolution_retry)
         return PlannerOutcome(
             f"grounded-decision-{snapshot.frame_sequence}",

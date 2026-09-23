@@ -528,6 +528,76 @@ class GroundedVlmTests(unittest.TestCase):
         self.assertEqual(outcome.kind, DecisionKind.WAIT)
         self.assertEqual(len(client.calls), 1)
 
+    def test_restored_unverified_pet_page_exits_before_model_can_spend(self) -> None:
+        client = _Client([_reply("act")])
+        current = replace(
+            _snapshot(),
+            visible_text=(
+                TextRegion("灵宠", NormalizedBox(0.05, 0.06, 0.14, 0.12), 0.99),
+                TextRegion("技能升级", NormalizedBox(0.63, 0.39, 0.76, 0.45), 0.99),
+                TextRegion("成长率", NormalizedBox(0.63, 0.56, 0.73, 0.62), 0.99),
+                TextRegion("升星", NormalizedBox(0.70, 0.82, 0.84, 0.92), 0.99),
+            ),
+        )
+
+        outcome = GroundedVlmPlanner(
+            client,
+            max_temporal_frames=1,
+            max_target_crops=0,
+            compact_output=True,
+            prefer_ocr_task_panel=True,
+            back_hotspot=(0.06, 0.08),
+        ).decide(
+            snapshot=current,
+            frames=(_large_frame(100),),
+            goal="完成主线任务",
+            restored_task_unverified=True,
+        )
+
+        self.assertEqual(outcome.kind, DecisionKind.ACT)
+        assert outcome.action is not None
+        self.assertEqual(outcome.action.target_label, "ui_back")
+        self.assertEqual(client.calls, [])
+
+    def test_welfare_and_settings_pages_exit_without_calling_model(self) -> None:
+        pages = (
+            (
+                TextRegion("福利", NormalizedBox(0.06, 0.05, 0.16, 0.12), 0.99),
+                TextRegion("在线奖励", NormalizedBox(0.02, 0.17, 0.14, 0.25), 0.99),
+                TextRegion("每日签到", NormalizedBox(0.17, 0.16, 0.34, 0.27), 0.99),
+            ),
+            (
+                TextRegion("切换角色", NormalizedBox(0.73, 0.16, 0.82, 0.28), 0.99),
+                TextRegion("返回登录", NormalizedBox(0.84, 0.16, 0.94, 0.28), 0.99),
+                TextRegion("音频设置", NormalizedBox(0.03, 0.36, 0.16, 0.44), 0.99),
+            ),
+        )
+        for regions, source in zip(
+            pages,
+            ("ocr_welfare_page_back_fast", "ocr_settings_page_back_fast"),
+            strict=True,
+        ):
+            with self.subTest(source=source):
+                client = _Client([_reply("act")])
+                planner = GroundedVlmPlanner(
+                    client,
+                    max_temporal_frames=1,
+                    max_target_crops=0,
+                    compact_output=True,
+                    prefer_ocr_task_panel=True,
+                    back_hotspot=(0.06, 0.08),
+                )
+                outcome = planner.decide(
+                    snapshot=replace(_snapshot(), visible_text=regions),
+                    frames=(_large_frame(100),),
+                    goal="推进当前主线",
+                )
+                self.assertEqual(outcome.kind, DecisionKind.ACT)
+                assert outcome.action is not None
+                self.assertEqual(outcome.action.target_label, "ui_back")
+                self.assertEqual(planner.last_decision_source, source)
+                self.assertEqual(client.calls, [])
+
     def test_monetization_popup_is_closed_not_clicked(self) -> None:
         # 充值弹窗：禁止点击其中文字，规则层直接点 OCR 可见的 × 字形。
         client = _Client([_reply("wait")])
@@ -656,6 +726,50 @@ class GroundedVlmTests(unittest.TestCase):
 
         self.assertEqual(outcome.kind, DecisionKind.WAIT)
         self.assertEqual(len(client.calls), 1)
+
+    def test_realm_promotion_result_exits_after_objectives_reset(self) -> None:
+        # 晋升后的实机页面不会稳定显示“突破成功”，而是直接将下一境界的
+        # 目标重置为 1/2、0/2。此时必须退出，不能把新目标当成本轮任务循环。
+        client = _Client([_reply("wait")])
+        current = replace(
+            _snapshot(),
+            visible_text=(
+                TextRegion("境界", NormalizedBox(0.08, 0.08, 0.16, 0.13), 1.00),
+                TextRegion("境界目标", NormalizedBox(0.70, 0.16, 0.85, 0.21), 0.99),
+                TextRegion("上阵两只灵宠", NormalizedBox(0.60, 0.25, 0.75, 0.30), 0.99),
+                TextRegion("1/2", NormalizedBox(0.60, 0.30, 0.68, 0.35), 0.99),
+                TextRegion("去完成", NormalizedBox(0.82, 0.30, 0.91, 0.36), 0.99),
+                TextRegion("悬铃塔通关第2层", NormalizedBox(0.60, 0.40, 0.78, 0.45), 0.99),
+                TextRegion("0/2", NormalizedBox(0.60, 0.46, 0.68, 0.51), 0.99),
+                TextRegion("去完成", NormalizedBox(0.82, 0.46, 0.91, 0.52), 0.99),
+                TextRegion("11665/10000", NormalizedBox(0.60, 0.62, 0.76, 0.67), 0.99),
+                TextRegion("已完成", NormalizedBox(0.82, 0.62, 0.90, 0.67), 0.99),
+                TextRegion("晋升奖励：攻击+50", NormalizedBox(0.28, 0.82, 0.50, 0.88), 0.99),
+            ),
+        )
+
+        outcome = GroundedVlmPlanner(
+            client,
+            max_temporal_frames=1,
+            max_target_crops=0,
+            compact_output=True,
+            prefer_ocr_task_panel=True,
+            back_hotspot=(0.06, 0.08),
+            promote_hotspot=(0.32, 0.60),
+        ).decide(
+            snapshot=current,
+            frames=(_large_frame(100),),
+            goal="完成主线任务",
+        )
+
+        self.assertEqual(outcome.kind, DecisionKind.ACT)
+        assert outcome.action is not None
+        self.assertEqual(outcome.action.target_label, "ui_back")
+        self.assertEqual(
+            outcome.explanation.split()[0],
+            "ocr_realm_promotion_complete_back_fast",
+        )
+        self.assertEqual(client.calls, [])
 
     def test_task_panel_click_cooldown_hands_control_back_to_model(self) -> None:
         # 追踪器点击生效后进入冷却：下一次决策交给模型（游戏高亮引导的
@@ -984,6 +1098,61 @@ class GroundedVlmTests(unittest.TestCase):
         )
 
         self.assertIsNone(GroundedVlmPlanner._progress_control_candidate(current))
+
+    def test_claimable_hud_label_is_not_a_generic_progress_control(self) -> None:
+        current = replace(
+            _snapshot(),
+            visible_text=(
+                TextRegion("可领取", NormalizedBox(0.45, 0.82, 0.57, 0.90), 0.99),
+            ),
+        )
+
+        self.assertIsNone(GroundedVlmPlanner._progress_control_candidate(current))
+
+    def test_model_cannot_click_an_unscoped_claim_control(self) -> None:
+        claim_box = NormalizedBox(0.45, 0.82, 0.57, 0.90)
+        reply = json.dumps(
+            {
+                "kind": "act",
+                "confidence": 0.95,
+                "action": {
+                    "kind": "click",
+                    "target_label": "可领取",
+                    "target_bbox": [
+                        claim_box.left,
+                        claim_box.top,
+                        claim_box.right,
+                        claim_box.bottom,
+                    ],
+                    "confidence": 0.95,
+                    "key": None,
+                },
+                "wait_reason": None,
+            }
+        )
+        client = _Client([reply])
+        current = replace(
+            _snapshot(),
+            visible_text=(TextRegion("可领取", claim_box, 0.99),),
+        )
+        planner = GroundedVlmPlanner(
+            client,
+            max_temporal_frames=1,
+            max_target_crops=0,
+            compact_output=True,
+            prefer_ocr_task_panel=True,
+        )
+
+        outcome = planner.decide(
+            snapshot=current,
+            frames=(_large_frame(100),),
+            goal="持续推进游戏",
+        )
+
+        self.assertEqual(outcome.kind, DecisionKind.ABSTAIN)
+        self.assertIsNone(outcome.action)
+        self.assertEqual(planner.last_decision_source, "unscoped_claim_blocked")
+        self.assertEqual(len(client.calls), 1)
 
     def test_not_deployed_label_is_not_treated_as_deploy_button(self) -> None:
         current = replace(

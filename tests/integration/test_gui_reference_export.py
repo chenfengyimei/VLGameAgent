@@ -63,8 +63,11 @@ class GuiTrainingExportTests(unittest.TestCase):
                 self.assertEqual(sample.action_type, "GuiAction")
                 self.assertEqual(json.loads(sample.action_json)["kind"], kind.value)
                 self.assertEqual(processed.qualification, EpisodeQualification.QUALIFIED)
-                self.assertEqual(processed.qualified_duration_ns,
-                                 700_000_000 if kind == GuiActionKind.LONG_CLICK else 0)
+                held_action = kind in {GuiActionKind.LONG_CLICK, GuiActionKind.DRAG}
+                self.assertEqual(
+                    processed.qualified_duration_ns,
+                    700_000_000 if held_action else 0,
+                )
                 output = export_gui_samples((path,), Path(tmp) / "gui.jsonl")
                 row = json.loads(output.read_text())
                 self.assertEqual(row["action"]["kind"], kind.value)

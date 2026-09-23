@@ -15,6 +15,26 @@ GAME_ID = "mumu-xianyu"
 
 _RULES: tuple[StrategyRule, ...] = (
     StrategyRule(
+        name="welfare_page_back",
+        source="ocr_welfare_page_back_fast",
+        game_id=GAME_ID,
+        summary="误入福利、每日签到或在线奖励页时立即点击左上返回，不停留也不点击购买/补签。",
+        allowed_action="click(ui_back hotspot)",
+        risk="navigation",
+        effect="the unrelated welfare page closes and the world view returns",
+        cooldown_s=0.0,
+    ),
+    StrategyRule(
+        name="settings_page_back",
+        source="ocr_settings_page_back_fast",
+        game_id=GAME_ID,
+        summary="误入游戏设置页时立即点击左上返回，不等待模型决定。",
+        allowed_action="click(ui_back hotspot)",
+        risk="navigation",
+        effect="the unrelated settings page closes and the world view returns",
+        cooldown_s=0.0,
+    ),
+    StrategyRule(
         name="auto_navigation_wait",
         source="ocr_auto_navigation_wait",
         game_id=GAME_ID,
@@ -468,6 +488,55 @@ _RULES: tuple[StrategyRule, ...] = (
         allowed_action="click(right-side 灵宠 entry)",
         risk="navigation",
         effect="the pet formation interface opens",
+        cooldown_s=0.0,
+    ),
+    StrategyRule(
+        name="restored_pet_task_reverify_back",
+        source="ocr_restored_pet_task_reverify_back_fast",
+        game_id=GAME_ID,
+        summary=(
+            "重启后恢复的任务尚未被本次画面确认且当前停在灵宠功能页时，"
+            "先返回世界界面重新确认任务，禁止模型点击升级或升星消费控件。"
+        ),
+        allowed_action="click(ui_back hotspot)",
+        risk="navigation",
+        effect="the world task tracker becomes visible for fresh verification",
+        cooldown_s=0.0,
+    ),
+    StrategyRule(
+        name="pet_upgrade_info_recovery",
+        source="ocr_pet_upgrade_info_recovery_fast",
+        game_id=GAME_ID,
+        summary=(
+            "灵宠数字等级任务误入升星等子页时，强制点击右侧信息页签，"
+            "再按等级执行升级。"
+        ),
+        allowed_action="click(right-side 信息 tab)",
+        risk="navigation",
+        effect="the pet information and level-up page opens",
+        cooldown_s=0.0,
+    ),
+    StrategyRule(
+        name="pet_upgrade_info_hotspot",
+        source="ocr_pet_upgrade_info_hotspot_fast",
+        game_id=GAME_ID,
+        summary=(
+            "灵宠数字等级任务误入其他子页且竖排信息OCR缺失时，点击用户截图"
+            "校准的右侧信息页签热点。"
+        ),
+        allowed_action="click(pet_information_tab hotspot)",
+        risk="navigation",
+        effect="the pet information and level-up page opens",
+        cooldown_s=0.0,
+    ),
+    StrategyRule(
+        name="pet_upgrade_wrong_page_wait",
+        source="ocr_pet_upgrade_wrong_page_wait",
+        game_id=GAME_ID,
+        summary="灵宠等级任务位于升星页且暂未识别到信息页签时等待，禁止购买或消耗升星材料。",
+        allowed_action="wait",
+        risk="low",
+        effect="the star-up page is re-observed without spending materials",
         cooldown_s=0.0,
     ),
     StrategyRule(
@@ -1266,6 +1335,19 @@ _RULES: tuple[StrategyRule, ...] = (
         allowed_action="click(ui_promote hotspot)",
         risk="progression",
         effect="the realm promotion runs",
+        cooldown_s=0.0,
+    ),
+    StrategyRule(
+        name="realm_promotion_complete_back",
+        source="ocr_realm_promotion_complete_back_fast",
+        game_id=GAME_ID,
+        summary=(
+            "晋升后境界页目标重置为至少两个未完成计数/去完成按钮时，立即点击"
+            "左上角已校准返回按钮退出。"
+        ),
+        allowed_action="click(ui_back hotspot)",
+        risk="navigation",
+        effect="the promoted realm page closes and the world view returns",
         cooldown_s=0.0,
     ),
     StrategyRule(

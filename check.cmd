@@ -11,4 +11,6 @@ echo [UGA] Running offline smoke checks. This does not operate the game.
 if errorlevel 1 exit /b %errorlevel%
 "%PY%" -m apps.capture_probe --help >nul
 if errorlevel 1 exit /b %errorlevel%
-echo [UGA] Basic checks passed. For help, open docs\setup-visual.zh-CN.html
+"%PY%" -c "from uga.perception.text import RapidOcrProvider; assert RapidOcrProvider().available"
+if errorlevel 1 exit /b %errorlevel%
+echo [UGA] Runtime and OCR checks passed. Next: start.cmd --help

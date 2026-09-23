@@ -1353,7 +1353,7 @@ class ClosedLoopSupervisor:
                     outcome,
                 )
             if outcome.action.target_box is not None:
-                points = (resolved_click_point(outcome.action),)
+                points: tuple[Point, ...] = (resolved_click_point(outcome.action),)
                 if outcome.action.kind == GuiActionKind.DRAG:
                     points = (outcome.action.target_box.center, *points)
                 for point in points:

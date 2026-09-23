@@ -6,10 +6,10 @@ if not exist "scripts\setup_windows.ps1" (
   exit /b 1
 )
 echo [UGA] Installing VLGameAgent into .venv
-echo [UGA] For OCR/vision dependencies, edit this file and add -Vision after setup_windows.ps1.
-powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\setup_windows.ps1"
+echo [UGA] Installing the locked runtime plus OCR/vision dependencies.
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\setup_windows.ps1" -Vision
 if errorlevel 1 (
   echo [UGA] Installation failed. See docs\setup-troubleshooting.zh-CN.md
   exit /b %errorlevel%
 )
-echo [UGA] Done. Next: check.cmd then start.cmd --help
+echo [UGA] Done. Next: check.cmd, then start.cmd --help

@@ -67,10 +67,12 @@ from uga.agent.session_state import (
     pet_companion_current_slot_ready,
     pet_companion_deployment_complete,
     pet_companion_taotian_control,
+    pet_feature_page_visible,
     pet_information_tab_control,
     pet_star_action_control,
     pet_star_material_control,
     pet_star_menu_control,
+    pet_star_page_visible,
     pet_star_success_continue_control,
     pet_star_tab_control,
     pet_training_entry_control,
@@ -78,6 +80,8 @@ from uga.agent.session_state import (
     pet_travel_control,
     pet_travel_tower_entry_control,
     pet_upgrade_control,
+    pet_upgrade_information_tab_control,
+    pet_upgrade_wrong_subpage_visible,
     pet_wash_action_control,
     pet_wash_complete,
     pet_wash_tab_control,
@@ -89,6 +93,7 @@ from uga.agent.session_state import (
     quest_is_pet_companion_task,
     quest_is_pet_star_task,
     quest_is_pet_travel_task,
+    quest_is_pet_upgrade_task,
     quest_is_pet_wash_task,
     quest_is_second_pet_task,
     quest_is_skill_learning_task,
@@ -100,6 +105,7 @@ from uga.agent.session_state import (
     realm_breakthrough_control,
     realm_breakthrough_entry_control,
     realm_breakthrough_success,
+    realm_promotion_completed,
     realm_promotion_ready,
     red_dust_auto_enable_ready,
     rescue_little_dragon_choice,
@@ -111,6 +117,7 @@ from uga.agent.session_state import (
     second_pet_use_control,
     second_pet_xiaoqinglong_control,
     senior_sister_message_event_control,
+    settings_page_visible,
     skill_control_node_control,
     skill_learn_control,
     skill_training_complete,
@@ -130,6 +137,7 @@ from uga.agent.session_state import (
     summon_world_control,
     treasure_page_visible,
     treasure_world_control,
+    welfare_page_visible,
     world_chat_send_control,
     world_chat_sent_visible,
     xiuxian_path_objective_goto,
@@ -469,6 +477,7 @@ class GroundedVlmPlanner:
         ancient_treasure_close_hotspot: tuple[float, float] | None = None,
         world_chat_collapse_hotspot: tuple[float, float] | None = None,
         blessing_first_food_hotspot: tuple[float, float] | None = None,
+        pet_information_tab_hotspot: tuple[float, float] | None = None,
         romance_ad_close_hotspot: tuple[float, float] | None = None,
         promote_hotspot: tuple[float, float] | None = None,
         dialogue_hotspot: tuple[float, float] | None = None,
@@ -505,6 +514,7 @@ class GroundedVlmPlanner:
             ("ancient-treasure close", ancient_treasure_close_hotspot),
             ("world-chat collapse", world_chat_collapse_hotspot),
             ("blessing first food", blessing_first_food_hotspot),
+            ("pet information tab", pet_information_tab_hotspot),
             ("romance-ad close", romance_ad_close_hotspot),
             ("promote", promote_hotspot),
             ("dialogue", dialogue_hotspot),
@@ -546,6 +556,7 @@ class GroundedVlmPlanner:
         self._ancient_treasure_close_hotspot = ancient_treasure_close_hotspot
         self._world_chat_collapse_hotspot = world_chat_collapse_hotspot
         self._blessing_first_food_hotspot = blessing_first_food_hotspot
+        self._pet_information_tab_hotspot = pet_information_tab_hotspot
         self._romance_ad_close_hotspot = romance_ad_close_hotspot
         self._promote_hotspot = promote_hotspot
         self._dialogue_hotspot = dialogue_hotspot
@@ -636,6 +647,7 @@ class GroundedVlmPlanner:
         session_context: str | None = None,
         quest_target_level: int | None = None,
         quest_text: str | None = None,
+        restored_task_unverified: bool = False,
     ) -> PlannerOutcome:
         with decision_budget():
             return self._decide(
@@ -644,6 +656,7 @@ class GroundedVlmPlanner:
                 preferred_action_available=preferred_action_available,
                 session_context=session_context, quest_target_level=quest_target_level,
                 quest_text=quest_text,
+                restored_task_unverified=restored_task_unverified,
             )
 
     def _decide(
@@ -657,6 +670,7 @@ class GroundedVlmPlanner:
         session_context: str | None = None,
         quest_target_level: int | None = None,
         quest_text: str | None = None,
+        restored_task_unverified: bool = False,
     ) -> PlannerOutcome:
         started = time.monotonic()
         self.last_raw_reply = None
@@ -672,6 +686,7 @@ class GroundedVlmPlanner:
             quest_target_level=quest_target_level,
             quest_text=quest_text,
             session_context=session_context,
+            restored_task_unverified=restored_task_unverified,
         )
         if fast_outcome is not None:
             # Deterministic, freshly grounded controls should not wait behind a slow
@@ -735,6 +750,7 @@ class GroundedVlmPlanner:
                 outcome, snapshot, quest_text=quest_text
             )
             outcome = self._snap_model_action_to_ocr(outcome, snapshot)
+            outcome = self._block_unscoped_claim(outcome, snapshot)
         except PlannerReplyError as exc:
             checkpoint()
             repair = self._client.decide(
@@ -763,6 +779,7 @@ class GroundedVlmPlanner:
                     outcome, snapshot, quest_text=quest_text
                 )
                 outcome = self._snap_model_action_to_ocr(outcome, snapshot)
+                outcome = self._block_unscoped_claim(outcome, snapshot)
             except PlannerReplyError:
                 self.last_schema_valid = False
                 outcome = self._abstain(
@@ -831,6 +848,39 @@ class GroundedVlmPlanner:
             explanation=f"{outcome.explanation}; target snapped to latest matching OCR box",
         )
 
+    def _block_unscoped_claim(
+        self,
+        outcome: PlannerOutcome,
+        snapshot: PerceptionSnapshot,
+    ) -> PlannerOutcome:
+        """Reject generic reward claims that lack a task-specific rule.
+
+        Small HUD/event controls labelled 可领取 are unrelated to the tracked
+        quest and previously matched the generic ``领取`` progress keyword.
+        Contextual onboarding claims still run through their dedicated OCR
+        fast paths before the model is called, so blocking an isolated model
+        claim here cannot disable those recorded flows.
+        """
+        action = outcome.action
+        if (
+            action is None
+            or action.kind
+            not in {
+                GuiActionKind.CLICK,
+                GuiActionKind.LONG_CLICK,
+                GuiActionKind.DOUBLE_CLICK,
+                GuiActionKind.RIGHT_CLICK,
+            }
+            or normalize_visible_text(action.target_label)
+            not in {"可领取", "领取", "领取奖励"}
+        ):
+            return outcome
+        self._last_decision_source = "unscoped_claim_blocked"
+        return self._abstain(
+            snapshot,
+            "unscoped reward claim is disabled; only task-specific claim rules may click",
+        )
+
     def _ocr_fast_path(
         self,
         snapshot: PerceptionSnapshot,
@@ -838,6 +888,7 @@ class GroundedVlmPlanner:
         quest_target_level: int | None = None,
         quest_text: str | None = None,
         session_context: str | None = None,
+        restored_task_unverified: bool = False,
     ) -> PlannerOutcome | None:
         if real_name_gate_active(snapshot.visible_text):
             # 实名登记表单（姓名/证件号=个人身份信息）：代理绝不代填也不
@@ -943,6 +994,14 @@ class GroundedVlmPlanner:
                     "character-name prompt is visible but its N/7 counter is empty or unreadable"
                 ),
             )
+        if self._back_hotspot is not None and welfare_page_visible(
+            snapshot.visible_text
+        ):
+            return self._exit_action(snapshot, "ocr_welfare_page_back_fast")
+        if self._back_hotspot is not None and settings_page_visible(
+            snapshot.visible_text
+        ):
+            return self._exit_action(snapshot, "ocr_settings_page_back_fast")
         if onboarding_joystick_tutorial_active(snapshot.visible_text):
             # The left virtual joystick is graphical and has no OCR text of
             # its own.  The in-game teaching cue is the page anchor; the
@@ -1428,6 +1487,14 @@ class GroundedVlmPlanner:
                 snapshot,
                 "ocr_realm_breakthrough_success_back_fast",
             )
+        if (
+            self._back_hotspot is not None
+            and realm_promotion_completed(snapshot.visible_text)
+        ):
+            return self._exit_action(
+                snapshot,
+                "ocr_realm_promotion_complete_back_fast",
+            )
         summon_result_close = summon_result_close_control(snapshot.visible_text)
         if summon_result_close is not None:
             self._last_decision_source = "ocr_summon_result_close_fast"
@@ -1659,6 +1726,19 @@ class GroundedVlmPlanner:
                 expected_effect="the selected pet receives one marrow wash",
                 action_kind=GuiActionKind.CLICK,
             )
+        if (
+            restored_task_unverified
+            and pet_feature_page_visible(snapshot.visible_text)
+        ):
+            # A persisted quest may be correct, but after process restart it is
+            # intentionally not trusted until the world tracker confirms it on
+            # two fresh frames.  Never hand an unverified pet page to the VLM:
+            # star-up and level-up controls spend materials.  Exit to the world,
+            # re-confirm the task, then re-enter through the deterministic flow.
+            return self._exit_action(
+                snapshot,
+                "ocr_restored_pet_task_reverify_back_fast",
+            )
         pet_entry = pet_training_entry_control(snapshot.visible_text)
         if pet_entry is not None:
             self._last_decision_source = "ocr_pet_training_entry_fast"
@@ -1668,6 +1748,57 @@ class GroundedVlmPlanner:
                 source="ocr_pet_training_entry_fast",
                 expected_effect="the pet formation interface opens",
                 action_kind=GuiActionKind.CLICK,
+            )
+        pet_upgrade_task = quest_is_pet_upgrade_task(quest_text)
+        pet_upgrade_information = pet_upgrade_information_tab_control(
+            snapshot.visible_text,
+            task_active=pet_upgrade_task,
+        )
+        if pet_upgrade_information is not None:
+            self._last_decision_source = "ocr_pet_upgrade_info_recovery_fast"
+            return self._ocr_action(
+                snapshot,
+                pet_upgrade_information,
+                source="ocr_pet_upgrade_info_recovery_fast",
+                expected_effect=(
+                    "the pet information page opens so the level-up task can continue"
+                ),
+                action_kind=GuiActionKind.CLICK,
+            )
+        pet_upgrade_wrong_page = pet_upgrade_wrong_subpage_visible(
+            snapshot.visible_text,
+            task_active=pet_upgrade_task,
+        )
+        if pet_upgrade_wrong_page and self._pet_information_tab_hotspot is not None:
+            return self._hotspot_click_action(
+                snapshot,
+                "pet_information_tab",
+                self._pet_information_tab_hotspot,
+                "ocr_pet_upgrade_info_hotspot_fast",
+                "the pet information page opens so two level-up actions can run",
+            )
+        if pet_upgrade_task and pet_star_page_visible(snapshot.visible_text):
+            # Fail closed if OCR temporarily misses the 信息 tab. Never let a
+            # level-up quest fall through to the model on the material-spending
+            # 升星 page.
+            self._last_decision_source = "ocr_pet_upgrade_wrong_page_wait"
+            return PlannerOutcome(
+                uuid.uuid4().hex,
+                snapshot.frame_id,
+                snapshot.frame_sequence,
+                snapshot.window_identity.window_generation,
+                snapshot.geometry_generation,
+                snapshot.task_generation,
+                DecisionKind.WAIT,
+                "pet level-up task is on the star-up page; wait for the 信息 tab",
+                snapshot.text,
+                GoalStatus.IN_PROGRESS,
+                1.0,
+                None,
+                WaitReason.NO_SAFE_ACTION,
+                explanation=(
+                    "ocr_pet_upgrade_wrong_page_wait blocks star-up material spending"
+                ),
             )
         pet_star_menu = pet_star_menu_control(snapshot.visible_text)
         if pet_star_menu is not None:
@@ -3086,8 +3217,6 @@ class GroundedVlmPlanner:
             "下一步",
             "确定",
             "上阵",
-            "领取奖励",
-            "领取",
             "传功",
             "疗伤",
         )

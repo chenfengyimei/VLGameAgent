@@ -1,124 +1,116 @@
-# Universal Game Agent (UGA)
+# Universal Game Agent
 
-UGA is a Windows-first, generalist game computer-use agent. It observes pixels,
-reasons about goals, selects skills, and emits keyboard, mouse, or gamepad input
-through explicit safety and ownership boundaries.
+> A safety-first, model-driven runtime that turns any visible game window into a verifiable computer-use environment.
 
-**[中文完整介绍与使用教程](docs/usage.zh-CN.md) — recommended for first-time users.**
+Universal Game Agent (UGA) is a Windows-first visual interaction platform for games and other rich real-time interfaces. It captures pixels directly from a selected window, fuses OCR with a vision-language model, plans one grounded action at a time, executes keyboard or pointer input through a guarded control plane, and verifies the visual effect before continuing.
 
-For the local Qwen3-VL + MuMu closed loop and its live visual dashboard, use the
-step-by-step [Chinese MuMu VLM guide](docs/guides/mumu-vlm-closed-loop.zh-CN.md).
+UGA is not a macro recorder and is not tied to one title, engine, emulator, UI layout, or model vendor. A target is described by a small YAML profile; reasoning is provided through an OpenAI-compatible vision endpoint; game-specific knowledge can remain optional, isolated strategy modules rather than assumptions baked into the runtime.
 
-The repository implements the full observe→decide→control→record→dataset→train→
-benchmark pipeline, including three capture backends (WGC, DXGI duplication,
-GDI fallback), lease-arbitrated input with watchdog and emergency-stop safety,
-transactional Episode recording with deterministic replay, dataset tooling with
-quality gates, deterministic motor-policy training, UGA-Bench, offline
-dashboard/replay/dataset UIs, a developer-owned Fixture World, qualification
-evidence tooling, and verified Windows development packaging. The project is
-licensed under [MIT](LICENSE).
+## Why UGA
 
-## Runtime hardening and data compatibility
+- **Pixel-native understanding** — works from rendered frames instead of private game APIs, memory inspection, or injected code.
+- **Grounded single-step control** — every model proposal identifies a visible target; the runtime revalidates window identity, geometry, freshness, focus, and click safety before physical input.
+- **Layered intelligence** — combines OCR fast paths, general visual reasoning, optional verification, deterministic recovery, and reusable skills.
+- **Fail-closed operation** — sensitive pages, stale frames, ambiguous targets, expired leases, focus loss, and watchdog failures stop or suppress input.
+- **Model-provider freedom** — supports local or cloud vision models behind OpenAI-compatible APIs.
+- **Observable by design** — a loopback dashboard exposes frames, recognized text, decisions, effects, suppression reasons, latency, and runtime health.
+- **Reproducible engineering** — recordings, deterministic replay, dataset qualification, training utilities, benchmarks, and hash-anchored release evidence live in one repository.
 
-The [2026-09-17 module delivery](docs/reviews/runtime-hardening-completion-2026-09-17.md)
-covers bounded recording/inference, sensitive-page handoff, causal GUI exports,
-native lifetime guards and remaining live qualification. Console and direct
-run entries share one parser, including `--decision-timeout-seconds`. Bounded
-goal claims require `--goal-evidence`. Use `uga-dataset gui-export EPISODE
---output NEW_DIRECTORY` for receipt-qualified GUI examples.
+## Runtime architecture
 
-Existing recordings stay immutable. Only actual pre-action evidence qualifies
-training inputs and demonstrated duration. CI does not establish physical-input
-latency, long-running device reliability or five-stage GPU model training.
-
-## PR2/PR3 integration notes
-
-The [conflict-resolution contract](docs/reviews/pr3-conflict-resolution-2026-09-17.md)
-preserves the PNG `gui-export` command and adds `gui-export-references` for
-reference-only JSONL. Evidence coverage and active execution are reported as
-separate durations; neither uses action TTL. Both public run entries accept
-`--decision-timeout-seconds` and `--perception-timeout-seconds`.
-
-## GUI model closed loop
-
-The [GUI-first model guide](docs/guides/gui-model-closed-loop.md) covers Qwen3-VL-4B
-and GLM-4.6V, explicit coordinate scales, current/history/detail input roles,
-model-first planning, independent verification and receipt-backed postconditions.
-Use it for the live GUI path; neural motor training is a separate workflow.
-
-## Optional neural motor development
-
-The [neural motor guide](docs/guides/neural-motor-training.md) adds a real
-PyTorch feature-to-action MLP, source-verified train/validation subsets,
-held-out evaluation, numeric-only checkpoints and pinned development-only
-policy loading. Separate CPU hash locks and Linux/Windows CI keep PyTorch out
-of the normal runtime path. Use `uga-train neural-motor`, `neural-verify` and
-`neural-evaluate`.
-
-This is a bounded motor head, not a visual foundation model, learned temporal
-policy, all five neural stages or qualified GPU/gameplay training. The existing
-deterministic baseline and all runtime safety boundaries remain.
-
-## Architectural rules
-
-- Slow reasoning and real-time control are separate.
-- Semantic, canonical, and physical actions are separate.
-- The action arbiter is the only authorizer; the input executor is the only
-  physical-backend writer.
-- Runtime telemetry is training data.
-- All online timing uses one monotonic nanosecond timeline.
-- Every future action has a lifetime; expired actions are dropped.
-- Runtime consumers use latest-state-wins backpressure.
-- Control ownership is represented by expiring leases.
-- Windows I/O is hidden behind backend contracts.
-- Raw HID remains a future escape hatch for unknown environments.
-
-See [ARCHITECTURE.md](ARCHITECTURE.md) and [PROJECT_PLAN.md](PROJECT_PLAN.md).
-
-## Current quick start
-
-UGA requires Python 3.11 or newer. Install the project (or its wheel) to obtain
-the Parquet, video, and YAML runtime dependencies.
-Developers changing Dashboard, Replay, or Dataset Viewer code also need Node.js
-24 and should run `npm ci && npm run typecheck && npm run build`; wheel users do
-not need Node because the compiled browser assets are included.
-
-```powershell
-python -m pip install -e .
-uga-agent
-uga-dashboard --output dashboard.html
-uga-dashboard --serve --host 127.0.0.1 --port 8765
-uga-example-game --headless-smoke
-uga-capture-probe --help
-uga-dataset --help
-uga-benchmark --help
-uga-qualify --help
-uga-train --help
-python -m pytest
+```text
+Target window
+    │
+    ▼
+Capture ──► OCR / visual observations ──► VLM + strategy router
+    ▲                                          │
+    │                                          ▼
+Effect verification ◄── guarded execution ◄── grounded action
+                              │
+                              ├── window/focus/freshness checks
+                              ├── no-click and sensitive-page gates
+                              ├── expiring control lease
+                              └── watchdog + emergency stop
 ```
 
-`uga-agent` performs a lifecycle smoke run. Physical input remains disabled until
-an operator explicitly enables a runtime with a safe environment manifest,
-exact target identity, live control lease, and active emergency hotkey.
+The project also includes Episode recording, replay, dataset processing, optional motor-policy training, a deterministic test environment, qualification tooling, and browser-based diagnostics.
 
-The modular `RealtimeAgentLoop` composes capture, latest-state observation,
-mode routing, Fast Policy, control leases, arbitration, 30 Hz scheduling,
-telemetry, and optional Episode recording. The live dashboard binds only to a
-loopback IPv4 address, requires the exact bound `Host` authority, enforces a
-same-origin `Origin` on browser command requests, and authenticates operator
-commands with a per-process CSRF token.
+## Quick start on Windows
 
-Windows development bundles are built with `scripts/build_release.ps1`. Install
-the bundled wheel, then use `run_uga.ps1` to point the runtime at the bundled
-native capture DLL. Direct native-capture development runs must also set
-`UGA_NATIVE_CAPTURE_SHA256` to the lowercase SHA-256 of that DLL; the digest is
-checked before any library code is loaded. Consult `release-manifest.json`
-before interpreting a bundle as qualified. A successful build also writes an
-external, source-bound `build-qualification.json` beside the bundle evidence
-directory after exercising the real bundled launcher.
+Requirements: Windows 10/11 x64 and Python 3.11 or 3.12.
 
-The developer-owned Fixture World provides a deterministic visual target for
-supervised Windows testing. See
-[docs/runbooks/fixture-qualification.md](docs/runbooks/fixture-qualification.md).
-Qualification evidence is hash-anchored according to
-[docs/contracts/qualification-evidence.md](docs/contracts/qualification-evidence.md).
+```powershell
+git clone https://github.com/chenfengyimei/VLGameAgent.git
+cd VLGameAgent
+.\install.cmd
+.\check.cmd
+```
+
+Create a target profile:
+
+```powershell
+Copy-Item .\configs\games\generic-visual-game.example.yaml `
+  .\configs\games\my-game.yaml
+```
+
+Edit `my-game.yaml` and replace every `CHANGE_ME` value with the exact executable and a narrowly anchored window-title pattern. Then launch a bounded five-minute run:
+
+```powershell
+$env:UGA_VLM_API_KEY = "your-key"   # omit for a local endpoint
+
+.\start.cmd `
+  -Profile .\configs\games\my-game.yaml `
+  -Goal "Open the current objective and make one safe unit of progress" `
+  -GoalEvidence "Objective complete" `
+  -Model "your-vision-model" `
+  -BaseUrl "https://provider.example/v1" `
+  -DurationSeconds 300
+```
+
+Open `http://127.0.0.1:8787` while the agent is running. Stop normally with `Ctrl+C`; stop immediately and latch control off with `Ctrl+Shift+F12`.
+
+For a local model, point `-BaseUrl` at the local OpenAI-compatible server and omit the API key. Use `-DurationSeconds 0 -Continuous` only after a bounded supervised run succeeds.
+
+## Safety contract
+
+Real input is intentionally stricter than model inference:
+
+1. The profile must resolve to one target process and window.
+2. The latest frame, window generation, geometry, task generation, and focus are checked again before execution.
+3. Sensitive terms and configured no-click regions can suppress actions even when the model requests them.
+4. The arbiter owns authorization; the executor is the only component allowed to emit physical input.
+5. Every control lease expires, held inputs are neutralized, and the watchdog fails closed.
+6. Payment, authentication, identity, deletion, installation, and account-transfer screens require the human operator.
+
+Never begin an unattended run on a login, payment, identity, account, deletion, or purchase screen. Keep the emergency hotkey reachable.
+
+## Documentation
+
+- [中文快速开始](START_HERE.zh-CN.md)
+- [中文完整介绍、配置与运行教程](docs/usage.zh-CN.md)
+- [让另一个 Agent 自动完成安装运行的提示词](docs/AGENT_HANDOFF_PROMPT.zh-CN.md)
+- [Architecture](ARCHITECTURE.md)
+- [Security policy](SECURITY.md)
+- [Contributing](CONTRIBUTING.md)
+
+## Agent-installable skill
+
+The repository ships a reusable Codex skill at [`skills/universal-game-agent-setup`](skills/universal-game-agent-setup). An agent can read that skill to clone or update the repository, install locked dependencies, create a safe target profile, perform preflight checks, launch a bounded run, and troubleshoot from evidence without exposing API keys.
+
+## Developer verification
+
+```powershell
+$env:PYTHONPATH = "$PWD\.tooling;$PWD"
+python -m ruff check .
+python -m mypy uga apps
+python -m pytest
+npm ci
+npm run typecheck
+npm run build
+```
+
+Native capture and release qualification have additional platform prerequisites documented under `docs/runbooks/` and `docs/contracts/`. CI success proves software checks, not live-game accuracy or permission to control a machine.
+
+## License
+
+Released under the [MIT License](LICENSE).

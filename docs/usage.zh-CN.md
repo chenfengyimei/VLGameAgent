@@ -1,416 +1,446 @@
-# UGA（Universal Game Agent）完整介绍与使用教程
+# Universal Game Agent 完整介绍、配置与运行教程
 
-> 本文档面向第一次接触本项目的使用者，从安装到发布打包逐步给出可直接复制的命令。
-> 英文总览见 [README.md](../README.md)，架构细节见 [ARCHITECTURE.md](../ARCHITECTURE.md)。
+## 1. 项目定位
 
----
+Universal Game Agent（UGA）是一个面向 Windows 的通用视觉游戏智能体运行时。它把一个普通游戏窗口抽象成“可观察、可决策、可执行、可验证”的计算机使用环境：
 
-## 1. 这是什么项目
+1. 从指定窗口持续捕获最新画面。
+2. 用 OCR 提取界面文字与位置。
+3. 将当前画面、目标、历史和可选局部细节交给视觉语言模型。
+4. 要求模型输出结构化、单步、带目标框的动作。
+5. 在最新帧上重新检查窗口、焦点、坐标、页面和安全条件。
+6. 执行一次鼠标或键盘动作。
+7. 观察动作后的画面，验证变化，再决定下一步。
 
-UGA 是一个 **Windows 优先的通用游戏 computer-use 智能体运行时**：它观察屏幕像素、理解目标、
-选择技能，并通过键盘 / 鼠标 / 手柄输入操作系统与游戏交互。所有输入都经过显式的安全边界
-（租约、仲裁器、看门狗、紧急停止热键）。
+它不是固定坐标连点器，也不依赖游戏内部接口、内存读取、插件注入或特定引擎。新增目标通常只需要一个窗口档案；稳定流程可以进一步沉淀为独立策略，通用运行时本身仍保持与标题无关。
 
-项目包含一条完整的"观察 → 决策 → 控制 → 记录 → 数据 → 训练 → 评测"链路：
+## 2. 核心能力
 
-| 模块 | 作用 |
-|---|---|
-| 捕获层 | 三种后端抓取目标窗口画面：**WGC**（Windows Graphics Capture，主选）、**DXGI** 桌面复制、**GDI** 兼容回退 |
-| 控制层 | 语义/规范/物理三层动作契约 + 30Hz 调度器 + **租约仲裁**（唯一授权方） |
-| 安全层 | 焦点守卫、控制租约过期、**看门狗**、`Ctrl+Shift+F12` 紧急停止 |
-| 记录层 | Episode 事务式录制（Parquet 动作 + H.264 视频 + 校验和），**确定性回放** |
-| 数据层 | Episode 质量门禁、防泄漏切分、数据集清单（含许可证元数据） |
-| 训练层 | 确定性 BC 马达策略训练（`uga-train`），Fast Policy 行动块 |
-| 评测层 | UGA-Bench（捕获/推理/规划/输入延迟 + 任务成功率） |
-| 界面 | 离线仪表盘、回放调试器、数据集查看器 |
-| 资格认证 | `uga-qualify` 证据台账：门禁 + SHA-256 哈希锚定的证据链 |
+| 能力 | 说明 |
+| --- | --- |
+| 窗口捕获 | 支持 Windows Graphics Capture、DXGI Desktop Duplication 与兼容回退 |
+| 视觉理解 | OCR、本地或云端视觉语言模型、可选二次验证器 |
+| GUI 规划 | 每轮最多一个动作，显式目标标签、目标框、预期效果与风险 |
+| 实时控制 | 鼠标、键盘、相对/绝对指针、可扩展手柄契约 |
+| 安全边界 | 唯一窗口、焦点、帧新鲜度、禁点区、敏感页、租约、看门狗与急停 |
+| 结果验证 | 动作前后像素、OCR、页面状态与任务代数共同判定有效性 |
+| 可观测性 | 本机看板显示画面、OCR、决策、动作、效果、延迟和拦截原因 |
+| 数据闭环 | Episode 录制、回放、数据处理、质量门禁、训练与评测 |
+| 工程交付 | 锁定依赖、严格类型检查、测试、发布清单与证据哈希 |
 
----
+## 3. 运行架构
 
-## 2. 环境要求
+```text
+窗口发现 ─► 捕获环 ─► 最新帧缓冲 ─► OCR / 页面状态
+                                      │
+                                      ▼
+任务目标 ─────────────────────► VLM / 策略路由
+                                      │
+                                      ▼
+                         结构化单步 Grounded Action
+                                      │
+                                      ▼
+            敏感页门禁 / 禁点区 / 新鲜度 / 焦点 / 控制租约
+                                      │
+                                      ▼
+                            唯一物理输入执行器
+                                      │
+                                      ▼
+                        新画面与动作效果独立验证
+```
 
-- Windows 10/11
-- Python **3.11+**（运行时依赖：av、pyarrow、PyYAML）
-- 仅当修改前端（Dashboard/Replay/Viewer）时才需要 Node.js 24（用户无需，已编译资产随包分发）
-- Rust 工具链（仅修改原生捕获 DLL 时需要）
+慢速视觉推理与实时控制分离。模型负责语义决策，不直接获得无限制坐标与输入权限；运行时负责把决策重新锚定到最新画面，并有权拒绝执行。
 
----
+## 4. 环境要求
 
-## 3. 安装
+普通使用者：
 
-### 方式 A：源码安装（开发机）
+- Windows 10/11 x64。
+- Python 3.11 或 3.12 x64。
+- 支持图片输入的 OpenAI-compatible 视觉模型接口。
+- 一个窗口化或无边框窗口化的目标游戏。
+
+开发者按需安装：
+
+- Node.js 24：修改看板、回放器或数据查看器时使用。
+- Rust 与 MSVC Build Tools：编译原生捕获 DLL 时使用。
+- CUDA/PyTorch：只在训练可选神经马达策略时使用。
+
+## 5. 获取项目
 
 ```powershell
 git clone https://github.com/chenfengyimei/VLGameAgent.git
 cd VLGameAgent
-python -m pip install -e .
 ```
 
-### 方式 B：发布包（见第 8 节打包流程）
-
-解包后先装 wheel，再用包内 `run_uga.ps1` 启动（它会校验清单并自动加载原生捕获 DLL）。
-
----
-
-## 4. 快速冒烟（确认一切正常）
+如果仓库已经存在：
 
 ```powershell
-uga-agent                      # 运行时生命周期冒烟
-uga-example-game --headless-smoke   # 测试世界无头自检，应输出 "success": true
-python -m pytest               # 全量测试（应全绿）
+git status
+git pull --ff-only
 ```
 
----
+工作区有未提交修改时不要直接覆盖；先让操作者决定提交、暂存或保留。
 
-## 5. 分步教程
-
-### 5.1 启动测试游戏窗口
-
-`uga-example-game` 打开一个开发者自有的测试世界（Tk 窗口），共 4 个确定性场景：
+## 6. 一键安装
 
 ```powershell
-uga-example-game                              # 场景 1：exploration（默认）
-uga-example-game --scenario realtime_control # 场景 2：实时控制（玩家在右、目标在左）
-uga-example-game --scenario gui_navigation   # 场景 3：GUI 菜单导航
-uga-example-game --scenario heldout_diagonal # 场景 4：锁定对角测试（用作泛化 Test D）
+.\install.cmd
 ```
 
-操作方式：WASD 移动、鼠标转向、E 交互、Esc 菜单、R 重置。
+安装脚本会：
 
-> **纪律**：跑资格认证时请保持该窗口**完全可见**（无任何窗口遮挡、最好放到副屏），
-> 并让它与认证命令使用**相同的 `--scenario`**。
+- 创建项目内 `.venv`。
+- 按哈希锁定文件安装运行依赖。
+- 安装 OCR 与视觉依赖。
+- 以 editable 模式安装当前源码。
+- 执行安装后的测试。
 
-### 5.2 捕获探针
-
-对指定标题的窗口抓帧并输出延迟/帧率/回退诊断报告：
+安装后运行：
 
 ```powershell
-uga-capture-probe --title '^UGA Fixture World$' --frames 120 `
-  --output runs/capture-smoke.json
+.\check.cmd
 ```
 
-`--backend` 可选 `auto`（默认，按 WGC→DXGI→GDI 择优）、`windows_graphics_capture`、
-`dxgi_duplication`、`gdi_fallback`；`--duration-seconds` 可代替 `--frames` 做浸泡。
+自检不会操作目标游戏。它检查运行时入口、捕获工具入口和 OCR 后端是否可用。
 
-**启用 WGC / DXGI 需先固定原生 DLL（安全策略：必须显式哈希锚定才会加载）**：
+也可以手动安装：
 
 ```powershell
-$env:UGA_NATIVE_CAPTURE_DLL  = "native\target\release\uga_capture.dll"
-$env:UGA_NATIVE_CAPTURE_SHA256 = (Get-FileHash $env:UGA_NATIVE_CAPTURE_DLL).Hash.ToLower()
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install --require-hashes -r requirements-lock.txt
+.\.venv\Scripts\python.exe -m pip install --require-hashes -r requirements-vision-lock.txt
+.\.venv\Scripts\python.exe -m pip install --no-deps --no-build-isolation -e .
 ```
 
-> 已知特性：GDI 回退后端对 GPU 呈现的窗口（D3D/Vulkan）只能看到**陈旧快照**，
-> 属兼容层固有限制；实时内容请用 WGC 或 DXGI。
+## 7. 创建目标游戏档案
 
-### 5.3 资格认证（捕获 + 控制 + 录制 + 回放一体）
-
-先启动一个已知 PID 的测试世界窗口（保持可见），然后：
+复制通用模板：
 
 ```powershell
-uga-qualify fixture `
-  --title '^UGA Fixture World [realtime_control]$' `
-  --expected-pid <上面窗口的进程ID> `
-  --scenario realtime_control `
-  --duration-seconds 30 `
-  --backend auto `
-  --episode-root runs/qualification `
-  --output runs/qualification/report.json `
-  --allow-physical-input `
-  --exercise-held-key-fault `
-  --exercise-watchdog-timeout `
-  --exercise-emergency-hotkey
+Copy-Item .\configs\games\generic-visual-game.example.yaml `
+  .\configs\games\my-game.yaml
 ```
 
-报告里逐项记录：捕获诊断、动作执行率、录制质量、回放校验、粘键中和、
-看门狗/紧急热键演练结果。UIPI 需另用 `uga-qualify uipi-probe` 对经 UAC 确认的
-自有管理员级 Fixture 实测，再用 `uga-qualify control-report` 汇总；同完整性级别或
-模拟结果不会通过。**运行期间请勿操作机器**（焦点被抢占会导致失败——
-资格认证对遮挡焦点问题会直接响亮中止并提示原因）。
-
-### 5.4 录制与回放
-
-每次资格认证/语料运行都会产出 Episode（动作 Parquet + 视频 + 校验和）。直接检查与回放：
-
-```powershell
-uga-replay <episode目录>                 # 校验回放
-uga-dataset validate <episode目录> --output quality.json
-uga-dataset process <episode目录> --output samples.jsonl   # 时间对齐样本
-uga-dataset view <episode目录>           # 数据集查看器
-```
-
-### 5.5 训练（确定性马达策略）
-
-```powershell
-uga-train prepare-motor-samples --episode <episode目录> --output samples.jsonl # 可多个 --episode
-uga-train motor `
-  --samples samples.jsonl `
-  --dataset-manifest data/datasets/v1/manifest.json `
-  --dataset-root data/datasets/v1 `
-  --config configs/training/motor_bc.yaml `
-  --output runs/models/fixture-motor-v1 `
-  --policy-version fixture-motor-v1 `
-  --source-revision <git提交哈希> `
-  --base-model-license <基础模型许可证>
-uga-train verify runs/models/fixture-motor-v1/training-artifact.json
-```
-
-生产资格不能只提交一个马达 checkpoint。外部训练/评测流程须为五个阶段分别输出
-带阈值检查的 `uga.offline_metrics` 与 `uga.closed_loop_metrics` 报告，然后在实际
-GPU 主机上生成阶段报告，最后聚合：
-
-```powershell
-uga-train stage-report --stage motor `
-  --dataset-manifest runs/qualification-v1/corpus/dataset-manifest.json `
-  --artifact runs/qualification-v1/models/motor/training-artifact.json `
-  --offline-metrics runs/qualification-v1/models/motor/offline.json `
-  --closed-loop-metrics runs/qualification-v1/models/motor/closed-loop.json `
-  --trainer-backend veomni --training-run-id <run-id> `
-  --output runs/qualification-v1/models/motor-stage.json
-
-uga-train qualification-report `
-  --dataset-manifest runs/qualification-v1/corpus/dataset-manifest.json `
-  --stage-report runs/qualification-v1/models/motor-stage.json `
-  --stage-report runs/qualification-v1/models/instruction-stage.json `
-  --stage-report runs/qualification-v1/models/recovery-stage.json `
-  --stage-report runs/qualification-v1/models/reasoning_gate-stage.json `
-  --stage-report runs/qualification-v1/models/dagger-stage.json `
-  --output runs/qualification-v1/models/model-qualification.json
-```
-
-所有被引用文件必须位于输出报告所在的资格证据目录下；阈值未通过、GPU 未检测到、
-版本或任一哈希不一致时命令都会失败关闭。
-
-### 5.6 基准评测
-
-```powershell
-uga-benchmark validate-config configs/benchmarks/uga-bench-fixture.yaml
-uga-benchmark fixture `
-  --config configs/benchmarks/uga-bench-fixture.yaml `
-  --artifact runs/models/fixture-motor-v1/training-artifact.json `
-  --output runs/bench-runs.jsonl `
-  --report runs/bench-report.json
-uga-benchmark summarize runs/bench-runs.jsonl --config configs/benchmarks/uga-bench-fixture.yaml
-```
-
-### 5.7 仪表盘
-
-运行 VLM 智能体时，`--dashboard-port` 会启动实际闭环只读面板：
-
-```powershell
-uga-agent run --profile configs/games/mumu-xianyu.yaml `
-  --policy vlm --goal '仅观察当前页面，禁止任何操作。' `
-  --dashboard-port 8787
-```
-
-浏览器打开 `http://127.0.0.1:8787`，可查看目标、MuMu 实时画面、OCR/模型状态、
-采集间隔、过期推理丢弃、逻辑/物理动作、恢复次数与决策时间线。面板仅绑定本机回环、
-只读且不缓存画面；运行结束后自动关闭。`--dashboard-port 0` 可禁用。
-
-`uga-dashboard --output dashboard.html` 和 `uga-dashboard --serve` 是通用运行时状态页，
-不等同于上述 VLM 决策面板。MuMu 的完整配置与面板说明见
-[MuMu + 本地视觉模型闭环教程](guides/mumu-vlm-closed-loop.zh-CN.md)。
-
-### 5.8 紧急停止
-
-任何时刻按 **`Ctrl+Shift+F12`**：立即吊销全部控制租约、清空调度队列、
-释放所有按住的键 —— 看门狗在心跳停滞 5 秒时也会自动触发同样的 fail-closed 停机。
-
-### 5.9 实战：MuMu 模拟器（安卓游戏）
-
-安卓模拟器的窗口就是一个普通 Win32 目标：UGA 用捕获后端看它的画面，
-用鼠标点击（经模拟器转成安卓点按）操作其中的游戏。仓库自带「仙遇（MuMu）」
-档案文件 `configs/games/mumu-xianyu.yaml`，关键字段：
+最重要的字段：
 
 ```yaml
+game:
+  id: my-game
+  display_name: My Game
+process:
+  executable: [Game.exe]
 window:
-  preferred_capture: windows_graphics_capture   # 首选 WGC
-  title_pattern: '^MuMu安卓设备-\d+$'            # 只匹配游戏窗口，不匹配管理器
-controls:
-  interact: {kind: mouse_button, code: "left", confirmed: true}  # 点击 = 左键脉冲
+  preferred_capture: windows_graphics_capture
+  title_pattern: '^My Game$'
 camera:
-  type: absolute_pointer                        # 规范动作携带物理屏幕坐标
+  type: absolute_pointer
+controls:
+  interact: {kind: mouse_button, code: "left", confirmed: true}
 ```
 
-运行端到端智能体循环（发现窗口 → 激活前台 → 捕获 → 观测 → 策略 → 调度注入 → 可选录像）：
+### 7.1 窗口匹配
+
+`process.executable` 与 `window.title_pattern` 共同限定目标。推荐：
+
+- 使用精确进程文件名。
+- 正则以 `^` 开头、`$` 结尾。
+- 不要匹配启动器、更新器、管理器或多个同名窗口。
+- 分屏、多开时应让标题或 PID 可唯一识别。
+
+### 7.2 指针类型
+
+- GUI、卡牌、回合制或移动端窗口：通常使用 `absolute_pointer`。
+- 第一/第三人称镜头：通常使用 `relative_mouse`，并配置灵敏度。
+- 点击型界面至少需要确认过的左键 `interact` 绑定。
+
+### 7.3 禁点区域
+
+`no_click_regions` 使用归一化坐标 `[left, top, right, bottom]`，范围 0 到 1。例如：
+
+```yaml
+no_click_regions:
+  - [0, 0, 1, 0.06]
+```
+
+可用于排除系统标题栏、模拟器工具栏、直播悬浮层或账号操作区。宁可先扩大禁点区，也不要在未校准区域冒险点击。
+
+### 7.4 敏感动作
+
+`critical_action_terms` 应覆盖登录、支付、购买、实名、身份证、删除、发送、安装等账号级或不可逆行为。模型看到这些词时不会自动获得执行权限。
+
+### 7.5 校准热点
+
+只有经过人工确认的稳定控件才应写成 `normalized_hotspot`。未确认的返回、关闭或技能按钮应保持注释或删除；让模型基于最新画面定位，比错误的固定热点更安全。
+
+启动器会拒绝任何仍包含 `CHANGE_ME` 的档案。
+
+## 8. 配置视觉模型
+
+UGA 通过 OpenAI-compatible API 调用视觉模型。需要四个值：
+
+- `BaseUrl`：API 根地址。
+- `Model`：服务暴露的模型名。
+- `ApiKeyEnv`：保存密钥的环境变量名，默认 `UGA_VLM_API_KEY`。
+- 供应商特性：是否使用 JSON object 模式、是否关闭 thinking。
+
+### 8.1 云端模型
 
 ```powershell
-$env:UGA_NATIVE_CAPTURE_DLL  = "native\target\release\uga_capture.dll"
-$env:UGA_NATIVE_CAPTURE_SHA256 = (Get-FileHash $env:UGA_NATIVE_CAPTURE_DLL).Hash.ToLower()
+$env:UGA_VLM_API_KEY = "your-key"
 
-uga-agent run --profile configs/games/mumu-xianyu.yaml `
-  --goal "Interact with the target" `
-  --duration-seconds 60 `
-  --record runs/episodes
+.\start.cmd `
+  -Profile .\configs\games\my-game.yaml `
+  -Goal "打开任务界面" `
+  -Model "your-vision-model" `
+  -BaseUrl "https://provider.example/v1" `
+  -JsonObject
 ```
 
-该档案记录以下已验证的集成约束：
+密钥只放在环境变量中。不要写入 YAML、启动脚本、截图、日志、Issue 或 Git 提交。
 
-- **窗口发现**：标题必须恰好匹配一个窗口（游戏窗 `MuMu安卓设备-1`，
-  而非管理器窗 `MuMu模拟器`），且能成功取得前台，否则直接报错退出。
-- **捕获**：固定原生 DLL 前会自动降级 GDI 兼容回退（MuMu 的 GDI 表面会持续更新，
-  但按档案偏好仍应使用 WGC）。
-- **点击**：`absolute_pointer` 相机 + `mouse_button` 绑定的组合下，规范动作携带
-  物理屏幕坐标，环境层产出「绝对移动 → 按下 → 抬起」三段物理动作；
-  点击点默认为客户区的 50%/79% 处（「开启仙途」按钮），可用 `--tap-x-fraction`
-  / `--tap-y-fraction`（客户区比例坐标，0~1）覆盖到当前界面的任意按钮；
-  `--tap-delay`（默认 2 秒）指定注入时机。
-- **持续运行**：`--duration-seconds 0` 表示不限时一直运行，直到按 **`Ctrl+C`** 或
-  全局紧急热键 **`Ctrl+Shift+F12`** 停止；配合 `--tap-interval-seconds N` 让点击
-  时间线每 N 秒循环一次（过期一整个周期的点击会被丢弃以防连发，最新一次过期
-  未满一周期的会补发一次）。用户主动停止的 Episode 会如实以 `aborted` 收尾。
-- **产出**：结束后打印 `episode: runs/episodes/<episode-id>`，内含 H.264 视频、
-  动作 Parquet、事件日志与校验和，可直接用 `uga-replay` / `uga-dataset` 检查；
-  录制器会自动把 WGC 带边框的奇数尺寸裁剪到偶数再编码。
-- **纪律**：与其他认证运行一致——运行期间请勿操作机器（抢焦点会让点击落点失效）；
-  紧急停止热键 `Ctrl+Shift+F12` 随时可用。
-
-### 5.10 全自动识图模式（VLM 规划器）
-
-本模式采用可验证的单步闭环：持续捕获 → OCR/VLM 感知 → 结构化单步决策 →
-窗口、几何、目标框与焦点复核 → 执行 → 效果验证 → 双帧完成确认或有界恢复。
-模型返回目标标签和 bbox，最终落点由运行时在最新帧的有效区域中计算；模型不能自由
-提供最终点击坐标，也不能一次播放多步 GUI 序列。
+### 8.2 本地模型
 
 ```powershell
-# 先在 LM Studio 加载 qwen3-vl-4b-instruct 并开启本地服务
-uga-agent run --profile configs/games/mumu-xianyu.yaml `
-  --policy vlm `
-  --goal '打开互联网；只有看到互联网页面和添加网络时才完成。' `
-  --goal-action-target '互联网' `
-  --goal-evidence '添加网络' `
-  --vlm-base-url http://127.0.0.1:1234/v1 `
-  --vlm-model qwen3-vl-4b-instruct `
-  --vlm-no-thinking `
-  --vlm-decision-interval 1 `
-  --vision-mode local `
-  --ocr auto `
-  --max-recoveries 2 `
-  --duration-seconds 75 `
-  --observation-hz 5 `
-  --dashboard-port 8787 `
-  --record runs/episodes
+.\start.cmd `
+  -Profile .\configs\games\my-game.yaml `
+  -Goal "打开任务界面" `
+  -Model "local-vision-model" `
+  -BaseUrl "http://127.0.0.1:1234/v1" `
+  -NoThinking
 ```
 
-云端视觉 API（任何 OpenAI 兼容接口）只需换 `--vlm-base-url` / `--vlm-model`，
-并把密钥放进 `--vlm-api-key-env` 指定的环境变量（默认 `UGA_VLM_API_KEY`）。
+启动前先确认 `/v1/models` 能看到同名模型，并确认模型支持图片输入与结构化 JSON 输出。
 
-要点：
+## 9. 编写好目标
 
-- **一次一动作**：每次观察最多执行一个 GUI 动作，动作后必须重新观察。
-- **完成证据**：重复 `--goal-evidence` 可声明所有必需 OCR 事实；两张间隔至少
-  500ms 的新鲜帧都满足且综合置信度至少 0.85，才接受 `DONE`。
-- **失败即保守**：Schema 修复失败、OCR/VLM 冲突、目标框失效或置信度不足时
-  重新观察、`ABSTAIN` 或安全停止，绝不猜坐标。
-- **有界恢复**：默认最多两种恢复；删除了随机邻近点击、等待后强制返回和无限重试。
-- **旧结果零输入**：窗口、几何、任务代次失效或目标区域变化时，推理结果直接丢弃。
-- 停止方式与持续运行一致：`Ctrl+Shift+F12` 全局热键或 `Ctrl+C`。
+目标应描述结果，不要塞入几十步坐标脚本。好的目标包含：
 
-从安装、LM Studio、MuMu、零输入冒烟、单步导航、面板解读到 Episode 诊断的完整步骤见
-[MuMu + 本地视觉模型闭环教程](guides/mumu-vlm-closed-loop.zh-CN.md)。
+- 当前要完成的单一结果。
+- 哪些页面属于敏感边界。
+- 何时应该等待而不是重复点击。
+- 可见的完成证据。
 
----
+示例：
 
-## 6. 资格认证台账（可选的正式证据链）
+```text
+打开当前任务面板并推进一个安全步骤；每次动作后等待新画面；
+遇到登录、支付、购买或账号页面立即停止。
+```
 
-`uga-qualify` 维护一个带哈希的证据台账，覆盖：自动化测试、构建安装、捕获浸泡、
-控制硬件、10 分钟录制、5 小时数据集、模型训练、四场景泛化基准、许可证治理。
+`-GoalEvidence` 可以重复传入。只有新鲜 OCR 画面满足全部证据时，模型的 DONE 才会被接受：
 
 ```powershell
-uga-qualify init runs/qualification-v1 --source-revision <commit>
-uga-qualify record runs/qualification-v1 capture-soak passed `
-  --evidence "30分钟矩阵通过" --artifact capture/soak-report.json
-uga-qualify status runs/qualification-v1
-uga-qualify preflight runs/qualification-v1 --project-root . `
-  --model-qualification runs/qualification-v1/models/model-qualification.json `
-  --dataset-manifest runs/qualification-v1/corpus/dataset-manifest.json `
-  --dataset-root runs/qualification-v1/corpus/episodes
+-GoalEvidence "任务完成" -GoalEvidence "奖励已领取"
 ```
 
-V1 的泛化主张口径为**自有 Fixture 四场景**（Train A/B/C + 锁定 heldout_diagonal）；
-真实商业游戏数据列入 V2（需授权与权利记录）。
+不要把容易在背景公告中出现的普通词当作完成证据。
 
----
-
-## 7. 开发与测试门禁
+## 10. 第一次运行：有界监督模式
 
 ```powershell
-.\.tooling\bin\ruff.exe check .
-python -m mypy uga apps          # 严格模式
-python -m pytest -q
-npm ci; npm run typecheck; npm run build   # 仅前端改动需要
-Push-Location native; cargo fmt --all --check; cargo clippy --workspace --all-targets --locked -- -D warnings; cargo test --workspace --locked; Pop-Location
+.\start.cmd `
+  -Profile .\configs\games\my-game.yaml `
+  -Goal "安全推进当前可见目标的一步" `
+  -GoalEvidence "步骤完成" `
+  -Model "your-vision-model" `
+  -BaseUrl "https://provider.example/v1" `
+  -DurationSeconds 300 `
+  -Record .\runs\first-supervised
 ```
 
-本仓库不含任何 copyleft 依赖（全部 MIT/Apache-2.0/BSD-3-Clause），源码以 **MIT** 授权。
+建议第一次只运行 3 到 5 分钟，并全程观察：
 
----
+1. 看板画面是否来自正确窗口。
+2. OCR 是否能读到关键按钮或任务文字。
+3. 模型动作框是否覆盖真实控件。
+4. 被抑制动作的原因是否合理。
+5. 无效果动作是否停止重复。
+6. 功能页结束后能否退出。
 
-## 8. 打包发布
+## 11. 长期运行
+
+短测通过后：
 
 ```powershell
-npm ci --include=dev        # 仅首次或 package-lock 变更后
-powershell -ExecutionPolicy Bypass -File scripts/build_release.ps1
+.\start.cmd `
+  -Profile .\configs\games\my-game.yaml `
+  -Goal "持续推进当前可见任务；敏感页停止；无效果时重新观察" `
+  -Model "your-vision-model" `
+  -BaseUrl "https://provider.example/v1" `
+  -DurationSeconds 0 `
+  -Continuous `
+  -Record .\runs\continuous
 ```
 
-产物：`dist/` 下的 wheel + 源码包，以及完整发布目录（含 `native\uga_capture.dll`、
-`run_uga.ps1` 启动器、`release-manifest.json` 清单、LICENSE、文档与配置）。构建在
-最终清单生成后还会真实执行包内启动器，并在 `<bundle>.evidence\build-qualification.json`
-写出独立的源码绑定证据；其中逐项记录构建、测试、干净安装、命令入口、依赖清单、
-清单校验和启动器烟测，并哈希最终 wheel、源码包、DLL、启动器和清单。证据放在包外，
-避免发布清单与证据互相哈希形成循环。
+`DurationSeconds 0` 表示一直运行到 `Ctrl+C` 或紧急停止。`Continuous` 允许一个目标周期结束后继续新周期，但不会绕过已锁存的安全阻塞。
 
-使用发布包：
+长期运行建议：
+
+- 保持窗口尺寸与 DPI 不变。
+- 关闭会遮挡目标窗口的通知和悬浮窗。
+- 使用窄窗口正则，避免窗口重建后绑定错误。
+- 保留看板和 Episode 证据。
+- 先使用 `model-first`；只有已经注册、测试并与目标匹配的规则才使用 `rules-first`。
+
+## 12. 启动脚本参数
 
 ```powershell
-python -m pip install <bundle里的wheel>
-.\run_uga.ps1 -ManifestSha256 <清单的SHA-256>   # 带外锚点：先验清单再验一切
+.\start.cmd --help
 ```
 
-`run_uga.ps1` 逐层校验：带外清单摘要 → 全包哈希树 → 原生 DLL 摘要，
-任何一项不符都会拒绝启动。`release-manifest.json` 的门禁状态如实反映证据完成度，
-未完成全部门禁前它不会声称 `releasable: true`。
+| 参数 | 含义 |
+| --- | --- |
+| `-Profile` | 目标 YAML 档案，必填 |
+| `-Goal` | 当前运行目标，必填 |
+| `-GoalEvidence` | 可重复的 OCR 完成证据 |
+| `-Model` | 视觉模型名，必填 |
+| `-BaseUrl` | OpenAI-compatible API 地址，必填 |
+| `-ApiKeyEnv` | API Key 环境变量名 |
+| `-DurationSeconds` | 运行秒数；0 为不限时 |
+| `-Continuous` | 完成后开始下一周期 |
+| `-PlanningMode` | `model-first` 或 `rules-first` |
+| `-CoordinateSpace` | `normalized_1000` 或 `unit` |
+| `-NoThinking` | 兼容供应商的无思考输出开关 |
+| `-JsonObject` | 使用 JSON object 响应模式 |
+| `-DashboardPort` | 本机看板端口；0 关闭 |
+| `-Record` | Episode 输出目录 |
+| `-Python` | 显式 Python 路径 |
+| `-SkipNativeCapture` | 不加载仓库内原生捕获 DLL |
 
----
+上述值也可通过 `UGA_PROFILE`、`UGA_GOAL`、`UGA_VLM_MODEL`、`UGA_VLM_BASE_URL` 提供。
 
-## 9. 实战注意事项（踩坑记录）
+## 13. 看板与日志
 
-1. **窗口遮挡**：测试窗口被任何窗口盖住 → 点击落到覆盖窗口上、捕获退化为陈旧帧；
-   资格认证会直接中止并提示"obstructed"。把窗口放到无遮挡的副屏最稳。
-2. **场景匹配**：`uga-example-game --scenario X` 与 `uga-qualify fixture --scenario X`
-   必须一致，否则脚本化移动方向相反、永远不成功。
-3. **运行期间勿动机器**：抢焦点会让认证的时序窗失效。
-4. **npm**：本机 `~/.npmrc` 设了 `omit=dev`，装依赖务必 `npm ci --include=dev`。
-5. **原生 DLL**：不设 `UGA_NATIVE_CAPTURE_DLL`+`UGA_NATIVE_CAPTURE_SHA256` 时
-   WGC/DXGI 报 "not installed"，这是刻意的安全设计。
-6. **PowerShell 引号**：`Start-Process -ArgumentList` 不给含空格参数加引号，
-   传复杂参数请用 `&` 调用或脚本文件。
+默认看板：
 
----
+```text
+http://127.0.0.1:8787
+```
 
-## 10. 命令速查
+重点字段：
 
-| 命令 | 用途 |
-|---|---|
-| `uga-agent` | 运行时生命周期冒烟 |
-| `uga-agent run --profile <yaml>` | 对真实窗口运行完整智能体循环（如 MuMu 模拟器，见 5.9） |
-| `uga-example-game` | 启动测试世界（4 场景 / `--headless-smoke` / `--focus-sink`） |
-| `uga-capture-probe` | 窗口捕获诊断报告 |
-| `uga-qualify fixture\|corpus\|...` | 资格认证与证据台账 |
-| `uga-replay <episode>` | 回放校验 |
-| `uga-dataset validate\|process\|view` | Episode 质检 / 样本对齐 / 查看器 |
-| `uga-train prepare\|motor\|verify` | 训练 |
-| `uga-benchmark fixture\|summarize\|...` | 基准评测 |
-| `uga-dashboard` | 仪表盘（离线 / 本地服务） |
-| `uga-release-manifest <bundle> [--verify-existing]` | 生成/校验发布清单 |
-| `uga-dependency-inventory` | 依赖许可清单 |
-| `uga-build-evidence` | 生成/复验源码绑定的构建资格证据 |
+- `status`：运行、阻塞、完成或停机。
+- `screen_type` / `feature_page`：当前页面分类。
+- `current_action`：当前候选动作。
+- `decision source`：模型、OCR 快速规则或恢复逻辑。
+- `action_effect`：pending、verified、ineffective。
+- `suppressed`：安全层拒绝及原因。
+- `frame_age`：决定帧与执行帧的新鲜度。
+- `recent_failure` / `last_planner_error`：最近故障。
 
-许可证：**MIT**（见 [LICENSE](../LICENSE)）。
+调试时先保存事实：当前截图、最后 20 条事件、动作来源、效果状态与任务文字。不要仅根据“看起来卡住”修改提示词。
 
+## 14. 停止与急停
 
-## GUI 模型闭环更新
+- `Ctrl+C`：请求正常停止，允许运行时清理。
+- `Ctrl+Shift+F12`：紧急停止并锁存，撤销控制租约、清空队列、释放按键。
+- 看门狗超时：自动执行 fail-closed 停机。
 
-[Qwen3-VL / GLM-4.6V GUI 闭环指南](guides/gui-model-closed-loop.md)
-包含模型优先模式、坐标尺度、独立复核、操作回执与效果验证。
-旧教程的 OCR 快捷决策需显式 `--gui-planning-mode rules-first`；
-默认由模型提出下一个 GUI 操作，不再用该回退覆盖 WAIT。
+急停后应先查明原因，再重新启动；不要自动清除锁存并继续点击。
+
+## 15. 常见问题
+
+### 15.1 一直 WAIT
+
+检查：
+
+- 目标窗口是否可见且前台。
+- OCR 是否启用并识别到有效文字。
+- 模型接口是否超时或限流。
+- 页面是否正在加载、自动寻路或自动战斗。
+- 是否存在敏感页、旧帧、歧义目标或未满足的焦点守卫。
+
+WAIT 本身不是错误；它经常代表运行时拒绝在证据不足时冒险点击。
+
+### 15.2 重复点击同一位置
+
+立即急停。检查事件中的 `source` 与 `action_effect`：
+
+- 模型来源：增加页面状态约束或禁止无上下文按钮。
+- OCR 快速规则：收紧识别锚点，要求标题、正文与控件共同出现。
+- `ineffective`：确保冷却与无效果上限生效。
+- 页面已完成：增加完成态识别和确定性退出规则。
+
+### 15.3 进入无关页面后不退出
+
+不要依赖模型“自己想明白”。为该页面选择至少两个稳定且互相独立的 OCR 锚点，添加高优先级返回规则，并用真实截图测试“标题识别”和“标题漏识别”两种情况。
+
+### 15.4 点击偏移
+
+检查 Windows 缩放、窗口客户区、分辨率变化、标题栏高度、坐标尺度与捕获边框。固定热点必须以客户区归一化坐标校准，模型目标必须在最新帧重新锚定。
+
+### 15.5 云端模型不可用
+
+检查：
+
+```powershell
+$env:UGA_VLM_API_KEY
+Invoke-RestMethod https://provider.example/v1/models `
+  -Headers @{ Authorization = "Bearer $env:UGA_VLM_API_KEY" }
+```
+
+不要把命令输出中的密钥复制到聊天或 Issue。401 通常是认证错误，429 是限流，5xx 是服务端故障；持续重试应有上限和退避。
+
+### 15.6 捕获黑屏或静止
+
+优先构建并使用原生 WGC/DXGI 后端。兼容回退对某些 GPU 呈现窗口只能获得陈旧画面。运行时会对原生 DLL 做 SHA-256 固定，避免加载未知二进制。
+
+## 16. Episode、回放与数据
+
+带 `-Record` 的运行会生成 Episode。常用命令：
+
+```powershell
+uga-replay <episode-directory>
+uga-dataset validate <episode-directory> --output quality.json
+uga-dataset process <episode-directory> --output samples.jsonl
+uga-dataset view <episode-directory>
+```
+
+只有带真实动作回执、前置帧、动作后证据和一致身份信息的数据才应进入训练集。录制成功不等于任务成功，回放一致不等于模型泛化通过。
+
+## 17. 开发者验证
+
+仓库内置 `.tooling` 时：
+
+```powershell
+$env:PYTHONPATH = "$PWD\.tooling;$PWD"
+python -m ruff check .
+python -m mypy uga apps
+python -m pytest
+```
+
+前端：
+
+```powershell
+npm ci
+npm run typecheck
+npm run build
+```
+
+Skill 验证：
+
+```powershell
+python C:\path\to\skill-creator\scripts\quick_validate.py `
+  .\skills\universal-game-agent-setup
+```
+
+## 18. 给另一个 Agent 使用
+
+仓库内置 Skill：
+
+```text
+skills/universal-game-agent-setup/SKILL.md
+```
+
+它指导 Agent 完成仓库获取、安装、档案创建、模型配置、离线自检、有界运行和证据化排错。可直接转发的完整提示词见 [AGENT_HANDOFF_PROMPT.zh-CN.md](AGENT_HANDOFF_PROMPT.zh-CN.md)。
+
+## 19. 安全与责任边界
+
+- 只控制你有权操作的设备、账号和游戏。
+- 不要绕过反作弊、访问控制、支付确认、身份验证或平台规则。
+- 不要在支付、登录、实名、删除、交易或账号设置页面启用无人值守操作。
+- API Key、Cookie、令牌、账号标识和个人截图不得进入 Git。
+- 自动化稳定性必须以真实受监督运行和可复核证据为准，不以提示词或单元测试代替。
+
+项目安全策略见 [SECURITY.md](../SECURITY.md)，实现架构见 [ARCHITECTURE.md](../ARCHITECTURE.md)。

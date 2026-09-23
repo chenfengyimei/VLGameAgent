@@ -1,103 +1,113 @@
-# VLGameAgent 首次使用快速开始
+# Universal Game Agent：第一次运行只看这一页
 
-这份文档面向第一次使用 VLGameAgent 的用户。目标是先把环境装好、确认不会误操作，再逐步进入 Qwen3-VL / GLM GUI 闭环。
+Universal Game Agent 是一个通用的视觉模型游戏操作平台。它像人一样读取窗口画面，通过 OCR 与视觉语言模型理解界面，每次只执行一个可验证动作，再根据新画面决定下一步。它不依赖特定游戏接口，也不要求把规则写死在某一个标题里。
 
-> 安全边界：阅读教程、安装依赖、运行自检都不会操作游戏。真正运行代理前，仍需要你确认目标窗口、任务和模型配置；不要在支付、登录、实名、删除等敏感页面开启自动操作。
-
-## 1. 准备条件
-
-推荐环境：
+## 1. 准备环境
 
 - Windows 10/11 x64。
-- Python 3.11 或 3.12。若要 OCR/视觉依赖，优先使用 64 位 CPython 3.12。
-- 一个可用的本地或远端视觉模型服务，例如 Qwen3-VL-4B 或 GLM-4.6V 的 OpenAI-compatible 接口。
-- 游戏或模拟器窗口已启动，并且你能手动确认目标窗口标题。
+- Python 3.11 或 3.12。
+- 已启动的目标游戏窗口。
+- 一个支持图片输入、兼容 OpenAI API 的视觉模型服务。
+- 云端服务需要 API Key；本地服务通常不需要。
 
-开发者构建原生采集 DLL 时还需要 Rust 与 MSVC；普通教程先不要求你完成这一步。
+真实运行前，请确认你随时可以按下紧急停止键：`Ctrl+Shift+F12`。
 
-## 2. 一键安装
+## 2. 下载与安装
 
-在项目根目录双击或运行：
-
-```cmd
-install.cmd
+```powershell
+git clone https://github.com/chenfengyimei/VLGameAgent.git
+cd VLGameAgent
+.\install.cmd
+.\check.cmd
 ```
 
-它会创建 `.venv`，安装锁定依赖，并执行基础自检。不要把项目放在需要管理员权限才能写入的位置，例如 `C:\Program Files`。
+`install.cmd` 会创建 `.venv`，安装锁定版本的运行、OCR 与视觉依赖，并安装项目。`check.cmd` 只做离线自检，不会操作游戏。
 
-安装完成后，运行：
+## 3. 创建自己的目标档案
 
-```cmd
-check.cmd
+```powershell
+Copy-Item .\configs\games\generic-visual-game.example.yaml `
+  .\configs\games\my-game.yaml
 ```
 
-如果自检失败，优先阅读 `docs/setup-troubleshooting.zh-CN.md`。常见问题包括 Python 版本不对、虚拟环境未创建、依赖安装中断、模型地址不可达、原生 DLL 尚未构建。
+编辑 `my-game.yaml`：
 
-## 3. 查看图文教程
+1. `game.id`：使用小写英文和连字符，例如 `my-game`。
+2. `process.executable`：填写实际进程文件名。
+3. `window.title_pattern`：填写尽量精确的窗口标题正则。
+4. `no_click_regions`：排除系统标题栏、悬浮工具栏等不可点击区域。
+5. 没有人工校准过的 `ui_back`、`ui_close` 热点不要启用。
 
-离线图文教程位于：
+启动脚本会拒绝包含 `CHANGE_ME` 的档案，避免用模板误操作。
+
+## 4. 配置模型密钥
+
+云端模型建议把密钥写入当前 PowerShell 进程，不要写入仓库：
+
+```powershell
+$env:UGA_VLM_API_KEY = "your-key"
+```
+
+也可以永久保存到当前 Windows 用户环境变量，但不要截图、提交或输出密钥。
+
+## 5. 第一次只运行 5 分钟
+
+```powershell
+.\start.cmd `
+  -Profile .\configs\games\my-game.yaml `
+  -Goal "打开当前任务并安全推进一个步骤" `
+  -GoalEvidence "任务完成" `
+  -Model "your-vision-model" `
+  -BaseUrl "https://provider.example/v1" `
+  -DurationSeconds 300
+```
+
+本地模型把 `-BaseUrl` 换成本地地址即可。运行期间打开：
 
 ```text
-docs/setup-visual.zh-CN.html
+http://127.0.0.1:8787
 ```
 
-可以直接用浏览器打开。它不加载远程脚本，不会联网，也不会启动代理。
+看板会显示当前画面、OCR、决策来源、动作、效果验证、被安全层拦截的原因和运行状态。
 
-## 4. 配置模型
+## 6. 通过短测后再长期运行
 
-GUI 闭环主要需要这些配置：
-
-| 字段 | 示例 | 说明 |
-| --- | --- | --- |
-| 模型地址 | `http://127.0.0.1:1234/v1` | OpenAI-compatible `/chat/completions` 根地址 |
-| 模型名称 | `Qwen3-VL-4B-Instruct` 或 `glm-4.6v` | 必须与你的模型服务一致 |
-| API Key | 本地服务可为空；云端服务按供应商填写 | 不要写入公开脚本或日志 |
-| 任务 | `完成每日任务并领取奖励` | 越具体越好 |
-| 完成证据 | `出现“已领取”或任务进度完成` | 用于防止模型自行宣布完成 |
-| 坐标尺度 | `unit` 或 `normalized_1000` | 必须与模型输出协议一致 |
-
-## 5. 先跑不操作游戏的检查
-
-运行：
-
-```cmd
-start.cmd --help
+```powershell
+.\start.cmd `
+  -Profile .\configs\games\my-game.yaml `
+  -Goal "持续推进当前可见目标；遇到敏感页面立即停止" `
+  -Model "your-vision-model" `
+  -BaseUrl "https://provider.example/v1" `
+  -DurationSeconds 0 `
+  -Continuous
 ```
 
-或：
+长期运行前必须确认：
 
-```cmd
-python -m apps.agent
-```
-
-这些路径用于检查程序能否启动，不等于真实自动操作。
-
-## 6. 进入真实运行前的确认
-
-真实运行前请确认：
-
-1. 当前游戏窗口不是登录、支付、实名、协议、删除等敏感页面。
-2. 目标窗口标题和 PID 与你预期一致。
-3. 模型地址、模型名称、任务和完成证据正确。
-4. 你知道急停键：`Ctrl+Shift+F12`，也知道可以在控制台按 `Ctrl+C` 请求停止。
-5. 看板和日志没有显示旧帧、旧任务或窗口变化警告。
-
-实际运行建议从短时长开始，例如 60 秒，并开启只记录必要证据的配置。
+- 窗口匹配唯一且稳定。
+- 点击坐标与窗口缩放、分辨率一致。
+- 没有登录、支付、实名、购买、删除或账号设置页面。
+- 短时运行没有重复点击、误点击和无法退出的页面。
+- `Ctrl+Shift+F12` 紧急停止有效。
 
 ## 7. 常用命令
 
-```cmd
-install.cmd              安装依赖和项目
-check.cmd                离线自检
-start.cmd --help         查看启动帮助
-uga-agent                生命周期 smoke 检查
-uga-capture-probe --help 采集诊断帮助
-uga-dataset --help       数据工具帮助
+```powershell
+.\install.cmd             # 安装或重建环境
+.\check.cmd               # 离线自检
+.\start.cmd --help        # 查看通用启动参数
+python -m pytest           # 开发者测试
+uga-capture-probe --help   # 窗口捕获诊断
+uga-replay --help          # Episode 回放
+uga-dataset --help         # 数据集处理
 ```
 
-## 8. 重要限制
+## 8. 出问题先做什么
 
-- 提示词里写“不要操作”不能把真实运行变成零输入模式。要不操作游戏，请使用 smoke、自检或帮助命令。
-- CI 通过不代表真实游戏准确率通过。
-- OCR 与像素变化只能提供视觉证据，不能严格证明每个变化都由代理动作造成。
-- 不要把 API Key、完整带 token 的看板 URL、游戏账号画面截图发布到公开渠道。
+- 一直等待：确认窗口没有被遮挡、OCR 已启用、模型接口可访问、任务文字足够明确。
+- 点击无效：检查窗口焦点、DPI/缩放、标题匹配、帧是否过期。
+- 重复点击：立即急停，保存看板事件；不要只修改提示词，应增加页面状态与效果验证。
+- 进入无关页面：为该页面增加稳定识别锚点和确定性返回规则。
+- 云端接口报错：检查 `UGA_VLM_API_KEY`、模型名、Base URL 和供应商 JSON 模式要求。
+
+完整原理、档案字段、模型配置、安全机制和排错方法见 [docs/usage.zh-CN.md](docs/usage.zh-CN.md)。

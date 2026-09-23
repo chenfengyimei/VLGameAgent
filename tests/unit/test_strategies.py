@@ -378,6 +378,8 @@ class StrategyRegistryTests(unittest.TestCase):
         known_sources = {rule.source for rule in MUMU_REGISTRY.rules}
         self.assertNotIn("ocr_login_agreement_fast", known_sources)
         for source in (
+            "ocr_welfare_page_back_fast",
+            "ocr_settings_page_back_fast",
             "ocr_auto_navigation_wait",
             "ocr_invasion_task_navigate_fast",
             "ocr_invasion_group_attack_fast",
@@ -392,6 +394,10 @@ class StrategyRegistryTests(unittest.TestCase):
             "ocr_red_dust_auto_once_fast",
             "ocr_pet_training_entry_fast",
             "ocr_pet_information_tab_fast",
+            "ocr_restored_pet_task_reverify_back_fast",
+            "ocr_pet_upgrade_info_recovery_fast",
+            "ocr_pet_upgrade_info_hotspot_fast",
+            "ocr_pet_upgrade_wrong_page_wait",
             "ocr_pet_upgrade_once_fast",
             "ocr_pet_wash_menu_fast",
             "ocr_pet_wash_entry_fast",
@@ -2214,9 +2220,28 @@ class PlannerStrategyScopingTests(unittest.TestCase):
             prefer_ocr_task_panel=True,
             strategy_registry=MUMU_REGISTRY,
             back_hotspot=(0.060, 0.080),
+            pet_information_tab_hotspot=(0.965, 0.400),
             dialogue_hotspot=(0.960, 0.915),
         )
         quest = "灵宠升级 拥有1只灵宠达到10级 0/1"
+
+        restored_star_page = _onboarding_snapshot(
+            TextRegion("灵宠", NormalizedBox(0.05, 0.06, 0.14, 0.12), 0.99),
+            TextRegion("升星", NormalizedBox(0.93, 0.43, 0.99, 0.55), 0.99),
+            TextRegion("技能升级", NormalizedBox(0.63, 0.39, 0.76, 0.45), 0.99),
+            TextRegion("成长率", NormalizedBox(0.63, 0.56, 0.73, 0.62), 0.99),
+            TextRegion("升星", NormalizedBox(0.70, 0.82, 0.84, 0.92), 0.99),
+        )
+        outcome = planner._ocr_fast_path(  # type: ignore[attr-defined]
+            restored_star_page,
+            restored_task_unverified=True,
+        )
+        assert outcome is not None and outcome.action is not None
+        self.assertEqual(outcome.action.target_label, "ui_back")
+        self.assertEqual(
+            planner.last_decision_source,
+            "ocr_restored_pet_task_reverify_back_fast",
+        )
 
         task = _onboarding_snapshot(
             TextRegion("主线", NormalizedBox(0.04, 0.16, 0.11, 0.21), 0.99),
@@ -2231,6 +2256,25 @@ class PlannerStrategyScopingTests(unittest.TestCase):
         assert outcome is not None and outcome.action is not None
         self.assertIn("达到10级", outcome.action.target_label)
         self.assertEqual(planner.last_decision_source, "ocr_task_panel_fast")
+
+        remembered_star_page = _onboarding_snapshot(
+            TextRegion("灵宠", NormalizedBox(0.05, 0.06, 0.14, 0.12), 0.99),
+            TextRegion("升星", NormalizedBox(0.93, 0.43, 0.99, 0.55), 0.99),
+            TextRegion("技能升级", NormalizedBox(0.63, 0.39, 0.76, 0.45), 0.99),
+            TextRegion("成长率", NormalizedBox(0.63, 0.56, 0.73, 0.62), 0.99),
+            TextRegion("升星", NormalizedBox(0.70, 0.82, 0.84, 0.92), 0.99),
+        )
+        outcome = planner._ocr_fast_path(  # type: ignore[attr-defined]
+            remembered_star_page,
+            quest_target_level=10,
+            quest_text=quest,
+        )
+        assert outcome is not None and outcome.action is not None
+        self.assertEqual(outcome.action.target_label, "pet_information_tab")
+        self.assertEqual(
+            planner.last_decision_source,
+            "ocr_pet_upgrade_info_hotspot_fast",
+        )
 
         first_upgrade = _onboarding_snapshot(
             TextRegion("灵宠", NormalizedBox(0.05, 0.06, 0.14, 0.12), 0.99),

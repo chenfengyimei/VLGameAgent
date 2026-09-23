@@ -733,6 +733,63 @@ def pet_information_tab_control(regions: Iterable[TextRegion]) -> TextRegion | N
     return max(candidates, key=lambda region: region.confidence) if candidates else None
 
 
+def quest_is_pet_upgrade_task(quest_text: str | None) -> bool:
+    """Whether the durable quest asks for a pet to reach a numeric level."""
+    if not quest_text:
+        return False
+    normalized = normalize_visible_text(quest_text)
+    return (
+        quest_level_target(normalized) is not None
+        and ("灵宠" in normalized or "小龙升级" in normalized)
+    )
+
+
+def pet_upgrade_information_tab_control(
+    regions: Iterable[TextRegion], *, task_active: bool
+) -> TextRegion | None:
+    """Return to 信息 when a pet-level quest opens another pet subpage.
+
+    The pet UI remembers its last selected tab. A level-up quest can therefore
+    reopen directly on 升星, where handing control to the model may consume
+    star-up materials. While a numeric pet-level quest is active, route every
+    non-information pet page back to the right-side 信息 tab.
+    """
+    if not task_active:
+        return None
+    visible = tuple(regions)
+    if not _pet_title_visible(visible):
+        return None
+    if any(
+        "基础属性" in normalize_visible_text(region.text)
+        and region.confidence >= 0.75
+        for region in visible
+    ):
+        return None
+    candidates = [
+        region
+        for region in visible
+        if normalize_visible_text(region.text) == "信息"
+        and region.confidence >= 0.80
+        and region.box.center.x >= 0.85
+        and 0.20 <= region.box.center.y <= 0.65
+    ]
+    return max(candidates, key=lambda region: region.confidence) if candidates else None
+
+
+def pet_upgrade_wrong_subpage_visible(
+    regions: Iterable[TextRegion], *, task_active: bool
+) -> bool:
+    """A pet page other than 信息 while a numeric level quest is active."""
+    if not task_active:
+        return False
+    visible = tuple(regions)
+    return _pet_title_visible(visible) and not any(
+        "基础属性" in normalize_visible_text(region.text)
+        and region.confidence >= 0.75
+        for region in visible
+    )
+
+
 def pet_upgrade_control(
     regions: Iterable[TextRegion], quest_target_level: int | None
 ) -> TextRegion | None:
@@ -1166,6 +1223,84 @@ def _pet_title_visible(regions: Iterable[TextRegion]) -> bool:
     )
 
 
+def pet_feature_page_visible(regions: Iterable[TextRegion]) -> bool:
+    """Whether the dedicated pet feature is open.
+
+    The upper-left title is deliberately required so a world-page menu entry
+    labelled ``灵宠`` cannot be mistaken for the feature itself.
+    """
+    return _pet_title_visible(regions)
+
+
+def welfare_page_visible(regions: Iterable[TextRegion]) -> bool:
+    """Whether the unrelated 福利/每日签到 feature page is open."""
+    visible = tuple(regions)
+    has_title = any(
+        normalize_visible_text(region.text) == "福利"
+        and region.confidence >= 0.80
+        and region.box.center.x <= 0.25
+        and region.box.center.y <= 0.16
+        for region in visible
+    )
+    body_cues = ("在线奖励", "每日签到", "礼包码兑换", "本日补签")
+    body_hits = {
+        cue
+        for region in visible
+        if region.confidence >= 0.70
+        for cue in body_cues
+        if cue in normalize_visible_text(region.text)
+    }
+    # Live OCR occasionally drops the decorative upper-left page title.  Two
+    # independent welfare-only navigation labels are still a strong page
+    # signature and, unlike the lone world-screen 福利 icon, are safe to use.
+    return (has_title and bool(body_hits)) or len(body_hits) >= 2
+
+
+def settings_page_visible(regions: Iterable[TextRegion]) -> bool:
+    """Whether the game's dedicated settings page is open.
+
+    The strict upper-left title constraint excludes the small world-screen
+    settings entry near the bottom/right edge.
+    """
+    visible = tuple(regions)
+    has_title = any(
+        normalize_visible_text(region.text) == "设置"
+        and region.confidence >= 0.80
+        and region.box.center.x <= 0.25
+        and region.box.center.y <= 0.16
+        for region in visible
+    )
+    if has_title:
+        return True
+
+    settings_cues = (
+        "模拟器说明",
+        "主题曲",
+        "反馈",
+        "公告",
+        "锁屏",
+        "脱卡",
+        "切换角色",
+        "返回登录",
+        "音频设置",
+        "背景音乐",
+        "游戏音效",
+        "游戏语音",
+        "聊天语音",
+    )
+    body_hits = {
+        cue
+        for region in visible
+        if region.confidence >= 0.65
+        for cue in settings_cues
+        if cue in normalize_visible_text(region.text)
+    }
+    # Returning to login is an account-affecting control, so recognizing it
+    # together with any other settings-only label must force navigation back
+    # before the model is allowed to propose a click.
+    return "返回登录" in body_hits and len(body_hits) >= 2
+
+
 def _pet_star_page_visible(regions: Iterable[TextRegion]) -> bool:
     visible = tuple(regions)
     return _pet_title_visible(visible) and any(
@@ -1174,6 +1309,11 @@ def _pet_star_page_visible(regions: Iterable[TextRegion]) -> bool:
         for region in visible
         for cue in ("技能升级", "成长率")
     )
+
+
+def pet_star_page_visible(regions: Iterable[TextRegion]) -> bool:
+    """Public page guard used to keep level-up quests out of 升星."""
+    return _pet_star_page_visible(regions)
 
 
 def pet_star_tab_control(
@@ -3247,6 +3387,57 @@ def realm_promotion_ready(regions: Iterable[TextRegion]) -> bool:
     return has_title and done_count >= 2
 
 
+def realm_promotion_completed(regions: Iterable[TextRegion]) -> bool:
+    """True after 晋升 resets the realm objectives for the next tier.
+
+    The live result page does not consistently show ``突破成功``.  Instead it
+    stays on 境界, keeps the 晋升奖励 footer, and replaces the completed
+    objective badges with the next tier's incomplete ``n/m`` counters and
+    ``去完成`` controls.  Require two reset objectives so an ordinary
+    partially-completed realm page cannot be mistaken for this terminal state.
+    """
+    visible = tuple(regions)
+    normalized = tuple(
+        (region, normalize_visible_text(region.text)) for region in visible
+    )
+    has_title = any(
+        text == "境界"
+        and region.box.center.x <= 0.30
+        and region.box.center.y <= 0.18
+        and region.confidence >= 0.80
+        for region, text in normalized
+    )
+    has_reward = any(
+        "晋升奖励" in text and region.confidence >= 0.80
+        for region, text in normalized
+    )
+    if not has_title or not has_reward:
+        return False
+
+    incomplete_objectives = 0
+    for region, text in normalized:
+        if region.confidence < 0.75 or region.box.center.x < 0.50:
+            continue
+        for numerator_text, denominator_text in re.findall(r"(\d+)/(\d+)", text):
+            numerator = int(numerator_text)
+            denominator = int(denominator_text)
+            # Realm objective targets on the observed page are small counts
+            # such as 1/2 and 0/2.  Exclude cultivation counters like
+            # 11665/10000 from the reset signal.
+            if 0 < denominator <= 100 and numerator < denominator:
+                incomplete_objectives += 1
+                break
+
+    todo_controls = sum(
+        1
+        for region, text in normalized
+        if text == "去完成"
+        and region.confidence >= 0.75
+        and region.box.center.x >= 0.70
+    )
+    return max(incomplete_objectives, todo_controls) >= 2
+
+
 def realm_breakthrough_entry_control(regions: Iterable[TextRegion]) -> TextRegion | None:
     """The top-left 变强 shortcut for the recorded 境界突破 main quest."""
     visible = tuple(regions)
@@ -3767,6 +3958,14 @@ class GameSessionState:
         if any(cue in value for value in normalized for cue in _POPUP_CUES):
             self.screen_type = ScreenType.POPUP
             self.feature_page = None
+            return
+        if welfare_page_visible(snapshot.visible_text):
+            self.screen_type = ScreenType.FEATURE
+            self.feature_page = "福利"
+            return
+        if settings_page_visible(snapshot.visible_text):
+            self.screen_type = ScreenType.FEATURE
+            self.feature_page = "设置"
             return
         title = _feature_title(snapshot)
         if title is not None:

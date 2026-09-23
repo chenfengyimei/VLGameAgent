@@ -1,0 +1,6 @@
+interface:
+  display_name: "Universal Game Agent Setup"
+  short_description: "Install and safely launch the visual game agent"
+  default_prompt: "Use $universal-game-agent-setup to install the repository, create a safe target profile, verify dependencies, and launch a bounded visual-agent run."
+policy:
+  allow_implicit_invocation: true
